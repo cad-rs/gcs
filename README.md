@@ -125,7 +125,7 @@ like any third-party consumer would.
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features     # the assembly corpus takes about a minute unoptimised
+cargo test --all-features     # about a minute; most of it is the assembly corpus
 cargo bench                   # criterion benchmarks, see benches/BASELINE.md
 ```
 
