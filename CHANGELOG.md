@@ -377,6 +377,16 @@ through them from a host's side.
 
 ### Performance
 
+- The LU factorisation that the diagnosis solves its Gram system with
+  (and that is kept for several right-hand sides) took two to three times
+  as long as the plain elimination for the same arithmetic: 3.5 ms against
+  1.1 ms at 240 unknowns. Its inner loop indexed nested vectors and kept
+  the factors in a new vector per column; it now runs over row slices and
+  keeps the factors in the eliminated triangle, as LAPACK does, and is
+  within a few percent of the elimination. The results are bitwise the
+  same (tested against the elimination on a 40 × 40 matrix with over
+  twenty row exchanges). The diagnosis benchmarks gain 4–6% where the
+  factorisation is a visible share of the work.
 - No Jacobian row is finite-differenced any more. The orientation rows of
   `Fixed` and `Lock` were the last ones; they now use the derivative of the
   rotation logarithm, in closed form, where central differences evaluated

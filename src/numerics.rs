@@ -1497,12 +1497,13 @@ pub(crate) fn gaussian_elimination(a: &mut [Vec<f64>], b: &mut [f64]) -> Option<
 /// multipliers, same order), so the result is bitwise the one a fresh
 /// elimination would give.
 pub(crate) struct LuFactors {
-    /// The upper triangle left by the elimination (rows in pivoted order).
-    upper: Vec<Vec<f64>>,
+    /// The factors in one matrix (rows in pivoted order): the upper
+    /// triangle left by the elimination on and above the diagonal, and
+    /// below it the elimination factors, each moved with its row by the
+    /// later exchanges (as LAPACK stores them).
+    lu: Vec<Vec<f64>>,
     /// The row exchanged with `col` at elimination step `col`.
     swaps: Vec<usize>,
-    /// `multipliers[col]` holds the elimination factors of rows `col + 1..`.
-    multipliers: Vec<Vec<f64>>,
 }
 
 impl LuFactors {
@@ -1510,7 +1511,6 @@ impl LuFactors {
     pub(crate) fn factor(mut a: Vec<Vec<f64>>) -> Option<Self> {
         let n = a.len();
         let mut swaps = Vec::with_capacity(n);
-        let mut multipliers = Vec::with_capacity(n);
 
         for col in 0..n {
             let pivot_row =
@@ -1523,34 +1523,44 @@ impl LuFactors {
                 return None;
             }
 
-            let mut factors = Vec::with_capacity(n - col - 1);
-            for row in (col + 1)..n {
-                let factor = a[row][col] / pivot;
-                for k in col..n {
-                    let v = a[col][k] * factor;
-                    a[row][k] -= v;
+            // The pivot row and the rows below as slices, so that the
+            // inner loop runs without bounds checks: indexed, and with the
+            // factors kept in a vector per column, the same arithmetic took
+            // two to three times as long as `gaussian_elimination`. The
+            // operations on the upper triangle and their order are those of
+            // `gaussian_elimination`; the entry below the pivot, which it
+            // drives to (about) zero and never reads again, keeps the
+            // factor instead.
+            let (above, below) = a.split_at_mut(col + 1);
+            let pivot_tail = &above[col][col + 1..];
+            for row in below.iter_mut() {
+                let factor = row[col] / pivot;
+                for (x, p) in row[col + 1..].iter_mut().zip(pivot_tail) {
+                    let v = p * factor;
+                    *x -= v;
                 }
-                factors.push(factor);
+                row[col] = factor;
             }
-            multipliers.push(factors);
         }
-        Some(Self {
-            upper: a,
-            swaps,
-            multipliers,
-        })
+        Some(Self { lu: a, swaps })
     }
 
     /// Solve `A x = b` for the factored `A`. `b` is used as scratch space.
     pub(crate) fn solve(&self, b: &mut [f64]) -> Vec<f64> {
         let n = b.len();
-        debug_assert_eq!(self.upper.len(), n);
+        debug_assert_eq!(self.lu.len(), n);
 
+        // The factors moved with their rows, so the exchanges are applied
+        // first; every entry then receives the updates the interleaved
+        // elimination gives it, in the same order.
+        for (col, &swap) in self.swaps.iter().enumerate() {
+            b.swap(col, swap);
+        }
         for col in 0..n {
-            b.swap(col, self.swaps[col]);
-            for (offset, factor) in self.multipliers[col].iter().enumerate() {
-                let bv = b[col] * factor;
-                b[col + 1 + offset] -= bv;
+            let pivot = b[col];
+            for (row, target) in self.lu[col + 1..].iter().zip(&mut b[col + 1..]) {
+                let bv = pivot * row[col];
+                *target -= bv;
             }
         }
 
@@ -1558,10 +1568,10 @@ impl LuFactors {
         for i in (0..n).rev() {
             x[i] = b[i];
             for j in (i + 1)..n {
-                let v = self.upper[i][j] * x[j];
+                let v = self.lu[i][j] * x[j];
                 x[i] -= v;
             }
-            x[i] /= self.upper[i][i];
+            x[i] /= self.lu[i][i];
         }
         x
     }
@@ -1780,6 +1790,38 @@ mod tests {
                 "rhs {rhs:?}"
             );
         }
+
+        // A larger, unsymmetric matrix, where many later exchanges move
+        // factors stored by earlier steps.
+        let mut seed = 1_u64;
+        let mut random = || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 11) as f64 / (1_u64 << 53) as f64 - 0.5
+        };
+        let n = 40;
+        let a: Vec<Vec<f64>> = (0..n).map(|_| (0..n).map(|_| random()).collect()).collect();
+        let rhs: Vec<f64> = (0..n).map(|_| random()).collect();
+        let factors = LuFactors::factor(a.clone()).expect("regular matrix");
+        let direct = gaussian_elimination(&mut a.clone(), &mut rhs.clone()).expect("regular");
+        let through_factors = factors.solve(&mut rhs.clone());
+        assert!(
+            factors
+                .swaps
+                .iter()
+                .enumerate()
+                .filter(|(c, s)| *c != **s)
+                .count()
+                > n / 2
+        );
+        assert_eq!(
+            direct.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            through_factors
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -186,6 +186,40 @@ pairs are within 3% either way (`solve_chain/54` 0.343 → 0.348 ms,
 `solve_chain/792` 349 → 337 ms). The diagnosis, whose code did not change,
 scatters by the same couple of percent.
 
+### After the stored LU factorisation was made as fast as the elimination (P2.2)
+
+Same machine. `LuFactors` (used by the diagnosis for its Gram system) did
+the arithmetic of `gaussian_elimination` in two to three times the time.
+Measured on dense symmetric positive definite matrices, one factorisation
+and solve, release build:
+
+| Unknowns | elimination | `LuFactors` before | `LuFactors` after |
+|---:|---:|---:|---:|
+| 54 | 0.029 ms | 0.056 ms | 0.026 ms |
+| 198 | 0.60 ms | 2.00 ms | 0.74 ms |
+| 240 | 1.15 ms | 3.54 ms | 1.23 ms |
+| 780 | 41.1 ms | 112.8 ms | 44.0 ms |
+
+(The “after” column is the slice-based loop with the factors still in a
+vector per column; keeping them in the triangle removed those
+allocations too.) The diagnosis benchmarks, the previous commit and this
+one alternately, three rounds each (criterion medians):
+
+| Benchmark | before | after | change |
+|---|---:|---:|---:|
+| `assembly/diagnose_star/5` | 0.314 ms | 0.319 ms | +1.5% |
+| `assembly/diagnose_star/20` | 7.26 ms | 6.93 ms | −4.5% |
+| `assembly/diagnose_star/40` | 52.2 ms | 50.3 ms | −3.7% |
+| `space/diagnose_truss/60` | 0.489 ms | 0.461 ms | −5.8% |
+| `space/diagnose_truss/240` | 42.2 ms | 39.4 ms | −6.5% |
+| `sketch/diagnose_chain/54`, `/198` | | | +0.7%, −1.2% |
+| `sketch/diagnose_chain/792`, `space/diagnose_truss/780` | | | +3.6%, +5.9% |
+
+The last two spread by 10–15% between rounds of one build (792: 906 to
+1020 ms before) and are not resolved; the first five are steady to a few
+percent. (These were measured with the next commit's convergence polish
+in place as well; the diagnosis does not run the polish.)
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.
