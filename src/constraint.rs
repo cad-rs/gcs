@@ -555,10 +555,10 @@ impl Constraint {
             Constraint::LineLength { line, .. } => {
                 let e = &entities[*line];
                 let (p0, p1, p2, p3) = (e.param(0), e.param(1), e.param(2), e.param(3));
-                let dx = params[p2] - params[p0];
-                let dy = params[p3] - params[p1];
-                let l = (dx * dx + dy * dy).sqrt();
-                row!(out[0], p0 => -dx / l, p1 => -dy / l, p2 => dx / l, p3 => dy / l);
+                // Each end moves the length along the line. A line of zero
+                // length has no direction and so no gradient (it was 0/0).
+                let u = line_direction(params, e);
+                row!(out[0], p0 => -u.x, p1 => -u.y, p2 => u.x, p3 => u.y);
             }
 
             // ── Horizontal / Vertical ────────────────────────────────────────

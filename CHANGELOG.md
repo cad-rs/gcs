@@ -286,6 +286,16 @@ through them from a host's side.
 
 ### Fixed
 
+- **`LineLength` on a line of zero length divided zero by zero.** Its
+  derivative was `dx / |d|` with no guard, so the solve ended at once as
+  `Diverged`, the status for numbers that are not numbers. A line of zero
+  length has no direction; its length now has no gradient there, as a
+  distance between coincident points already had none, and the solve ends
+  as `Stalled` with the geometry put back. `tests/degenerate.rs` surveys
+  sixteen degenerate starts (zero-length lines, zero radii, coincident
+  points, NaN and infinite coordinates and dimensions) in all three
+  families: none panics or leaves a NaN behind, and a failed solve leaves
+  the geometry as it was; this was the one wrong status.
 - **Two spline constraints of the 3D family had wrong derivatives**, and no
   test covered any of the four.
   - `PointOnSpline` held the nearest point on the curve fixed while

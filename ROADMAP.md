@@ -33,6 +33,18 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   read as partially redundant (not observed; an exact duplicate cancels
   exactly). Arc angles are columns in radians,
   not lengths, and have not been looked at for scale.
+- **Degenerate starts.** A distance-like relation whose points start in
+  one place — a line of zero length given a length, a distance between
+  coincident points, a point on a circle at its centre — has no gradient
+  there, and the solve ends as `Stalled` (`tests/degenerate.rs`). Picking
+  a direction instead (a fixed subgradient) would let such a sketch solve,
+  but it is a choice about where the geometry goes, and the debug
+  cross-check of the Jacobian would have to know about it. Relations on a
+  line of zero length (parallel, angle, point on line, symmetric) are met
+  vacuously. Two wrong answers seen: two concentric circles held
+  externally tangent "converge" by making a radius negative (−1; nothing
+  keeps radii positive), and diagnosing an arc of zero radius at its start
+  reports its end constraint as conflicting although the sketch solves.
 - **Hard starts.** The step control is a dogleg trust region, but the
   radius is measured in the raw parameter vector, where a length and an
   angle weigh the same, and there is no homotopy/continuation path for
