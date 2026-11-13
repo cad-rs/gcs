@@ -58,8 +58,15 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   eigenvalue in `JᵀJ` is about `4δ` (with `λ = 1e-20` the solver converges
   at `1e-12`). (3) At `δ = 1e-14` the normal equations' squared condition
   number shows as well: with `λ = 1e-20` one start still stalls. A step
-  from a QR factorisation of `J` (the plan's P2.2) addresses (2) and (3);
-  (1) is the plan's step-norm convergence criterion.
+  from a QR factorisation of `J` (the plan's P2.2) addresses (2) and (3).
+  (1) is not a defect after all: at a tolerance of 1e-10 such a needle is
+  numerically a tangency, satisfied to the tolerance, and near tangency a
+  position is only determined to about the square root of the tolerance
+  (times the size). The Gauss–Newton correction left at convergence is
+  1e-8 to 1e-5 on the needle and up to 7.9e-5 on the corpus's tangency
+  cases, which count as solved, so no step-size criterion could tell
+  them apart. A host that needs the tangent point more exactly passes a
+  tighter tolerance.
 - **Hard starts.** The step control is a dogleg trust region, but the
   radius is measured in the raw parameter vector, where a length and an
   angle weigh the same, and there is no homotopy/continuation path for
