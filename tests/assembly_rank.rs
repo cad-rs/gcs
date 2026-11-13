@@ -6,8 +6,8 @@
 
 use glam::{DQuat, DVec3};
 use rcad_gcs::rigid3d::{
-    diagnose_assembly, AssemblyDiagnosis, Constraint, ConstraintSolver, ConstraintSystem,
-    PoseSolveOptions,
+    assembly_mobility, diagnose_assembly, AssemblyDiagnosis, Constraint, ConstraintSolver,
+    ConstraintSystem, PoseSolveOptions,
 };
 
 /// Solve tightly, then diagnose at the solved pose.
@@ -196,4 +196,82 @@ fn every_mate_alone_takes_exactly_its_freedoms() {
         assert_eq!(d.conflicting, Vec::<usize>::new(), "{name}");
         assert!(d.dependency_groups.is_empty(), "{name}: {d:?}");
     }
+}
+
+/// `assembly_mobility` names the coordinates of each body that some
+/// remaining motion changes.
+#[test]
+fn mobility_names_the_coordinates_that_can_move() {
+    const STILL: [bool; 6] = [false; 6];
+    let solver = ConstraintSolver::with_options(PoseSolveOptions {
+        tolerance: 1.0e-12,
+        ..PoseSolveOptions::default()
+    });
+
+    // Body 1 is a hinge about the ground's Z axis, which runs through its
+    // own origin along its own z: turning it moves nothing else. Body 2
+    // keeps its orientation and slides along X. Body 3 has no mate.
+    let mut system = ConstraintSystem::with_components(4);
+    system.add_constraint(Constraint::fixed_with_orientation(
+        0,
+        0,
+        DVec3::ZERO,
+        DQuat::IDENTITY,
+    ));
+    system.add_constraint(Constraint::concentric(
+        1,
+        0,
+        DVec3::ZERO,
+        DVec3::Z,
+        1,
+        DVec3::ZERO,
+        DVec3::Z,
+    ));
+    system.add_constraint(Constraint::point_on_plane(
+        2,
+        0,
+        DVec3::ZERO,
+        DVec3::Z,
+        1,
+        DVec3::ZERO,
+    ));
+    system.add_constraint(Constraint::parallel(3, 0, DVec3::Z, 2, DVec3::Z));
+    system.add_constraint(Constraint::parallel(4, 0, DVec3::X, 2, DVec3::X));
+    system.add_constraint(Constraint::point_on_plane(
+        5,
+        0,
+        DVec3::ZERO,
+        DVec3::Y,
+        2,
+        DVec3::ZERO,
+    ));
+    system.add_constraint(Constraint::point_on_plane(
+        6,
+        0,
+        DVec3::ZERO,
+        DVec3::Z,
+        2,
+        DVec3::ZERO,
+    ));
+
+    let solved = solver.solve(&system);
+    assert!(solved.success, "error {:.3e}", solved.error);
+    let movable = assembly_mobility(&system, &solved.positions, &solved.rotations);
+    assert_eq!(movable.len(), 4);
+    assert_eq!(movable[0], STILL, "the ground");
+    assert_eq!(
+        movable[1],
+        [false, false, false, false, false, true],
+        "the hinge turns about its own z"
+    );
+    assert_eq!(
+        movable[2],
+        [true, false, false, false, false, false],
+        "the slider moves along X"
+    );
+    assert_eq!(movable[3], [true; 6], "nothing holds the loose part");
+
+    // Seven freedoms in all: one, one and six.
+    let d = diagnose_assembly(&system, &solved.positions, &solved.rotations);
+    assert_eq!(d.dof, 1 + 1 + 6);
 }

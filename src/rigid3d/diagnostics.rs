@@ -1,24 +1,33 @@
-//! Solver diagnostics for redundancy and conflict detection.
+//! Assembly diagnostics as a list of issues — the former pattern-matching
+//! analyzer, kept as a wrapper over the rank diagnosis.
+//!
+//! New code reads the structured result of
+//! [`diagnose_assembly`][crate::rigid3d::diagnose_assembly] and
+//! [`assembly_mobility`][crate::rigid3d::assembly_mobility] directly; the
+//! messages here are a convenience on top of them.
 
-use crate::rigid3d::{Constraint, ConstraintSystem};
-use std::collections::{HashMap, HashSet};
+use crate::rigid3d::diagnosis::{diagnose, mobility};
+use crate::rigid3d::dof::solve_for_analysis;
+use crate::rigid3d::{ConstraintKind, ConstraintSystem};
 
 /// Type of diagnostic issue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticType {
-    /// Redundant constraint
+    /// Constraints that depend on one another: some add nothing.
     Redundant,
-    /// Conflicting constraint
+    /// Constraints that cannot hold together.
     Conflict,
-    /// Under-constrained system
+    /// Degrees of freedom remain.
     UnderConstrained,
-    /// Over-constrained system
+    /// No longer reported: over-constraint shows as [`Self::Redundant`] or
+    /// [`Self::Conflict`], which name the constraints involved.
     OverConstrained,
-    /// Invalid constraint parameters
+    /// No longer reported.
     Invalid,
-    /// Cyclic dependency detected
+    /// No longer reported: a closed loop of mates is an ordinary assembly,
+    /// not a defect.
     CyclicDependency,
-    /// Incomplete constraint chain
+    /// Components that no constraint refers to.
     IncompleteChain,
 }
 
@@ -73,6 +82,17 @@ pub struct DiagnosticIssue {
 }
 
 /// Solver diagnostics.
+///
+/// This used to match patterns in the constraint list (two `Fixed` on one
+/// body, more than three coincident pairs, any loop of mates) and count
+/// freedoms by subtraction. It now solves the assembly and reports what the
+/// rank diagnosis finds there, so it agrees with
+/// [`diagnose_assembly`][crate::rigid3d::diagnose_assembly]; it is kept so
+/// that existing callers keep working.
+#[deprecated(
+    since = "0.2.0",
+    note = "use `diagnose_assembly` and `assembly_mobility`, which return the same findings as data"
+)]
 #[derive(Debug, Clone, Default)]
 pub struct SolverDiagnostics {
     /// Issues found
@@ -88,18 +108,20 @@ pub struct DiagnosticStats {
     pub total_components: usize,
     /// Total number of constraints
     pub total_constraints: usize,
-    /// Total DOF in system
+    /// Degrees of freedom the components have between them (six each)
     pub total_dof: usize,
-    /// DOF removed by constraints
+    /// Degrees of freedom the constraints remove: the rank of their
+    /// Jacobian, so overlapping constraints are not counted twice
     pub dof_removed: usize,
-    /// DOF remaining
+    /// Degrees of freedom remaining
     pub dof_remaining: usize,
-    /// Number of fixed components
+    /// Number of components that carry a `Fixed` constraint
     pub fixed_components: usize,
-    /// Number of grounded components (explicitly fixed)
+    /// Number of components pinned in full (position and orientation)
     pub grounded_components: usize,
 }
 
+#[allow(deprecated)]
 impl SolverDiagnostics {
     /// Create empty diagnostics.
     pub fn new() -> Self {
@@ -107,371 +129,183 @@ impl SolverDiagnostics {
     }
 
     /// Analyze a constraint system for issues.
+    ///
+    /// The assembly is solved from its seed pose (the one
+    /// [`ConstraintSolver::solve`][crate::rigid3d::ConstraintSolver::solve]
+    /// starts from) and diagnosed where that leaves it: at the solution,
+    /// where redundancy and remaining freedoms are read, or — for a cluster
+    /// that cannot be solved — back at the seed pose, where the conflict
+    /// shows.
     pub fn analyze(&mut self, system: &ConstraintSystem) {
         self.issues.clear();
 
-        // Compute statistics
-        self.compute_stats(system);
+        let pose = solve_for_analysis(system);
+        let diagnosis = diagnose(system, &pose.positions, &pose.rotations);
+        let movable = mobility(system, &pose.positions, &pose.rotations);
 
-        // Check for over-constrained
-        self.check_over_constrained(system);
-
-        // Check for under-constrained
-        self.check_under_constrained(system);
-
-        // Check for redundant constraints
-        self.detect_redundancy(system);
-
-        // Check for conflicts
-        self.detect_conflicts(system);
-
-        // Check for cyclic dependencies
-        self.detect_cycles(system);
-
-        // Check for incomplete constraint chains
-        self.detect_incomplete_chains(system);
-    }
-
-    /// Compute diagnostic statistics.
-    fn compute_stats(&mut self, system: &ConstraintSystem) {
-        let max_dof = system.num_components * 6;
-        let total_removed = system.total_dof_removed();
-
-        let fixed_count = system
-            .constraints
-            .iter()
-            .filter(|c| c.constraint_type() == crate::rigid3d::ConstraintType::Fixed)
-            .count();
+        let mut fixed = vec![false; system.num_components];
+        let mut grounded = vec![false; system.num_components];
+        let mut referenced = vec![false; system.num_components];
+        for constraint in &system.constraints {
+            let (first, second) = constraint.kind.bodies();
+            for body in std::iter::once(first).chain(second) {
+                referenced[body] = true;
+            }
+            if let ConstraintKind::Fixed {
+                body, orientation, ..
+            } = constraint.kind
+            {
+                fixed[body] = true;
+                grounded[body] |= orientation.is_some();
+            }
+        }
+        let count = |flags: &[bool]| flags.iter().filter(|flag| **flag).count();
 
         self.stats = DiagnosticStats {
             total_components: system.num_components,
             total_constraints: system.constraints.len(),
-            total_dof: max_dof,
-            dof_removed: total_removed,
-            dof_remaining: max_dof.saturating_sub(total_removed),
-            fixed_components: fixed_count,
-            grounded_components: fixed_count,
+            total_dof: system.num_components * 6,
+            dof_removed: diagnosis.rank,
+            dof_remaining: diagnosis.dof.max(0) as usize,
+            fixed_components: count(&fixed),
+            grounded_components: count(&grounded),
         };
-    }
 
-    /// Check for over-constrained system.
-    fn check_over_constrained(&mut self, system: &ConstraintSystem) {
-        let max_dof = system.num_components * 6;
-        let total_removed = system.total_dof_removed();
+        // The components the constraints with these ids act on.
+        let components_of = |ids: &[usize]| -> Vec<usize> {
+            let mut out: Vec<usize> = system
+                .constraints
+                .iter()
+                .filter(|c| ids.contains(&c.id))
+                .flat_map(|c| {
+                    let (first, second) = c.kind.bodies();
+                    std::iter::once(first).chain(second)
+                })
+                .collect();
+            out.sort_unstable();
+            out.dedup();
+            out
+        };
 
-        if total_removed > max_dof {
-            let constraint_ids: Vec<usize> = system.constraints.iter().map(|c| c.id).collect();
-
+        // Conflicts.
+        if !diagnosis.conflicting.is_empty() {
+            let ids = diagnosis.conflicting.clone();
             self.issues.push(DiagnosticIssue {
-                issue_type: DiagnosticType::OverConstrained,
+                issue_type: DiagnosticType::Conflict,
                 severity: DiagnosticSeverity::Error,
-                constraint_ids: constraint_ids.clone(),
-                component_ids: (0..system.num_components).collect(),
+                component_ids: components_of(&ids),
+                message: format!("Constraints {ids:?} cannot hold together"),
+                recommendations: vec![DiagnosticRecommendation {
+                    description: "Remove or change one of the conflicting constraints".to_string(),
+                    affected_constraints: ids.clone(),
+                    priority: 1,
+                }],
+                constraint_ids: ids,
+            });
+        } else if !pose.success {
+            self.issues.push(DiagnosticIssue {
+                issue_type: DiagnosticType::Conflict,
+                severity: DiagnosticSeverity::Error,
+                constraint_ids: vec![],
+                component_ids: vec![],
                 message: format!(
-                    "System is over-constrained: {} DOF removed from {} available",
-                    total_removed, max_dof
+                    "The assembly could not be solved (error {:.3e}); no single set of \
+                     conflicting constraints was identified",
+                    pose.error
                 ),
-                recommendations: vec![
-                    DiagnosticRecommendation {
-                        description: "Remove redundant constraints to resolve over-constraint"
-                            .to_string(),
-                        affected_constraints: constraint_ids,
-                        priority: 1,
-                    },
-                    DiagnosticRecommendation {
-                        description: "Consider using a fixed constraint instead of multiple mates"
-                            .to_string(),
-                        affected_constraints: vec![],
-                        priority: 2,
-                    },
-                ],
+                recommendations: vec![DiagnosticRecommendation {
+                    description: "Check the most recently added constraints".to_string(),
+                    affected_constraints: vec![],
+                    priority: 1,
+                }],
             });
         }
-    }
 
-    /// Check for under-constrained system.
-    fn check_under_constrained(&mut self, system: &ConstraintSystem) {
-        let max_dof = system.num_components * 6;
-        let total_removed = system.total_dof_removed();
+        // Redundancy: one issue per group of mutually dependent constraints,
+        // or a single one when no group could be extracted.
+        let groups: Vec<Vec<usize>> = if diagnosis.dependency_groups.is_empty() {
+            let mut all = diagnosis.redundant.clone();
+            all.extend(&diagnosis.partially_redundant);
+            if all.is_empty() {
+                Vec::new()
+            } else {
+                vec![all]
+            }
+        } else {
+            diagnosis.dependency_groups.clone()
+        };
+        for group in groups {
+            // The members the diagnosis singled out as removable.
+            let mut removable: Vec<usize> = group
+                .iter()
+                .copied()
+                .filter(|id| diagnosis.redundant.contains(id))
+                .collect();
+            if removable.is_empty() {
+                removable = group.clone();
+            }
+            self.issues.push(DiagnosticIssue {
+                issue_type: DiagnosticType::Redundant,
+                severity: DiagnosticSeverity::Warning,
+                component_ids: components_of(&group),
+                message: format!("Constraints {group:?} depend on one another"),
+                recommendations: vec![DiagnosticRecommendation {
+                    description: "Remove one of the constraints that add nothing".to_string(),
+                    affected_constraints: removable,
+                    priority: 1,
+                }],
+                constraint_ids: group,
+            });
+        }
 
-        if total_removed < max_dof && !system.constraints.is_empty() {
-            let remaining = max_dof - total_removed;
-
+        // Remaining freedoms. An assembly without any constraint is not
+        // reported: there is nothing to complete yet.
+        if diagnosis.dof > 0 && !system.constraints.is_empty() {
+            let moving: Vec<usize> = (0..system.num_components)
+                .filter(|&body| movable[body].iter().any(|can_move| *can_move))
+                .collect();
+            let mut recommendations = vec![DiagnosticRecommendation {
+                description: "Add constraints to the components that can still move".to_string(),
+                affected_constraints: vec![],
+                priority: 1,
+            }];
+            if count(&grounded) == 0 {
+                recommendations.push(DiagnosticRecommendation {
+                    description: "Ground one component with a fixed constraint as reference"
+                        .to_string(),
+                    affected_constraints: vec![],
+                    priority: 2,
+                });
+            }
             self.issues.push(DiagnosticIssue {
                 issue_type: DiagnosticType::UnderConstrained,
                 severity: DiagnosticSeverity::Warning,
                 constraint_ids: vec![],
-                component_ids: (0..system.num_components).collect(),
-                message: format!("System is under-constrained: {} DOF remaining", remaining),
-                recommendations: vec![
-                    DiagnosticRecommendation {
-                        description: format!(
-                            "Add {} more constraints to fully constrain the assembly",
-                            remaining
-                        ),
-                        affected_constraints: vec![],
-                        priority: 1,
-                    },
-                    DiagnosticRecommendation {
-                        description: "Ground one component with a fixed constraint as reference"
-                            .to_string(),
-                        affected_constraints: vec![],
-                        priority: 2,
-                    },
-                ],
+                component_ids: moving,
+                message: format!(
+                    "System is under-constrained: {} DOF remaining",
+                    diagnosis.dof
+                ),
+                recommendations,
             });
         }
-    }
 
-    /// Detect redundant constraints.
-    fn detect_redundancy(&mut self, system: &ConstraintSystem) {
-        // Group constraints by component
-        let mut component_constraints: HashMap<usize, Vec<&Constraint>> = HashMap::new();
-
-        for constraint in &system.constraints {
-            component_constraints
-                .entry(constraint.component1())
-                .or_default()
-                .push(constraint);
-            if let Some(comp2) = constraint.component2() {
-                component_constraints
-                    .entry(comp2)
-                    .or_default()
-                    .push(constraint);
-            }
-        }
-
-        // Check for multiple fixed constraints on same component
-        for (&component, constraints) in &component_constraints {
-            let fixed_count = constraints
-                .iter()
-                .filter(|c| c.constraint_type() == crate::rigid3d::ConstraintType::Fixed)
-                .count();
-
-            if fixed_count > 1 {
-                let ids: Vec<usize> = constraints
-                    .iter()
-                    .filter(|c| c.constraint_type() == crate::rigid3d::ConstraintType::Fixed)
-                    .map(|c| c.id)
-                    .collect();
-
-                self.issues.push(DiagnosticIssue {
-                    issue_type: DiagnosticType::Redundant,
-                    severity: DiagnosticSeverity::Warning,
-                    constraint_ids: ids.clone(),
-                    component_ids: vec![component],
-                    message: format!("Component {} has multiple fixed constraints", component),
-                    recommendations: vec![DiagnosticRecommendation {
-                        description: "Remove all but one fixed constraint from this component"
-                            .to_string(),
-                        affected_constraints: ids,
-                        priority: 1,
-                    }],
-                });
-            }
-        }
-
-        // Check for redundant coincident constraints between same pair of components
-        self.detect_redundant_coincident(system);
-    }
-
-    /// Detect redundant coincident constraints.
-    fn detect_redundant_coincident(&mut self, system: &ConstraintSystem) {
-        let mut coincident_pairs: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-
-        for constraint in &system.constraints {
-            if constraint.constraint_type() == crate::rigid3d::ConstraintType::Coincident {
-                if let Some(comp2) = constraint.component2() {
-                    let key = if constraint.component1() < comp2 {
-                        (constraint.component1(), comp2)
-                    } else {
-                        (comp2, constraint.component1())
-                    };
-                    coincident_pairs.entry(key).or_default().push(constraint.id);
-                }
-            }
-        }
-
-        for ((_c1, _c2), ids) in coincident_pairs {
-            if ids.len() > 3 {
-                // More than 3 coincident constraints between same pair is likely redundant
-                self.issues.push(DiagnosticIssue {
-                    issue_type: DiagnosticType::Redundant,
-                    severity: DiagnosticSeverity::Info,
-                    constraint_ids: ids.clone(),
-                    component_ids: vec![_c1, _c2],
-                    message: format!(
-                        "Components {} and {} have {} coincident constraints; 3 are typically sufficient",
-                        _c1, _c2, ids.len()
-                    ),
-                    recommendations: vec![
-                        DiagnosticRecommendation {
-                            description: "Consider removing redundant coincident constraints".to_string(),
-                            affected_constraints: ids,
-                            priority: 3,
-                        },
-                    ],
-                });
-            }
-        }
-    }
-
-    /// Detect conflicting constraints.
-    fn detect_conflicts(&mut self, system: &ConstraintSystem) {
-        // Check for conflicting distance constraints
-        for (i, c1) in system.constraints.iter().enumerate() {
-            for c2 in system.constraints.iter().skip(i + 1) {
-                if self.are_conflicting(c1, c2) {
-                    self.issues.push(DiagnosticIssue {
-                        issue_type: DiagnosticType::Conflict,
-                        severity: DiagnosticSeverity::Error,
-                        constraint_ids: vec![c1.id, c2.id],
-                        component_ids: vec![c1.component1(), c2.component1()],
-                        message: format!("Constraints {} and {} are conflicting", c1.id, c2.id),
-                        recommendations: vec![DiagnosticRecommendation {
-                            description: "Remove or modify one of the conflicting constraints"
-                                .to_string(),
-                            affected_constraints: vec![c1.id, c2.id],
-                            priority: 1,
-                        }],
-                    });
-                }
-            }
-        }
-    }
-
-    /// Detect cyclic dependencies in constraints.
-    fn detect_cycles(&mut self, system: &ConstraintSystem) {
-        // Build a dependency graph
-        let mut graph: HashMap<usize, HashSet<usize>> = HashMap::new();
-
-        for constraint in &system.constraints {
-            if let Some(comp2) = constraint.component2() {
-                // component1 depends on comp2 through this constraint
-                graph
-                    .entry(constraint.component1())
-                    .or_default()
-                    .insert(comp2);
-            }
-        }
-
-        // Detect cycles using DFS
-        let mut visited = HashSet::new();
-        let mut rec_stack = HashSet::new();
-
-        for node in 0..system.num_components {
-            if self.has_cycle(node, &graph, &mut visited, &mut rec_stack) {
-                self.issues.push(DiagnosticIssue {
-                    issue_type: DiagnosticType::CyclicDependency,
-                    severity: DiagnosticSeverity::Warning,
-                    constraint_ids: vec![],
-                    component_ids: (0..system.num_components).collect(),
-                    message: "Cyclic dependency detected in constraint graph".to_string(),
-                    recommendations: vec![DiagnosticRecommendation {
-                        description: "Reorganize constraints to break the cycle".to_string(),
-                        affected_constraints: vec![],
-                        priority: 1,
-                    }],
-                });
-                break;
-            }
-        }
-    }
-
-    /// Check if there's a cycle starting from the given node.
-    fn has_cycle(
-        &self,
-        node: usize,
-        graph: &HashMap<usize, HashSet<usize>>,
-        visited: &mut HashSet<usize>,
-        rec_stack: &mut HashSet<usize>,
-    ) -> bool {
-        if rec_stack.contains(&node) {
-            return true;
-        }
-
-        if visited.contains(&node) {
-            return false;
-        }
-
-        visited.insert(node);
-        rec_stack.insert(node);
-
-        if let Some(neighbors) = graph.get(&node) {
-            for &neighbor in neighbors {
-                if self.has_cycle(neighbor, graph, visited, rec_stack) {
-                    return true;
-                }
-            }
-        }
-
-        rec_stack.remove(&node);
-        false
-    }
-
-    /// Detect incomplete constraint chains (unconnected components).
-    fn detect_incomplete_chains(&mut self, system: &ConstraintSystem) {
-        if system.constraints.is_empty() || system.num_components <= 1 {
-            return;
-        }
-
-        // Find all connected components using union-find
-        let mut parent: Vec<usize> = (0..system.num_components).collect();
-
-        // Iterative find with path compression
-        let find_iterative = |parent: &mut [usize], mut x: usize| -> usize {
-            let mut root = x;
-            while parent[root] != root {
-                root = parent[root];
-            }
-            // Path compression
-            while parent[x] != x {
-                let next = parent[x];
-                parent[x] = root;
-                x = next;
-            }
-            root
-        };
-
-        let union = |parent: &mut [usize], x: usize, y: usize| {
-            let px = find_iterative(parent, x);
-            let py = find_iterative(parent, y);
-            if px != py {
-                parent[px] = py;
-            }
-        };
-
-        for constraint in &system.constraints {
-            if let Some(comp2) = constraint.component2() {
-                union(&mut parent, constraint.component1(), comp2);
-            }
-        }
-
-        // Count connected groups
-        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
-        for i in 0..system.num_components {
-            let root = find_iterative(&mut parent, i);
-            groups.entry(root).or_default().push(i);
-        }
-
-        if groups.len() > 1 {
-            let isolated: Vec<usize> = groups
-                .values()
-                .filter(|g| g.len() == 1)
-                .flat_map(|g| g.iter().copied())
+        // Components nothing refers to.
+        if !system.constraints.is_empty() {
+            let isolated: Vec<usize> = (0..system.num_components)
+                .filter(|&body| !referenced[body])
                 .collect();
-
             if !isolated.is_empty() {
                 self.issues.push(DiagnosticIssue {
                     issue_type: DiagnosticType::IncompleteChain,
                     severity: DiagnosticSeverity::Warning,
                     constraint_ids: vec![],
-                    component_ids: isolated.clone(),
                     message: format!(
                         "{} component(s) are not connected to the assembly: {:?}",
                         isolated.len(),
                         isolated
                     ),
+                    component_ids: isolated,
                     recommendations: vec![DiagnosticRecommendation {
                         description: "Add mates to connect isolated components to the assembly"
                             .to_string(),
@@ -481,28 +315,6 @@ impl SolverDiagnostics {
                 });
             }
         }
-    }
-
-    /// Check if two constraints are conflicting.
-    fn are_conflicting(&self, c1: &Constraint, c2: &Constraint) -> bool {
-        // Simple check: same component with different fixed positions
-        use crate::rigid3d::ConstraintKind::Fixed;
-        if let (
-            Fixed {
-                body: body1,
-                position: position1,
-                ..
-            },
-            Fixed {
-                body: body2,
-                position: position2,
-                ..
-            },
-        ) = (c1.kind, c2.kind)
-        {
-            return body1 == body2 && (position1 - position2).length() > 0.001;
-        }
-        false
     }
 
     /// Check if system has any errors.
@@ -555,7 +367,7 @@ impl SolverDiagnostics {
         let mut report = String::new();
 
         report.push_str(&format!(
-            "Diagnostic Summary:\n  Components: {}\n  Constraints: {}\n  DOF: {} / {} removed\n",
+            "Diagnostic Summary:\n  Components: {}\n  Constraints: {}\n  DOF: {} remaining, {} removed\n",
             self.stats.total_components,
             self.stats.total_constraints,
             self.stats.dof_remaining,
@@ -596,62 +408,145 @@ impl DiagnosticIssue {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::rigid3d::Point3;
     use crate::rigid3d::{Constraint, ConstraintSystem};
+    use glam::DQuat;
+
+    fn analyze(system: &ConstraintSystem) -> SolverDiagnostics {
+        let mut diag = SolverDiagnostics::new();
+        diag.analyze(system);
+        diag
+    }
+
+    fn ground(system: &mut ConstraintSystem, id: usize, body: usize) {
+        system.add_constraint(Constraint::fixed_with_orientation(
+            id,
+            body,
+            Point3::ZERO,
+            DQuat::IDENTITY,
+        ));
+    }
 
     #[test]
-    fn test_detect_over_constrained() {
+    fn two_pins_that_disagree_are_a_conflict() {
         let mut system = ConstraintSystem::with_components(1);
         system.add_constraint(Constraint::fixed(0, 0, Point3::ZERO));
         system.add_constraint(Constraint::fixed(1, 0, Point3::new(1.0, 0.0, 0.0)));
+        let diag = analyze(&system);
 
-        let mut diag = SolverDiagnostics::new();
-        diag.analyze(&system);
-
-        assert!(diag.has_warnings() || diag.has_errors());
+        assert!(diag.has_errors());
+        let conflicts = diag.issues_by_type(DiagnosticType::Conflict);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].severity, DiagnosticSeverity::Error);
+        assert!(!conflicts[0].constraint_ids.is_empty());
+        assert_eq!(conflicts[0].component_ids, vec![0]);
+        assert_eq!(
+            conflicts[0].recommendations[0].affected_constraints,
+            conflicts[0].constraint_ids
+        );
+        assert_eq!(diag.errors().len(), 1);
     }
 
     #[test]
-    fn test_detect_conflict() {
+    fn two_pins_that_agree_are_redundant_not_conflicting() {
         let mut system = ConstraintSystem::with_components(1);
-        system.add_constraint(Constraint::fixed(0, 0, Point3::ZERO));
-        system.add_constraint(Constraint::fixed(1, 0, Point3::new(1.0, 0.0, 0.0)));
+        system.add_constraint(Constraint::fixed(0, 0, Point3::new(1.0, 2.0, 3.0)));
+        system.add_constraint(Constraint::fixed(1, 0, Point3::new(1.0, 2.0, 3.0)));
+        let diag = analyze(&system);
 
-        let mut diag = SolverDiagnostics::new();
-        diag.analyze(&system);
-
-        assert!(diag
-            .issues
-            .iter()
-            .any(|i| i.issue_type == DiagnosticType::Conflict));
-    }
-
-    #[test]
-    fn test_detect_under_constrained() {
-        let system = ConstraintSystem::with_components(2);
-
-        let mut diag = SolverDiagnostics::new();
-        diag.analyze(&system);
-
-        // Empty system shouldn't trigger under-constrained warning
-        assert!(!diag
-            .issues
-            .iter()
-            .any(|i| i.issue_type == DiagnosticType::UnderConstrained));
-    }
-
-    #[test]
-    fn test_no_issues() {
-        let mut system = ConstraintSystem::with_components(1);
-        system.add_constraint(Constraint::fixed(0, 0, Point3::ZERO));
-
-        let mut diag = SolverDiagnostics::new();
-        diag.analyze(&system);
-
-        // Should have no errors for fully constrained single component
         assert!(!diag.has_errors());
+        let redundant = diag.issues_by_type(DiagnosticType::Redundant);
+        assert_eq!(redundant.len(), 1, "{:?}", diag.issues);
+        assert_eq!(redundant[0].constraint_ids, vec![0, 1]);
+        assert_eq!(redundant[0].severity, DiagnosticSeverity::Warning);
+        // Only three freedoms are gone, however many times they are pinned.
+        assert_eq!(diag.stats.dof_removed, 3);
+        assert_eq!(diag.stats.dof_remaining, 3);
+    }
+
+    #[test]
+    fn an_assembly_without_constraints_reports_nothing() {
+        let diag = analyze(&ConstraintSystem::with_components(2));
+        assert!(diag.issues.is_empty());
+        assert_eq!(diag.stats.dof_remaining, 12);
+        assert!(diag.summary().contains("No issues found"));
+    }
+
+    #[test]
+    fn remaining_freedoms_are_a_warning_naming_what_can_move() {
+        let mut system = ConstraintSystem::with_components(2);
+        ground(&mut system, 0, 0);
+        system.add_constraint(Constraint::coincident(
+            1,
+            0,
+            Point3::new(1.0, 0.0, 0.0),
+            1,
+            Point3::ZERO,
+        ));
+        let diag = analyze(&system);
+
+        assert!(!diag.has_errors());
+        let under = diag.issues_by_type(DiagnosticType::UnderConstrained);
+        assert_eq!(under.len(), 1);
+        assert_eq!(under[0].component_ids, vec![1], "the ground cannot move");
+        assert!(under[0].message.contains("3 DOF"));
+        // A ground exists, so grounding one is not suggested.
+        assert_eq!(under[0].recommendations.len(), 1);
+        assert!(diag.has_warnings());
+        assert!(!diag.has_info());
+    }
+
+    #[test]
+    fn a_fully_determined_assembly_has_no_issues() {
+        let mut system = ConstraintSystem::with_components(2);
+        ground(&mut system, 0, 0);
+        system.add_constraint(Constraint::lock(
+            1,
+            0,
+            1,
+            Point3::new(1.0, 2.0, 3.0),
+            DQuat::from_rotation_z(0.5),
+        ));
+        let diag = analyze(&system);
+        assert!(diag.issues.is_empty(), "{:?}", diag.issues);
+        assert_eq!(diag.stats.dof_remaining, 0);
+        assert_eq!(diag.stats.dof_removed, 12);
+    }
+
+    /// A closed loop of mates is an ordinary assembly: the old analyzer
+    /// called it a cyclic dependency.
+    #[test]
+    fn a_closed_loop_is_not_an_issue() {
+        let mut system = ConstraintSystem::with_components(3);
+        ground(&mut system, 0, 0);
+        let offset = Point3::new(1.0, 0.0, 0.0);
+        system.add_constraint(Constraint::lock(1, 0, 1, offset, DQuat::IDENTITY));
+        system.add_constraint(Constraint::lock(2, 1, 2, offset, DQuat::IDENTITY));
+        // Closing the loop with a distance that already holds.
+        system.add_constraint(Constraint::distance(
+            3,
+            2,
+            Point3::ZERO,
+            0,
+            Point3::ZERO,
+            2.0,
+        ));
+        let diag = analyze(&system);
+        assert!(diag
+            .issues_by_type(DiagnosticType::CyclicDependency)
+            .is_empty());
+        assert!(!diag.has_errors());
+        // The closing distance adds nothing, and that is what is reported.
+        let redundant = diag.issues_by_type(DiagnosticType::Redundant);
+        assert_eq!(redundant.len(), 1, "{:?}", diag.issues);
+        assert!(redundant[0].constraint_ids.contains(&3));
+        assert_eq!(
+            redundant[0].recommendations[0].affected_constraints,
+            vec![3]
+        );
     }
 
     #[test]
@@ -665,72 +560,36 @@ mod tests {
             1,
             Point3::new(1.0, 0.0, 0.0),
         ));
-
-        let mut diag = SolverDiagnostics::new();
-        diag.analyze(&system);
+        let diag = analyze(&system);
 
         assert_eq!(diag.stats.total_components, 3);
         assert_eq!(diag.stats.total_constraints, 2);
+        assert_eq!(diag.stats.total_dof, 18);
+        assert_eq!(diag.stats.dof_removed, 6);
+        assert_eq!(diag.stats.dof_remaining, 12);
         assert_eq!(diag.stats.fixed_components, 1);
+        assert_eq!(diag.stats.grounded_components, 0);
     }
 
     #[test]
-    fn test_incomplete_chain_detection() {
+    fn components_nothing_refers_to_are_reported() {
         let mut system = ConstraintSystem::with_components(3);
         system.add_constraint(Constraint::fixed(0, 0, Point3::ZERO));
-        // Component 2 is not connected to the rest
+        let diag = analyze(&system);
 
-        let mut diag = SolverDiagnostics::new();
-        diag.analyze(&system);
-
-        // Should detect incomplete chain (component 2 is isolated)
-        let incomplete_issues = diag.issues_by_type(DiagnosticType::IncompleteChain);
-        assert!(!incomplete_issues.is_empty() || diag.stats.dof_remaining > 0);
-    }
-
-    #[test]
-    fn test_diagnostic_severity() {
-        let mut system = ConstraintSystem::with_components(1);
-        system.add_constraint(Constraint::fixed(0, 0, Point3::ZERO));
-        system.add_constraint(Constraint::fixed(1, 0, Point3::new(1.0, 0.0, 0.0)));
-
-        let mut diag = SolverDiagnostics::new();
-        diag.analyze(&system);
-
-        // Check that we can filter by severity
-        let errors = diag.errors();
-        let warnings = diag.warnings();
-
-        assert!(!errors.is_empty() || !warnings.is_empty());
+        let isolated = diag.issues_by_type(DiagnosticType::IncompleteChain);
+        assert_eq!(isolated.len(), 1);
+        assert_eq!(isolated[0].component_ids, vec![1, 2]);
     }
 
     #[test]
     fn test_diagnostic_summary() {
         let mut system = ConstraintSystem::with_components(2);
         system.add_constraint(Constraint::fixed(0, 0, Point3::ZERO));
-
-        let mut diag = SolverDiagnostics::new();
-        diag.analyze(&system);
-
-        let summary = diag.summary();
+        let summary = analyze(&system).summary();
         assert!(summary.contains("Components: 2"));
         assert!(summary.contains("Constraints: 1"));
-    }
-
-    #[test]
-    fn test_recommendations() {
-        let mut system = ConstraintSystem::with_components(1);
-        system.add_constraint(Constraint::fixed(0, 0, Point3::ZERO));
-        system.add_constraint(Constraint::fixed(1, 0, Point3::new(1.0, 0.0, 0.0)));
-
-        let mut diag = SolverDiagnostics::new();
-        diag.analyze(&system);
-
-        // Check that issues have recommendations
-        for issue in &diag.issues {
-            if issue.issue_type == DiagnosticType::Conflict {
-                assert!(!issue.recommendations.is_empty());
-            }
-        }
+        assert!(summary.contains("9 remaining, 3 removed"));
+        assert!(summary.contains("[WARNING] Under-Constrained"));
     }
 }

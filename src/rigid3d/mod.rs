@@ -28,10 +28,17 @@ mod solver;
 
 pub use constraint::{ComponentId, Constraint, ConstraintKind, ConstraintSystem, ConstraintType};
 pub use diagnosis::{
-    diagnose as diagnose_assembly, AssemblyDiagnosis, CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL,
+    diagnose as diagnose_assembly, mobility as assembly_mobility, AssemblyDiagnosis, CONSIST_TOL,
+    PARTIAL_TOL, RANK_REL_TOL,
 };
-pub use diagnostics::{DiagnosticIssue, DiagnosticType, SolverDiagnostics};
-pub use dof::{DOFAnalyzer, DOFResult, DegreeOfFreedom};
+#[allow(deprecated)]
+pub use diagnostics::SolverDiagnostics;
+pub use diagnostics::{
+    DiagnosticIssue, DiagnosticRecommendation, DiagnosticSeverity, DiagnosticStats, DiagnosticType,
+};
+#[allow(deprecated)]
+pub use dof::DOFAnalyzer;
+pub use dof::{DOFResult, DegreeOfFreedom};
 #[allow(deprecated)]
 pub use solver::SolveOptions;
 pub use solver::{ConstraintSolver, PoseSolveOptions, PoseSolveResult};

@@ -1,26 +1,33 @@
-//! Degree of Freedom analysis for assemblies.
+//! Degree of freedom analysis for assemblies — the former count-based
+//! analyzer, kept as a wrapper over the rank-based account.
+//!
+//! New code reads the degrees of freedom from
+//! [`diagnose_assembly`][crate::rigid3d::diagnose_assembly] and the
+//! coordinates that can still move from
+//! [`assembly_mobility`][crate::rigid3d::assembly_mobility].
 
-use crate::rigid3d::ConstraintSystem;
+use crate::rigid3d::diagnosis::{diagnose, mobility};
+use crate::rigid3d::{ConstraintSolver, ConstraintSystem, PoseSolveOptions, PoseSolveResult};
 
 /// Degree of freedom type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DegreeOfFreedom {
-    /// Translation along X
+    /// Translation along world X
     TranslateX,
-    /// Translation along Y
+    /// Translation along world Y
     TranslateY,
-    /// Translation along Z
+    /// Translation along world Z
     TranslateZ,
-    /// Rotation about X
+    /// Rotation about the body's own x axis
     RotateX,
-    /// Rotation about Y
+    /// Rotation about the body's own y axis
     RotateY,
-    /// Rotation about Z
+    /// Rotation about the body's own z axis
     RotateZ,
 }
 
 impl DegreeOfFreedom {
-    /// Get all 6 DOFs.
+    /// Get all 6 DOFs, in the order of a body's six coordinates.
     pub fn all() -> [Self; 6] {
         [
             Self::TranslateX,
@@ -36,26 +43,52 @@ impl DegreeOfFreedom {
 /// Result of DOF analysis.
 #[derive(Debug, Clone)]
 pub struct DOFResult {
-    /// Total DOF in the system
+    /// Degrees of freedom of the assembly: six per component minus the
+    /// rank of the constraints (the `dof` of the rank diagnosis).
     pub total_dof: usize,
-    /// DOF per component
+    /// Per component, how many of its six coordinates can still move (the
+    /// length of its entry in `free_dofs`). This counts coordinates, not
+    /// independent motions: a body left free to slide along a diagonal has
+    /// two movable translations and one freedom.
     pub component_dof: Vec<usize>,
-    /// Is the system fully constrained
+    /// No freedom is left.
     pub is_fully_constrained: bool,
-    /// Is the system over-constrained
+    /// Some constraint is redundant or conflicts with the others.
     pub is_over_constrained: bool,
-    /// Free DOFs by component
+    /// Per component, the coordinates that can still move.
     pub free_dofs: Vec<Vec<DegreeOfFreedom>>,
 }
 
-/// DOF analyzer (count-based; see [`crate::rigid3d::diagnose_assembly`] for
-/// the rank-based account).
+/// DOF analyzer.
+///
+/// This used to subtract a fixed number of freedoms per constraint, which
+/// is wrong as soon as two constraints overlap. It now solves the assembly
+/// and reads the answer off the rank diagnosis, so it agrees with
+/// [`diagnose_assembly`][crate::rigid3d::diagnose_assembly]; it is kept so
+/// that existing callers keep working.
+#[deprecated(
+    since = "0.2.0",
+    note = "use `diagnose_assembly` for the degrees of freedom and `assembly_mobility` for the coordinates that can move"
+)]
 #[derive(Debug, Clone)]
 pub struct DOFAnalyzer {
     // Keeps the type constructible only through `new` / `default`.
     _private: (),
 }
 
+/// Solve an assembly tightly from its seed pose, for analysis. Rank is
+/// read at a solution when there is one: redundancy is only meaningful
+/// there. A cluster that cannot be solved is analyzed at the seed pose,
+/// which is where a failed solve leaves it.
+pub(crate) fn solve_for_analysis(system: &ConstraintSystem) -> PoseSolveResult {
+    ConstraintSolver::with_options(PoseSolveOptions {
+        tolerance: 1.0e-10,
+        ..PoseSolveOptions::default()
+    })
+    .solve(system)
+}
+
+#[allow(deprecated)]
 impl DOFAnalyzer {
     /// Create a new analyzer.
     pub fn new() -> Self {
@@ -63,86 +96,51 @@ impl DOFAnalyzer {
     }
 
     /// Analyze DOF of a constraint system.
+    ///
+    /// The assembly is solved from its seed pose (the one
+    /// [`ConstraintSolver::solve`] starts from) and analyzed where that
+    /// leaves it.
     pub fn analyze(&self, system: &ConstraintSystem) -> DOFResult {
-        let num_components = system.num_components;
-        let max_dof = num_components * 6;
-        let total_removed = system.total_dof_removed();
-
-        // Simple DOF calculation (ignores coupling)
-        let remaining = max_dof.saturating_sub(total_removed);
-
-        // Calculate DOF per component
-        let mut component_dof = vec![6; num_components];
-        let mut free_dofs: Vec<Vec<DegreeOfFreedom>> = (0..num_components)
-            .map(|_| DegreeOfFreedom::all().to_vec())
-            .collect();
-
-        for constraint in &system.constraints {
-            let dof_removed = constraint.dof_removed();
-
-            // Remove DOFs from first component
-            let comp1 = constraint.component1();
-            for _ in 0..dof_removed.min(component_dof[comp1]) {
-                if !free_dofs[comp1].is_empty() {
-                    free_dofs[comp1].pop();
-                }
-            }
-            component_dof[comp1] = free_dofs[comp1].len();
-
-            // For two-component constraints, also affect second component
-            if let Some(comp2) = constraint.component2() {
-                // The second component loses DOFs as it's constrained relative to first
-                let remaining_dof = constraint.constraint_type().dof_for_second();
-                component_dof[comp2] = component_dof[comp2].min(remaining_dof);
-                free_dofs[comp2].truncate(component_dof[comp2]);
-            }
-        }
-
-        let is_fully_constrained = remaining == 0;
-        let is_over_constrained = total_removed > max_dof;
+        let pose = solve_for_analysis(system);
+        let diagnosis = diagnose(system, &pose.positions, &pose.rotations);
+        let free_dofs: Vec<Vec<DegreeOfFreedom>> =
+            mobility(system, &pose.positions, &pose.rotations)
+                .iter()
+                .map(|movable| {
+                    DegreeOfFreedom::all()
+                        .into_iter()
+                        .zip(movable)
+                        .filter(|(_, &can_move)| can_move)
+                        .map(|(dof, _)| dof)
+                        .collect()
+                })
+                .collect();
 
         DOFResult {
-            total_dof: remaining,
-            component_dof,
-            is_fully_constrained,
-            is_over_constrained,
+            total_dof: diagnosis.dof.max(0) as usize,
+            component_dof: free_dofs.iter().map(Vec::len).collect(),
+            is_fully_constrained: diagnosis.dof == 0,
+            is_over_constrained: !diagnosis.redundant.is_empty()
+                || !diagnosis.conflicting.is_empty(),
             free_dofs,
         }
     }
 }
 
+#[allow(deprecated)]
 impl Default for DOFAnalyzer {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Extension trait for ConstraintType to get DOF info.
-trait ConstraintTypeExt {
-    fn dof_for_second(&self) -> usize;
-}
-
-impl ConstraintTypeExt for crate::rigid3d::ConstraintType {
-    fn dof_for_second(&self) -> usize {
-        match self {
-            Self::Fixed => 0,
-            Self::Coincident => 3, // Second component still has 3 rotational DOFs
-            Self::Distance => 5,   // Can rotate around the distance axis
-            Self::Angle => 5,
-            Self::Parallel => 4,
-            Self::Perpendicular => 5,
-            Self::Concentric => 2, // Second component: slide along + spin about the axis
-            Self::PointOnPlane => 5, // One translational DOF removed
-            Self::Lock => 0,       // Relative pose fully fixed
-        }
-    }
-}
-
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::rigid3d::Point3;
     use crate::rigid3d::{Constraint, ConstraintSystem};
+    use glam::DQuat;
 
     #[test]
     fn test_dof_all() {
@@ -153,23 +151,31 @@ mod tests {
     #[test]
     fn test_dof_unconstrained() {
         let system = ConstraintSystem::with_components(1);
-        let analyzer = DOFAnalyzer::new();
-        let result = analyzer.analyze(&system);
+        let result = DOFAnalyzer::new().analyze(&system);
 
         assert_eq!(result.total_dof, 6);
         assert!(!result.is_fully_constrained);
+        assert!(!result.is_over_constrained);
+        assert_eq!(result.component_dof, vec![6]);
+        assert_eq!(result.free_dofs[0], DegreeOfFreedom::all().to_vec());
     }
 
     #[test]
     fn test_dof_fixed_translation_only() {
         let mut system = ConstraintSystem::with_components(1);
         system.add_constraint(Constraint::fixed(0, 0, Point3::ZERO));
-
-        let analyzer = DOFAnalyzer::new();
-        let result = analyzer.analyze(&system);
+        let result = DOFAnalyzer::new().analyze(&system);
 
         assert_eq!(result.total_dof, 3);
         assert!(!result.is_fully_constrained);
+        assert_eq!(
+            result.free_dofs[0],
+            vec![
+                DegreeOfFreedom::RotateX,
+                DegreeOfFreedom::RotateY,
+                DegreeOfFreedom::RotateZ
+            ]
+        );
     }
 
     #[test]
@@ -179,14 +185,13 @@ mod tests {
             0,
             0,
             Point3::ZERO,
-            glam::DQuat::IDENTITY,
+            DQuat::IDENTITY,
         ));
-
-        let analyzer = DOFAnalyzer::new();
-        let result = analyzer.analyze(&system);
+        let result = DOFAnalyzer::new().analyze(&system);
 
         assert_eq!(result.total_dof, 0);
         assert!(result.is_fully_constrained);
+        assert_eq!(result.component_dof, vec![0]);
     }
 
     #[test]
@@ -200,11 +205,45 @@ mod tests {
             1,
             Point3::new(1.0, 0.0, 0.0),
         ));
+        let result = DOFAnalyzer::new().analyze(&system);
 
-        let analyzer = DOFAnalyzer::new();
-        let result = analyzer.analyze(&system);
+        // The first body can only turn about its pinned origin. The second
+        // hangs on it by one point: it can turn about that point, and that
+        // moves its origin.
+        assert_eq!(result.total_dof, 12 - 3 - 3);
+        assert_eq!(result.component_dof[0], 3);
+        assert!(result.component_dof[1] > result.component_dof[0]);
+    }
 
-        // First component is fixed, second is constrained
-        assert!(result.component_dof[0] < result.component_dof[1] || result.component_dof[1] == 0);
+    /// The count the old analyzer got wrong: overlapping constraints. Three
+    /// coincident pairs pin a body with nine equations; six freedoms are
+    /// gone, not nine, and the surplus shows as over-constraint.
+    #[test]
+    fn overlapping_constraints_are_not_counted_twice() {
+        let mut system = ConstraintSystem::with_components(2);
+        system.add_constraint(Constraint::fixed_with_orientation(
+            0,
+            0,
+            Point3::ZERO,
+            DQuat::IDENTITY,
+        ));
+        for (id, local) in [
+            Point3::ZERO,
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 3.0, 1.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let world = local + Point3::new(1.0, 1.0, 1.0);
+            system.add_constraint(Constraint::coincident(id + 1, 0, world, 1, local));
+        }
+        assert_eq!(system.total_dof_removed(), 6 + 9, "what counting says");
+
+        let result = DOFAnalyzer::new().analyze(&system);
+        assert_eq!(result.total_dof, 0);
+        assert!(result.is_fully_constrained);
+        assert!(result.is_over_constrained);
+        assert_eq!(result.component_dof, vec![0, 0]);
     }
 }

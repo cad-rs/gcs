@@ -123,11 +123,14 @@ equations are independent.
 The 3D family discounts storage parameters that are not physical freedoms
 (a plane has four for three, a cylinder seven for five).
 
+For assemblies, `rigid3d::diagnose_assembly` is the same diagnosis over six
+columns per body, reported by mate id, and `rigid3d::assembly_mobility`
+tells which of each body's six coordinates can still move.
+
 ## Features
 
 - `serde` — derive `Serialize`/`Deserialize` on the constraint data model
-  (2D and 3D-geometric families; the rigid-pose types are not covered yet).
-  Off by default: the core depends only on `glam`.
+  of all three families. Off by default: the core depends only on `glam`.
 
 ## Constraint catalog (summary)
 

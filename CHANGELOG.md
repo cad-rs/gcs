@@ -81,6 +81,24 @@ minor version.
   families. It has a new field, `on_failure`, and `PoseSolveResult` a new
   field, `status` (code that builds either by naming every field needs
   them).
+- **`rigid3d::DOFAnalyzer` and `rigid3d::SolverDiagnostics` are deprecated,
+  and now give the answers of the rank diagnosis.** Both used to work from
+  the constraint list alone: the first subtracted a fixed number of
+  freedoms per constraint, the second matched patterns. They disagreed
+  with `diagnose_assembly` whenever constraints overlapped. Each now solves
+  the assembly from its seed pose and reads the result there, so their
+  results change:
+  - `DOFResult::total_dof` is the rank-based count; `free_dofs` lists the
+    coordinates of each body that can actually move and `component_dof` is
+    how many; `is_over_constrained` means that a constraint is redundant or
+    conflicting, not that a sum exceeded six per body.
+  - `SolverDiagnostics` reports a conflict or a redundancy with the ids the
+    diagnosis names, one issue per dependency group, and remaining freedoms
+    with the components that can move. It no longer reports
+    `OverConstrained` or `CyclicDependency` (a closed loop of mates is not
+    a defect), and `DiagnosticStats::dof_removed` is a rank.
+  - Both cost a solve and a factorisation now, where they used to cost a
+    pass over the list.
 - **A `Parallel` mate is two equations and a `Concentric` mate four**, the
   number of freedoms each removes. They were three and six: the cross
   product of two directions has three components but only two of them
@@ -146,6 +164,11 @@ minor version.
   - Angles are measured as principal values (`[0, π]` between two lines or
     two planes, `[0, π/2]` between a line and a plane), because that is all
     the angle equations themselves distinguish.
+- `rigid3d::assembly_mobility`: which of each body's six coordinates can
+  still move at a pose.
+- `rigid3d::DiagnosticSeverity`, `DiagnosticRecommendation` and
+  `DiagnosticStats` are exported. They were the types of public fields but
+  could not be named from outside the crate.
 - `serde` support for the rigid-pose model: `rigid3d::Constraint`,
   `ConstraintKind`, `ConstraintType` and `ConstraintSystem`. They are also
   `PartialEq` now, and `Constraint` is `Copy`.

@@ -35,17 +35,19 @@ Phase P0 (baseline fixes) is done; see the changelog.
 
 ## 2. Diagnostics and degrees of freedom
 
-- **Unify the DOF accounts in the rigid-pose family.** `Sketch::dof` and
-  `SpaceSketch::dof` now report the rank-based count that `diagnose` does
-  (the count-based number survives as `structural_dof_estimate`). `rigid3d`
-  still carries three analyzers side by side: the rank-based
-  `diagnose_assembly` and the older count-based `DOFAnalyzer` and
-  pattern-based `SolverDiagnostics`.
+- **Remove the deprecated assembly analyzers.** Every family reports one
+  rank-based DOF account. `rigid3d::DOFAnalyzer` and
+  `rigid3d::SolverDiagnostics` used to count and pattern-match; they now
+  wrap `diagnose_assembly` and `assembly_mobility`, are deprecated, and can
+  go in the release after 0.2.
 - **Diagnosis per entity.** `diagnose()` is public and reports
   redundant / conflicting / partially-redundant constraints,
-  `dependency_groups` and (2D) per-parameter mobility. What a UI needs on
-  top: a status per entity (well / under / over-defined) and a geometric
-  description of the remaining freedom (translate along, rotate about).
+  `dependency_groups` and per-parameter mobility (2D: `Sketch::mobility`;
+  assemblies: `assembly_mobility`, per body coordinate; not yet for
+  `SpaceSketch`). What a UI needs on top: a status per entity (well /
+  under / over-defined), the number of independent motions a body has
+  rather than the coordinates they touch, and a geometric description of
+  the remaining freedom (translate along, rotate about).
 - **Conflict localization.** Dependency groups name the constraints that
   take part in a dependency; a minimal conflicting set and a "remove this
   one" suggestion are not computed yet.

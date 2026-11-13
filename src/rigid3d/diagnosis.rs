@@ -93,6 +93,26 @@ pub fn diagnose(
     }
 }
 
+/// Which of each body's six coordinates can still move, at the given pose.
+///
+/// Entry `[body][k]` is `true` when the constraints, linearized at the
+/// pose, leave some motion that changes coordinate `k` of that body:
+/// `0..3` are the translations along world X, Y and Z, `3..6` the rotations
+/// about the body's own x, y and z axes. A body that no constraint refers
+/// to can move in all six; a grounded one in none.
+///
+/// This names the coordinates that take part in a remaining motion. It
+/// does not count independent motions: a body left free to slide along a
+/// diagonal has two movable translations and one degree of freedom (the
+/// count is the `dof` of [`diagnose`]). Like the diagnosis, the answer
+/// depends on the pose and is meant to be read at a solved one.
+pub fn mobility(system: &ConstraintSystem, positions: &[Point3], rots: &[DQuat]) -> Vec<[bool; 6]> {
+    let params = pack(positions, rots);
+    let fixed = vec![false; system.num_components * COLUMNS_PER_BODY];
+    let movable = crate::mobility::mobility_of(&RigidEquations::new(system), &params, &fixed);
+    movable.as_chunks::<COLUMNS_PER_BODY>().0.to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
