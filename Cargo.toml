@@ -1,0 +1,42 @@
+[package]
+name = "rcad-gcs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Standalone geometric constraint solver (GCS): 2D sketch, 3D geometric, and 3D rigid-pose constraint systems over one Newton-Raphson least-squares core"
+readme = "README.md"
+repository = "https://github.com/cad-rs/gcs"
+homepage = "https://github.com/cad-rs/gcs"
+documentation = "https://docs.rs/rcad-gcs"
+keywords = ["geometry", "constraint-solver", "cad", "sketch", "newton-raphson"]
+categories = ["mathematics", "science"]
+# Library crate: ship the sources, the test corpus and the license texts.
+include = [
+    "src/**/*",
+    "tests/**/*",
+    "README.md",
+    "ROADMAP.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+[features]
+default = []
+# Serializable constraint/sketch data types (off by default: the solver core
+# stays dependency-free beyond glam).
+serde = ["dep:serde"]
+
+[dependencies]
+glam = { version = "0.29", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[dev-dependencies]
+approx = "0.5"
+serde_json = "1.0"
+
+# This crate is the workspace root: the empty table keeps `cargo` from
+# walking up into a parent workspace when it is vendored or checked out
+# inside another tree.
+[workspace]

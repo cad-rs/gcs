@@ -1,0 +1,1606 @@
+{
+  "cases": [
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k1-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k2-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k3-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k3-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k3-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k4-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k4-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k4-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k5-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k5-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k5-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k7-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k7-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k7-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k9-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k9-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k9-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k10-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k10-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k10-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k11-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k11-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k11-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k12-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k12-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k12-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k13-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k13-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k13-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k14-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k14-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k14-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k15-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k15-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k15-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k16-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k16-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k16-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k17-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k17-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k17-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k18-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k18-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k18-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k19-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k19-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k19-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k20-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k20-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k20-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k21-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k21-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k21-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k22-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k22-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k22-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k23-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k23-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k23-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k24-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k24-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k24-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k25-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k25-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k25-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k26-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k26-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k26-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k27-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k27-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k27-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k28-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k28-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k28-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k29-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k29-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k29-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k30-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k30-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k30-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k31-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k31-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k31-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k32-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k32-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k32-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k33-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k33-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k33-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k34-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k34-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k34-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k35-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k35-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k35-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k36-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k36-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k36-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k37-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k37-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k37-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k38-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k38-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k38-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k39-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k39-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k39-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k40-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k40-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "rect",
+      "id": "rect-k40-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m1.5-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m1.5-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m1.5-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m1.5-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m1.5-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m1.5-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m2-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m2-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m2-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m2-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m2-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m2-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m3-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m3-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m3-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m3-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m3-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l8-m3-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m1.5-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m1.5-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m1.5-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m1.5-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m1.5-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m1.5-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m2-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m2-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m2-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m2-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m2-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m2-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m3-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m3-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m3-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m3-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m3-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l10-m3-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m1.5-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m1.5-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m1.5-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m1.5-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m1.5-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m1.5-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m2-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m2-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m2-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m2-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m2-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m2-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m3-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m3-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m3-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m3-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m3-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l12-m3-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m1.5-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m1.5-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m1.5-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m1.5-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m1.5-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m1.5-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m2-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m2-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m2-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m2-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m2-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m2-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m3-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m3-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m3-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m3-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m3-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l16-m3-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m1.5-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m1.5-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m1.5-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m1.5-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m1.5-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m1.5-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m2-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m2-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m2-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m2-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m2-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m2-h8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m3-h6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m3-h6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m3-h6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m3-h8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m3-h8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "margin",
+      "id": "margin-l20-m3-h8-d2"
+    },
+    {
+      "expect": "singular",
+      "family": "tangent",
+      "id": "tangent-r1-l2-j0x0"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r1-l2-j10x-5"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r1-l2-j-10x5"
+    },
+    {
+      "expect": "singular",
+      "family": "tangent",
+      "id": "tangent-r1-l3-j0x0"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r1-l3-j10x-5"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r1-l3-j-10x5"
+    },
+    {
+      "expect": "singular",
+      "family": "tangent",
+      "id": "tangent-r2-l2-j0x0"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r2-l2-j10x-5"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r2-l2-j-10x5"
+    },
+    {
+      "expect": "singular",
+      "family": "tangent",
+      "id": "tangent-r2-l3-j0x0"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r2-l3-j10x-5"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r2-l3-j-10x5"
+    },
+    {
+      "expect": "singular",
+      "family": "tangent",
+      "id": "tangent-r3-l2-j0x0"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r3-l2-j10x-5"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r3-l2-j-10x5"
+    },
+    {
+      "expect": "singular",
+      "family": "tangent",
+      "id": "tangent-r3-l3-j0x0"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r3-l3-j10x-5"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r3-l3-j-10x5"
+    },
+    {
+      "expect": "singular",
+      "family": "tangent",
+      "id": "tangent-r4-l2-j0x0"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r4-l2-j10x-5"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r4-l2-j-10x5"
+    },
+    {
+      "expect": "singular",
+      "family": "tangent",
+      "id": "tangent-r4-l3-j0x0"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r4-l3-j10x-5"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r4-l3-j-10x5"
+    },
+    {
+      "expect": "singular",
+      "family": "tangent",
+      "id": "tangent-r5-l2-j0x0"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r5-l2-j10x-5"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r5-l2-j-10x5"
+    },
+    {
+      "expect": "singular",
+      "family": "tangent",
+      "id": "tangent-r5-l3-j0x0"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r5-l3-j10x-5"
+    },
+    {
+      "expect": "solve",
+      "family": "tangent",
+      "id": "tangent-r5-l3-j-10x5"
+    },
+    {
+      "expect": "solve",
+      "family": "symmetric",
+      "id": "symmetric-s6-o0"
+    },
+    {
+      "expect": "solve",
+      "family": "symmetric",
+      "id": "symmetric-s6-o2"
+    },
+    {
+      "expect": "solve",
+      "family": "symmetric",
+      "id": "symmetric-s6-o4"
+    },
+    {
+      "expect": "solve",
+      "family": "symmetric",
+      "id": "symmetric-s10-o0"
+    },
+    {
+      "expect": "solve",
+      "family": "symmetric",
+      "id": "symmetric-s10-o2"
+    },
+    {
+      "expect": "solve",
+      "family": "symmetric",
+      "id": "symmetric-s10-o4"
+    },
+    {
+      "expect": "solve",
+      "family": "symmetric",
+      "id": "symmetric-s14-o0"
+    },
+    {
+      "expect": "solve",
+      "family": "symmetric",
+      "id": "symmetric-s14-o2"
+    },
+    {
+      "expect": "solve",
+      "family": "symmetric",
+      "id": "symmetric-s14-o4"
+    },
+    {
+      "expect": "solve",
+      "family": "angle",
+      "id": "angle-15-3"
+    },
+    {
+      "expect": "solve",
+      "family": "angle",
+      "id": "angle-15-7"
+    },
+    {
+      "expect": "solve",
+      "family": "angle",
+      "id": "angle-45-3"
+    },
+    {
+      "expect": "solve",
+      "family": "angle",
+      "id": "angle-45-7"
+    },
+    {
+      "expect": "solve",
+      "family": "angle",
+      "id": "angle-90-3"
+    },
+    {
+      "expect": "solve",
+      "family": "angle",
+      "id": "angle-90-7"
+    },
+    {
+      "expect": "solve",
+      "family": "angle",
+      "id": "angle-135-3"
+    },
+    {
+      "expect": "solve",
+      "family": "angle",
+      "id": "angle-135-7"
+    },
+    {
+      "expect": "solve",
+      "family": "angle",
+      "id": "angle-200-3"
+    },
+    {
+      "expect": "solve",
+      "family": "angle",
+      "id": "angle-200-7"
+    },
+    {
+      "expect": "solve",
+      "family": "circle-chain",
+      "id": "circle-chain-k2"
+    },
+    {
+      "expect": "solve",
+      "family": "circle-chain",
+      "id": "circle-chain-k3"
+    },
+    {
+      "expect": "solve",
+      "family": "circle-chain",
+      "id": "circle-chain-k4"
+    },
+    {
+      "expect": "solve",
+      "family": "circle-chain",
+      "id": "circle-chain-k5"
+    },
+    {
+      "expect": "solve",
+      "family": "circle-chain",
+      "id": "circle-chain-k6"
+    },
+    {
+      "expect": "solve",
+      "family": "circle-chain",
+      "id": "circle-chain-k7"
+    },
+    {
+      "expect": "solve",
+      "family": "circle-chain",
+      "id": "circle-chain-k8"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l8-drop0"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l8-drop1"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l8-drop2"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l8-drop3"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l12-drop0"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l12-drop1"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l12-drop2"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l12-drop3"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l20-drop0"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l20-drop1"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l20-drop2"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-margin-l20-drop3"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-tangent-pointoncircle-r1"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-tangent-pointoncircle-r2"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-tangent-pointoncircle-r3"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-chain-n3"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-chain-n4"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-chain-n5"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-chain-n6"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-chain-n7"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-chain-n8"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-chain-n9"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-chain-n10"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-chain-n11"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-chain-n12"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-radius-vs-diameter-k1.2"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-radius-vs-diameter-k2"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-radius-vs-diameter-k5"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-fixed-0.5-0.5"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-fixed-1-1"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-fixed-3-0"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-fixed-0-2"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-distance-beyond-span-1-2"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-distance-beyond-span-1-5"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-distance-beyond-span-3-2"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-distance-beyond-span-3-5"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-margins-l8-6-6"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-margins-l8-5-7"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-margins-l8-7-8"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-margins-l8-9-4"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-margins-l12-7-8"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-margins-l12-9-4"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-parallel-perpendicular-0"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-parallel-perpendicular-1"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-parallel-perpendicular-2"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-duplicate-coincident-0"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-consistent-radius-diameter-0"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-distance-implied-0"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-duplicate-coincident-1"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-consistent-radius-diameter-1"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-distance-implied-1"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-duplicate-coincident-2"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-consistent-radius-diameter-2"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-distance-implied-2"
+    }
+  ],
+  "count": 320,
+  "generator": "rcad-gcs corpus v1 (fixed-seed, deterministic)"
+}

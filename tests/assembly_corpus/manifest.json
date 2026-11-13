@@ -1,0 +1,1671 @@
+{
+  "cases": [
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t0-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t0-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t0-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t0-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t0-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t0-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t1-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t1-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t1-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t1-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t1-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t1-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t2-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t2-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t2-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t2-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t2-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t2-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t3-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t3-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t3-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t3-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t3-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t3-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t4-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t4-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t4-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t4-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t4-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t4-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t5-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t5-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t5-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t5-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t5-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t5-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t6-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t6-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t6-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t6-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t6-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t6-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t7-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t7-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t7-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t7-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t7-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t7-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t8-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t8-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t8-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t8-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t8-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t8-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t9-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t9-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t9-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t9-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t9-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t9-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t10-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t10-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t10-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t10-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t10-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t10-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t11-r0-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t11-r0-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t11-r1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t11-r1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t11-r2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "pair",
+      "id": "pair-t11-r2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k1"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k2"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k3"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k4"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k5"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k6"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k7"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k8"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k9"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k10"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k11"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k12"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k13"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k14"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k15"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k16"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k17"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k18"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k19"
+    },
+    {
+      "expect": "solve",
+      "family": "chain",
+      "id": "chain-k20"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k1-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k1-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k1-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k1-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k1-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k2-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k2-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k2-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k2-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k2-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k3-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k3-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k3-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k3-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k3-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k4-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k4-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k4-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k4-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k4-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k5-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k5-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k5-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k5-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k5-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k6-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k6-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k6-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k6-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k6-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k7-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k7-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k7-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k7-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k7-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k8-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k8-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k8-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k8-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k8-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k9-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k9-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k9-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k9-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k9-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k10-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k10-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k10-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k10-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k10-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k11-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k11-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k11-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k11-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k11-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k12-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k12-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k12-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k12-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k12-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k13-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k13-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k13-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k13-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k13-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k14-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k14-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k14-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k14-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k14-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k15-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k15-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k15-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k15-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k15-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k16-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k16-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k16-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k16-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k16-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k17-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k17-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k17-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k17-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k17-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k18-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k18-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k18-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k18-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k18-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k19-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k19-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k19-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k19-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k19-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k20-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k20-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k20-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k20-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k20-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k21-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k21-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k21-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k21-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k21-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k22-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k22-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k22-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k22-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k22-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k23-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k23-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k23-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k23-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k23-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k24-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k24-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k24-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k24-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k24-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k25-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k25-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k25-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k25-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k25-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k26-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k26-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k26-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k26-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k26-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k27-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k27-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k27-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k27-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k27-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k28-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k28-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k28-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k28-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k28-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k29-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k29-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k29-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k29-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k29-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k30-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k30-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k30-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k30-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k30-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k31-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k31-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k31-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k31-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k31-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k32-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k32-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k32-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k32-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k32-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k33-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k33-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k33-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k33-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k33-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k34-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k34-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k34-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k34-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k34-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k35-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k35-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k35-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k35-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k35-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k36-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k36-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k36-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k36-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k36-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k37-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k37-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k37-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k37-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k37-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k38-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k38-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k38-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k38-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k38-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k39-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k39-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k39-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k39-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k39-d4"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k40-d0"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k40-d1"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k40-d2"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k40-d3"
+    },
+    {
+      "expect": "solve",
+      "family": "star",
+      "id": "star-k40-d4"
+    },
+    {
+      "expect": "under",
+      "family": "shaft",
+      "id": "shaft-axis0"
+    },
+    {
+      "expect": "under",
+      "family": "shaft",
+      "id": "shaft-axis1"
+    },
+    {
+      "expect": "under",
+      "family": "shaft",
+      "id": "shaft-axis2"
+    },
+    {
+      "expect": "under",
+      "family": "shaft",
+      "id": "shaft-axis3"
+    },
+    {
+      "expect": "under",
+      "family": "shaft",
+      "id": "shaft-axis4"
+    },
+    {
+      "expect": "under",
+      "family": "shaft",
+      "id": "shaft-axis5"
+    },
+    {
+      "expect": "under",
+      "family": "shaft",
+      "id": "shaft-axis6"
+    },
+    {
+      "expect": "under",
+      "family": "shaft",
+      "id": "shaft-axis7"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-partial-0"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-partial-1"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-partial-2"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-partial-3"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-partial-4"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-partial-5"
+    },
+    {
+      "expect": "under",
+      "family": "under",
+      "id": "under-partial-6"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-fixed-0"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-fixed-1"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-fixed-2"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-fixed-3"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-fixed-4"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-fixed-5"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-duplicate-distance-0"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-duplicate-distance-1"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-duplicate-distance-2"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-duplicate-distance-3"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-duplicate-angle-0"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-duplicate-angle-1"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-duplicate-angle-2"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-angle-vs-perpendicular-0"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-angle-vs-perpendicular-1"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-angle-vs-perpendicular-2"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-coincident-vs-distance-0"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-coincident-vs-distance-1"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-coincident-vs-distance-2"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-coincident-vs-distance-3"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-concentric-0"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-concentric-1"
+    },
+    {
+      "expect": "conflict",
+      "family": "conflict",
+      "id": "conflict-double-concentric-2"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-duplicate-fixed"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-angle90-perpendicular-0"
+    },
+    {
+      "expect": "redundant",
+      "family": "redundant",
+      "id": "redundant-angle90-perpendicular-1"
+    }
+  ],
+  "count": 333,
+  "generator": "rcad-gcs assembly corpus v1 (fixed-seed, deterministic)"
+}
