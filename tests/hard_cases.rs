@@ -186,3 +186,52 @@ fn report_needle_triangle() {
         }
     }
 }
+
+/// The needle triangle of `report_needle_triangle` at a tolerance tight
+/// enough to ask for its shape: it converges, and `C` lands as close to the
+/// exact point as the rounding of its coordinates allows (`C` is pinned to
+/// about `ε / (2√δ)` along the needle's height, a few parts in 1e5 of the
+/// height at `δ = 1e-12` and a few in 1e3 at `1e-14`). The step used to
+/// come from the regularised normal equations, whose `λ = 1e-10` swamped
+/// the direction off the line: 100 iterations, no convergence.
+#[test]
+fn a_needle_triangle_solves_at_a_tight_tolerance() {
+    use rcad_gcs::constraint::Constraint;
+    use rcad_gcs::entity::PointRef;
+    use rcad_gcs::Sketch;
+
+    for (delta, allowed) in [(1e-12, 1e-3), (1e-14, 5e-2)] {
+        let d: f64 = delta;
+        let x = 2.0 - d - 0.5 * d * d;
+        let y = (4.0 - x * x).sqrt();
+        for off in [1e-3, 0.1] {
+            let mut sk = Sketch::new();
+            let a = sk.add_point(0.0, 0.0);
+            let b = sk.add_point(1.0, 0.0);
+            sk.fix_entity(a);
+            sk.fix_entity(b);
+            let c = sk.add_point(x + off, y + off);
+            sk.add_constraint(Constraint::point_distance(
+                PointRef::Point(a),
+                PointRef::Point(c),
+                2.0,
+            ));
+            sk.add_constraint(Constraint::point_distance(
+                PointRef::Point(b),
+                PointRef::Point(c),
+                1.0 + d,
+            ));
+            let r = sk.solve_with(&SolveOptions {
+                tolerance: 1e-16,
+                ..Default::default()
+            });
+            assert!(r.converged, "δ {d:e} from {off:e}: {r:?}");
+            let p = sk.point_coords(PointRef::Point(c));
+            let error = ((p.y - y) / y).abs().max(((p.x - x) / y).abs());
+            assert!(
+                error <= allowed,
+                "δ {d:e} from {off:e}: C off by {error:e} of its height"
+            );
+        }
+    }
+}

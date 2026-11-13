@@ -59,7 +59,12 @@ pub struct PoseSolveOptions {
     pub tolerance: f64,
     /// Scale factor applied to each Gauss–Newton step.
     pub damping: f64,
-    /// Ridge added to the diagonal of `JᵀJ` for Levenberg–Marquardt-style stability.
+    /// Ridge added to the diagonal of `JᵀJ` for Levenberg–Marquardt-style
+    /// stability. Where the normal equations are ill-conditioned or
+    /// rank-deficient (smallest pivot below `1e-8` of the largest) the step
+    /// comes from a rank-truncated QR of the Jacobian instead, without the
+    /// ridge: in a direction the ridge would dominate, it set the step
+    /// rather than the geometry.
     pub lm_lambda: f64,
     /// What a cluster that does not converge leaves behind: the poses it
     /// started from (the default, as in the other families) or the last

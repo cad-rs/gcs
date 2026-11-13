@@ -266,6 +266,38 @@ The first version of this change factored with `LuFactors` as it then
 was, two to three times slower than the elimination: it made the assembly
 chains 65–101% slower and led to the previous section.
 
+### After ill-conditioned steps were taken by QR (P2.2)
+
+Same machine, all benchmarks, the previous commit (`40d6f9b`) and this
+change alternately, three rounds each. The fixtures are well conditioned:
+the QR path is never taken on them, and every step is solved as before
+(through `LuFactors`, bitwise what the elimination gives). 2D and 3D
+solves are within ±5% (`sketch/solve_chain/54` −5.6%, `space/solve_truss`
+60 / 240 / 780 +5.6% / −4.1% / +8.2%, the last from one round of 518 ms
+against 380–393 ms in the others); the assembly solves are within ±2%
+except the 5-body chain (+9%, 0.125 → 0.136 ms, one of three rounds level).
+The diagnosis does not take this path; its scatter (`assembly/diagnose_star/20`
++25% from one round of 11.5 ms, `sketch/diagnose_chain/792` −16%) is the
+machine.
+
+QR on every step was measured first, against the same commit:
+
+| Benchmark | normal equations | QR everywhere |
+|---|---:|---:|
+| `sketch/solve_field/360` (18 parameters per component) | 0.99 ms | +13% |
+| `sketch/solve_chain/54` | 0.24 ms | +56% |
+| `sketch/solve_chain/198` | 4.17 ms | +137% |
+| `sketch/solve_chain/792` | 216 ms | +157% |
+| `space/solve_truss/240` | 10.6 ms | +255% |
+| `space/solve_truss/780` | 391 ms | +320% |
+| `assembly/solve_chain/40` | 5.01 ms | +133% |
+
+A Householder QR of `J` is four to six times the arithmetic of forming
+`JᵀJ` over the non-zero entries and eliminating it, so it is kept for the
+steps that need it. How often that is, counted with temporary counters:
+75 of 18 317 steps in the 2D corpus, 16 of 37 781 in the assembly corpus,
+17 of 41 in the 3D corpus.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.

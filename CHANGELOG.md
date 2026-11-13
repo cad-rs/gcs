@@ -110,6 +110,28 @@ through them from a host's side.
   uses). The case is now right at every size from 1e-6 to 1e3 and at up
   to a billion sizes from the origin (`tests/scale.rs`); the corpora are
   unchanged.
+- **An ill-conditioned step is taken by QR, not by the normal equations.**
+  The Gauss–Newton step solves `(JᵀJ + λI)·h = −Jᵀf`, which squares the
+  condition number, and the fixed `λ = 1e-10` (`numerics::LAMBDA`,
+  `PoseSolveOptions::lm_lambda`) sets the step in any direction whose
+  squared singular value is near it. On a needle-thin triangle (`C` 2 from
+  `A` and `1 + δ` from `B`, `A` and `B` 1 apart) that direction is the one
+  off the line, and at a tight tolerance `δ = 1e-12` ran out of iterations
+  where Newton with an exact solve converges in a dozen. Now, when the
+  smallest pivot of the factored normal equations is below `1e-8` of the
+  largest (rank deficiency, or half the digits lost), the step is the
+  minimum-norm least-squares solution of a column-pivoted QR of `J`,
+  truncated at a rank where the remaining column norm falls to `1e-12`
+  of the largest (a complete orthogonal decomposition, as LAPACK's
+  `xGELSY`): nothing is squared, and no ridge enters. The needle now
+  converges at `δ = 1e-12` and `1e-14` to the rounding limit of its
+  geometry (`tests/hard_cases.rs`). The QR path is taken on 0.4% of the 2D
+  corpus's steps and 0.04% of the assembly corpus's; every other step is
+  bitwise what it was, the corpus metrics are unchanged, and the
+  benchmarks are level. (QR on every step was tried too: it is 4–6 times
+  the arithmetic, and made the solves 13% slower at 18 parameters and up
+  to 4 times at 780.) `λ` and `lm_lambda` therefore only regularise
+  well-conditioned steps.
 - `SolveStatus` has the new variant `ConvergedToPrecision`, between
   `Converged` and `MaxIterations`; a `match` over the statuses needs an arm
   for it. The same status is how a tolerance below what double precision

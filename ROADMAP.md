@@ -18,8 +18,10 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   free parameters of one connected component. A sparse Cholesky / QR with a
   fill-reducing ordering would lift the practical size ceiling (see
   `benches/BASELINE.md` for where it sits today). Going through the normal
-  equations also squares the condition number; a QR-based minimum-norm step
-  would not.
+  equations also squares the condition number; a step whose normal
+  equations are ill-conditioned is therefore taken by a dense QR of `J`
+  instead, which a sparse QR would make affordable for large components
+  too.
 - **Small geometry outside 2D solving.** A 2D component is solved at any
   size: every 2D equation is a length, and a component smaller than one
   unit is held to the tolerance in proportion to its size
@@ -57,8 +59,9 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   the fixed regularisation `λ = 1e-10` swamps the direction whose
   eigenvalue in `JᵀJ` is about `4δ` (with `λ = 1e-20` the solver converges
   at `1e-12`). (3) At `δ = 1e-14` the normal equations' squared condition
-  number shows as well: with `λ = 1e-20` one start still stalls. A step
-  from a QR factorisation of `J` (the plan's P2.2) addresses (2) and (3).
+  number shows as well: with `λ = 1e-20` one start still stalls. (2) and
+  (3) are fixed: an ill-conditioned step is now taken by a rank-truncated
+  QR of `J` (`a_needle_triangle_solves_at_a_tight_tolerance`).
   (1) is not a defect after all: at a tolerance of 1e-10 such a needle is
   numerically a tangency, satisfied to the tolerance, and near tangency a
   position is only determined to about the square root of the tolerance

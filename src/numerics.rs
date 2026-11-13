@@ -193,7 +193,11 @@ pub const RESIDUAL_TOL: f64 = 1e-10;
 pub const MAX_ITER: usize = 100;
 /// Step size for numerical Jacobian (central differences).
 pub const FD_H: f64 = 1e-7;
-/// Tikhonov regularisation coefficient.
+/// Tikhonov regularisation coefficient of the normal equations the step is
+/// solved from. Where those are ill-conditioned or rank-deficient (their
+/// smallest pivot below `1e-8` of the largest) the step is instead the
+/// minimum-norm solution of a rank-truncated QR of the Jacobian, and this
+/// coefficient does not enter it.
 pub const LAMBDA: f64 = 1e-10;
 /// Pivot threshold for Gaussian elimination.
 pub const PIVOT_TOL: f64 = 1e-14;
@@ -1006,6 +1010,191 @@ struct Chord {
     first: Option<Vec<f64>>,
 }
 
+/// Columns whose remaining norm falls to this fraction of the largest
+/// column norm or below end the rank of a [`min_norm_step`]: such a
+/// direction is too weakly determined to step along. (The Tikhonov term of
+/// the normal equations did the same job less sharply, by damping every
+/// direction whose squared singular value is near `λ`.)
+pub(crate) const STEP_RCOND: f64 = 1e-12;
+
+/// When the smallest pivot of the factored normal equations falls below
+/// this fraction of the largest, the Gauss–Newton step is taken from
+/// [`min_norm_step`] instead. The normal equations square the condition
+/// number, so at this ratio they have lost about half the digits; and in a
+/// direction whose pivot is near `λ` the regularisation, not the geometry,
+/// sets the step (rank deficiency, or a direction as weakly determined as
+/// the side of a needle-thin triangle).
+pub(crate) const QR_TRIGGER: f64 = 1e-8;
+
+/// The Gauss–Newton step `h` of `J·h ≈ −f`: from the regularised normal
+/// equations `(JᵀJ + λI)·h = −Jᵀf` while they are well conditioned (the
+/// fast path, bitwise what elimination gives), otherwise from a
+/// rank-truncated QR of `J` (see [`QR_TRIGGER`]). `rows` are the
+/// [`sparse_rows`] of `j`.
+fn gauss_newton_step(
+    j: &[Vec<f64>],
+    rows: &[Vec<(usize, f64)>],
+    f: &[f64],
+    n: usize,
+    lambda: f64,
+) -> Option<Vec<f64>> {
+    let (mut a, mut b) = normal_equations(j, f, n);
+    for (i, row) in a.iter_mut().enumerate() {
+        row[i] += lambda;
+    }
+    match LuFactors::factor(a) {
+        Some(factors) if factors.pivot_ratio() >= QR_TRIGGER => Some(factors.solve(&mut b)),
+        _ => min_norm_step(rows, f, n),
+    }
+}
+
+/// Apply the Householder reflector `I − 2·v·vᵀ / (vᵀv)` to `x`.
+fn reflect(x: &mut [f64], v: &[f64], v_norm2: f64) {
+    let beta = 2.0 * dot(x, v) / v_norm2;
+    for (xi, vi) in x.iter_mut().zip(v) {
+        *xi -= beta * vi;
+    }
+}
+
+/// The reflector that takes `x` to `(α, 0, …, 0)`: returns `(v, vᵀv, α)`,
+/// with the sign of `α` chosen against `x[0]` so that no cancellation
+/// occurs. `None` for a zero `x`.
+fn householder(x: &[f64]) -> Option<(Vec<f64>, f64, f64)> {
+    let sigma = norm(x);
+    if !gt(sigma, 0.0) {
+        return None;
+    }
+    let alpha = if x[0] > 0.0 { -sigma } else { sigma };
+    let mut v = x.to_vec();
+    v[0] -= alpha;
+    let v_norm2 = dot(&v, &v);
+    Some((v, v_norm2, alpha))
+}
+
+/// The minimum-norm least-squares solution of `J·h = −f`, by a complete
+/// orthogonal decomposition (as LAPACK's `xGELSY`): a column-pivoted
+/// Householder QR of `J` decides the rank — columns are taken while the
+/// remaining norm exceeds [`STEP_RCOND`] times the largest — and, when that
+/// rank is short of the column count, a second QR of the leading rows of
+/// `R` gives the shortest of the solutions. `J` enters as its `n` columns'
+/// worth of sparse rows; nothing is squared, so the step is as accurate as
+/// `κ(J)` allows rather than `κ(J)²`.
+///
+/// `None` when `J` has no column above the threshold. A `J` or `f` that is
+/// not finite gives a step of NaN, for the caller to report.
+pub(crate) fn min_norm_step(rows: &[Vec<(usize, f64)>], f: &[f64], n: usize) -> Option<Vec<f64>> {
+    let m = f.len();
+    if f.iter().any(|v| !v.is_finite()) || rows.iter().flatten().any(|(_, v)| !v.is_finite()) {
+        return Some(vec![f64::NAN; n]);
+    }
+    // The columns of J, so that the reflectors run over contiguous memory.
+    let mut cols = vec![vec![0.0_f64; m]; n];
+    for (i, row) in rows.iter().enumerate() {
+        for &(c, v) in row {
+            cols[c][i] += v;
+        }
+    }
+    let mut b: Vec<f64> = f.iter().map(|v| -v).collect();
+    let mut perm: Vec<usize> = (0..n).collect();
+    // Remaining column norms, downdated as rows are eliminated and taken
+    // afresh where the downdate has cancelled too far (as LAPACK does).
+    let mut norms: Vec<f64> = cols.iter().map(|c| norm(c)).collect();
+    let mut exact = norms.clone();
+    let largest = norms.iter().fold(0.0_f64, |a, &b| a.max(b));
+    if !gt(largest, 0.0) {
+        return None;
+    }
+    let mut rank = 0;
+    for k in 0..m.min(n) {
+        let p = (k..n)
+            .max_by(|&a, &c| norms[a].total_cmp(&norms[c]))
+            .expect("k < n");
+        cols.swap(k, p);
+        perm.swap(k, p);
+        norms.swap(k, p);
+        exact.swap(k, p);
+        let Some((v, v_norm2, alpha)) = householder(&cols[k][k..]) else {
+            break;
+        };
+        if !gt(alpha.abs(), STEP_RCOND * largest) {
+            break;
+        }
+        for col in cols[k + 1..].iter_mut() {
+            reflect(&mut col[k..], &v, v_norm2);
+        }
+        reflect(&mut b[k..], &v, v_norm2);
+        cols[k][k] = alpha;
+        for x in cols[k][k + 1..].iter_mut() {
+            *x = 0.0;
+        }
+        for j in k + 1..n {
+            if norms[j] > 0.0 {
+                let t = cols[j][k] / norms[j];
+                let shrink = (1.0 - t * t).max(0.0);
+                if shrink * (norms[j] / exact[j]).powi(2) <= f64::EPSILON.sqrt() {
+                    norms[j] = norm(&cols[j][k + 1..]);
+                    exact[j] = norms[j];
+                } else {
+                    norms[j] *= shrink.sqrt();
+                }
+            }
+        }
+        rank += 1;
+    }
+    if rank == 0 {
+        return None;
+    }
+    // R = [R11 R12] in the first `rank` rows: R[i][j] = cols[j][i], j ≥ i.
+    let c = &b[..rank];
+    let mut y = vec![0.0_f64; n];
+    if rank == n {
+        for i in (0..n).rev() {
+            let mut s = c[i];
+            for j in i + 1..n {
+                s -= cols[j][i] * y[j];
+            }
+            y[i] = s / cols[i][i];
+        }
+    } else {
+        // Rᵀ (n × rank) = Z·[T; 0]: the columns of Rᵀ are the rows of R.
+        let mut rt: Vec<Vec<f64>> = (0..rank)
+            .map(|i| {
+                (0..n)
+                    .map(|j| if j >= i { cols[j][i] } else { 0.0 })
+                    .collect()
+            })
+            .collect();
+        let mut reflectors = Vec::with_capacity(rank);
+        for i in 0..rank {
+            let (v, v_norm2, alpha) = householder(&rt[i][i..])?;
+            for col in rt[i + 1..].iter_mut() {
+                reflect(&mut col[i..], &v, v_norm2);
+            }
+            rt[i][i] = alpha;
+            reflectors.push((v, v_norm2));
+        }
+        // R = [Tᵀ 0]·Zᵀ, so R·y = c is Tᵀ·w = c with y = Z·[w; 0]; T[j][i]
+        // (j ≤ i) is rt[i][j].
+        let mut w = vec![0.0_f64; rank];
+        for i in 0..rank {
+            let mut s = c[i];
+            for j in 0..i {
+                s -= rt[i][j] * w[j];
+            }
+            w[i] = s / rt[i][i];
+        }
+        y[..rank].copy_from_slice(&w);
+        for (i, (v, v_norm2)) in reflectors.iter().enumerate().rev() {
+            reflect(&mut y[i..], v, *v_norm2);
+        }
+    }
+    let mut h = vec![0.0_f64; n];
+    for (j, &p) in perm.iter().enumerate() {
+        h[p] = y[j];
+    }
+    Some(h)
+}
+
 /// The linear model `f + J·h` of the residuals around one iterate, with the
 /// two steps a dogleg is drawn between.
 struct LinearModel<'a> {
@@ -1054,7 +1243,7 @@ impl<'a> LinearModel<'a> {
             g.iter().map(|gk| -alpha * gk).collect()
         });
 
-        let solved = try_solve_normal_equations(j, f, n_free, options.lambda);
+        let solved = gauss_newton_step(j, &rows, f, n_free, options.lambda);
         let non_finite = solved
             .as_ref()
             .is_some_and(|h| h.iter().any(|d| !d.is_finite()));
@@ -1615,6 +1804,21 @@ impl LuFactors {
         Some(Self { lu: a, swaps })
     }
 
+    /// The smallest pivot over the largest, in magnitude: about the
+    /// reciprocal of the condition number. NaN if a pivot is.
+    pub(crate) fn pivot_ratio(&self) -> f64 {
+        let (mut small, mut large) = (f64::INFINITY, 0.0_f64);
+        for (i, row) in self.lu.iter().enumerate() {
+            let p = row[i].abs();
+            if p.is_nan() {
+                return f64::NAN;
+            }
+            small = small.min(p);
+            large = large.max(p);
+        }
+        small / large
+    }
+
     /// Solve `A x = b` for the factored `A`. `b` is used as scratch space.
     pub(crate) fn solve(&self, b: &mut [f64]) -> Vec<f64> {
         let n = b.len();
@@ -1892,6 +2096,101 @@ mod tests {
                 .map(|v| v.to_bits())
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// Dense rows to the sparse rows `min_norm_step` takes.
+    fn sparse(j: &[Vec<f64>]) -> Vec<Vec<(usize, f64)>> {
+        sparse_rows(j)
+    }
+
+    fn close(a: &[f64], b: &[f64], tol: f64) -> bool {
+        a.iter()
+            .zip(b)
+            .all(|(x, y)| (x - y).abs() <= tol * (1.0 + y.abs()))
+    }
+
+    #[test]
+    fn min_norm_step_solves_a_square_system() {
+        let j = sample_matrix();
+        let f = [1.0, -2.0, 0.5, 3.0];
+        let h = min_norm_step(&sparse(&j), &f, 4).expect("regular");
+        let mut b: Vec<f64> = f.iter().map(|v| -v).collect();
+        let direct = gaussian_elimination(&mut j.clone(), &mut b).expect("regular");
+        assert!(close(&h, &direct, 1e-13), "{h:?} vs {direct:?}");
+    }
+
+    #[test]
+    fn min_norm_step_takes_the_shortest_of_many_solutions() {
+        // Two equations, three unknowns, full row rank: h = −Jᵀ(JJᵀ)⁻¹f.
+        let j = vec![vec![1.0, 2.0, -1.0], vec![0.5, -1.0, 3.0]];
+        let f = [1.0, -2.0];
+        let h = min_norm_step(&sparse(&j), &f, 3).expect("rank 2");
+        let jjt = [
+            [dot(&j[0], &j[0]), dot(&j[0], &j[1])],
+            [dot(&j[1], &j[0]), dot(&j[1], &j[1])],
+        ];
+        let det = jjt[0][0] * jjt[1][1] - jjt[0][1] * jjt[1][0];
+        let y = [
+            (-f[0] * jjt[1][1] + f[1] * jjt[0][1]) / det,
+            (-f[1] * jjt[0][0] + f[0] * jjt[1][0]) / det,
+        ];
+        let expect: Vec<f64> = (0..3).map(|c| j[0][c] * y[0] + j[1][c] * y[1]).collect();
+        assert!(close(&h, &expect, 1e-13), "{h:?} vs {expect:?}");
+    }
+
+    #[test]
+    fn min_norm_step_handles_rank_deficiency() {
+        // Two identical columns: consistent, the step splits evenly.
+        let h = min_norm_step(&sparse(&[vec![1.0, 1.0]]), &[-2.0], 2).unwrap();
+        assert!(close(&h, &[1.0, 1.0], 1e-14), "{h:?}");
+        // Two identical rows asking for different things: the least-squares
+        // compromise (their mean), and of those the shortest.
+        let j = vec![vec![1.0, 1.0], vec![1.0, 1.0]];
+        let h = min_norm_step(&sparse(&j), &[-1.0, -3.0], 2).unwrap();
+        assert!(close(&h, &[1.0, 1.0], 1e-14), "{h:?}");
+        // A dependent column among independent ones.
+        let j = vec![
+            vec![1.0, 0.0, 1.0],
+            vec![0.0, 1.0, 1.0],
+            vec![1.0, 1.0, 2.0],
+        ];
+        let f = [-1.0, -2.0, -3.0];
+        let h = min_norm_step(&sparse(&j), &f, 3).unwrap();
+        // Solutions are h = (1, 2, 0) + t·(1, 1, −1); the shortest has t = −1.
+        assert!(close(&h, &[0.0, 1.0, 1.0], 1e-13), "{h:?}");
+    }
+
+    #[test]
+    fn min_norm_step_fits_an_overdetermined_system() {
+        let j = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
+        let f = [-1.0, -1.0, -3.0];
+        let h = min_norm_step(&sparse(&j), &f, 2).unwrap();
+        // Normal equations: [[2, 1], [1, 2]]·h = [4, 4] → h = (4/3, 4/3).
+        assert!(close(&h, &[4.0 / 3.0, 4.0 / 3.0], 1e-14), "{h:?}");
+    }
+
+    /// Two nearly parallel rows (`κ ≈ 1e7`): the step matches Cramer's rule
+    /// to a few rounding units of `κ`, where the normal equations (`κ²`)
+    /// would lose most of the digits.
+    #[test]
+    fn min_norm_step_keeps_the_digits_of_an_ill_conditioned_system() {
+        let e = 1e-7;
+        let j = vec![vec![1.0, e], vec![1.0, -e]];
+        let f = [-1.0, -1.0 - 2e-9];
+        let h = min_norm_step(&sparse(&j), &f, 2).unwrap();
+        let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+        let expect = [
+            (-f[0] * j[1][1] + f[1] * j[0][1]) / det,
+            (-f[1] * j[0][0] + f[0] * j[1][0]) / det,
+        ];
+        assert!(close(&h, &expect, 1e-8), "{h:?} vs {expect:?}");
+    }
+
+    #[test]
+    fn min_norm_step_reports_no_step_and_nan() {
+        assert!(min_norm_step(&sparse(&[vec![0.0, 0.0]]), &[1.0], 2).is_none());
+        let h = min_norm_step(&sparse(&[vec![f64::NAN, 1.0]]), &[1.0], 2).unwrap();
+        assert!(h.iter().all(|v| v.is_nan()));
     }
 
     #[test]
