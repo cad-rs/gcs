@@ -39,12 +39,27 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   there, and the solve ends as `Stalled` (`tests/degenerate.rs`). Picking
   a direction instead (a fixed subgradient) would let such a sketch solve,
   but it is a choice about where the geometry goes, and the debug
-  cross-check of the Jacobian would have to know about it. Relations on a
+  cross-check of the Jacobian would have to know about it; decided
+  against (2026-11-13): the host separates the points first. Relations on a
   line of zero length (parallel, angle, point on line, symmetric) are met
   vacuously. Two wrong answers seen: two concentric circles held
   externally tangent "converge" by making a radius negative (−1; nothing
   keeps radii positive), and diagnosing an arc of zero radius at its start
   reports its end constraint as conflicting although the sketch solves.
+- **Near-tangent geometry (a needle triangle).** `tests/hard_cases.rs`
+  `report_needle_triangle`: `C` 2 from `A` and `1 + δ` from `B`, with `A`
+  and `B` 1 apart. Three separate defects show. (1) At the default
+  tolerance every `δ ≤ 1e-10` reports `Converged` with `C` wrong by up to
+  its own height off the line or more: near tangency a small residual does
+  not mean a small position error, and only a step-size criterion would
+  notice. (2) With a tight tolerance, `δ = 1e-12` and `1e-14` run out of
+  iterations, where Newton with an exact 2 × 2 solve converges in 12–21:
+  the fixed regularisation `λ = 1e-10` swamps the direction whose
+  eigenvalue in `JᵀJ` is about `4δ` (with `λ = 1e-20` the solver converges
+  at `1e-12`). (3) At `δ = 1e-14` the normal equations' squared condition
+  number shows as well: with `λ = 1e-20` one start still stalls. A step
+  from a QR factorisation of `J` (the plan's P2.2) addresses (2) and (3);
+  (1) is the plan's step-norm convergence criterion.
 - **Hard starts.** The step control is a dogleg trust region, but the
   radius is measured in the raw parameter vector, where a length and an
   angle weigh the same, and there is no homotopy/continuation path for

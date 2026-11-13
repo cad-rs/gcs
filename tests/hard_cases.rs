@@ -1,8 +1,9 @@
 //! Hard cases for the step control: systems that are well posed but badly
 //! conditioned, where a plain damped Gauss–Newton step struggles.
 //!
-//! `report_serial_truss` is a measurement, not a gate: it prints how the
-//! solver does on each case and is ignored by default. Run it optimised:
+//! `report_serial_truss` and `report_needle_triangle` are measurements,
+//! not gates: they print how the solver does on each case and are ignored
+//! by default. Run it optimised:
 //!
 //! ```text
 //! cargo test --release --test hard_cases -- --ignored --nocapture
@@ -124,5 +125,64 @@ fn serial_trusses_converge_back() {
             "{points} points moved {:.3e}",
             o.displacement
         );
+    }
+}
+
+/// A needle triangle: `A` and `B` held 1 apart, `C` 2 from `A` and `1 + δ`
+/// from `B`. `C` then sits `≈ 2√δ` off the line `AB`, the two distance
+/// rows are nearly parallel (`κ(J) ≈ 1/(2√δ)`, squared in `JᵀJ`), and at
+/// `δ = 0` the circles touch: a near-double root. Prints, per `δ`, start
+/// and tolerance, what the solve does and how far `C` lands from the exact
+/// point, relative to its height off the line.
+///
+/// Measured (P2.2, see `docs/CATCHUP_PLAN.md` §10): at `δ ≥ 1e-8` all is
+/// well. At the default tolerance every `δ ≤ 1e-10` reports `Converged`
+/// with the height wrong by up to its own size or more (the residual does
+/// not bound the position near tangency). With a tight tolerance `δ = 1e-12`
+/// and `1e-14` end as `MaxIterations`, while Newton with an exact 2 × 2
+/// solve converges in 12–21 iterations; with the regularisation `λ`
+/// lowered from 1e-10 to 1e-20 the solver does too at `1e-12`, and at
+/// `1e-14` one start still stalls.
+#[test]
+#[ignore]
+fn report_needle_triangle() {
+    use rcad_gcs::constraint::Constraint;
+    use rcad_gcs::entity::PointRef;
+    use rcad_gcs::Sketch;
+
+    for delta in [1e-6, 1e-8, 1e-10, 1e-12, 1e-14] {
+        let d: f64 = delta;
+        let x = 2.0 - d - 0.5 * d * d;
+        let y = (4.0 - x * x).sqrt();
+        for (off, tolerance) in [(1e-3, 1e-10), (1e-3, 1e-16), (0.1, 1e-16)] {
+            let mut sk = Sketch::new();
+            let a = sk.add_point(0.0, 0.0);
+            let b = sk.add_point(1.0, 0.0);
+            sk.fix_entity(a);
+            sk.fix_entity(b);
+            let c = sk.add_point(x + off, y + off);
+            sk.add_constraint(Constraint::point_distance(
+                PointRef::Point(a),
+                PointRef::Point(c),
+                2.0,
+            ));
+            sk.add_constraint(Constraint::point_distance(
+                PointRef::Point(b),
+                PointRef::Point(c),
+                1.0 + d,
+            ));
+            let r = sk.solve_with(&SolveOptions {
+                tolerance,
+                ..Default::default()
+            });
+            let p = sk.point_coords(PointRef::Point(c));
+            println!(
+                "δ {d:e} start {off:e} tolerance {tolerance:e}: {:?} it {} residual {:.1e} | C off by {:.1e} of its height",
+                r.status,
+                r.iterations,
+                r.residual,
+                ((p.y - y) / y).abs().max(((p.x - x) / y).abs())
+            );
+        }
     }
 }
