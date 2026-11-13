@@ -68,6 +68,12 @@ minor version.
   with them needs no change. Code that read the fields calls
   `constraint_type()`, `component1()` or `component2()`, or matches on
   `kind`. Results are the same to the last bit.
+- **A `Parallel` mate is two equations and a `Concentric` mate four**, the
+  number of freedoms each removes. They were three and six: the cross
+  product of two directions has three components but only two of them
+  independent. Solved poses agree with the old ones to within the
+  tolerance, not to the last bit, and iteration counts can differ. The
+  residual norm of a given pose is the same in both forms.
 - `solver::solve`, `solver::solve_components`, `space3d::solver::solve_space`,
   `space3d::solver::solve_components` and `numerics::newton_solve` take the
   parameters as `&mut [f64]` instead of `&mut Vec<f64>`.
@@ -162,6 +168,12 @@ minor version.
 
   All four spline constraints are now in the per-variant
   Jacobian-versus-finite-difference test and have solve tests.
+- **`diagnose_assembly` reported every `Parallel` and `Concentric` mate as
+  redundant**, including one that was alone in the assembly, and listed it
+  in a dependency group. A lone `Concentric` also put the `Fixed` of the
+  body it was mated to on the redundant list. The spare rows of those mates
+  were the cause; with as many rows as freedoms the reports are gone, and a
+  genuinely repeated mate is still found (`tests/assembly_rank.rs`).
 - glam's `serde` support was compiled in whether or not this crate's `serde`
   feature was on. It now follows the feature, so a default build pulls in no
   serde at all.

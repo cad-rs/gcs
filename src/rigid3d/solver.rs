@@ -284,10 +284,10 @@ impl ConstraintSolver {
             }
             ConstraintKind::Coincident { .. } => 3,
             ConstraintKind::Distance { .. } => 1,
-            ConstraintKind::Parallel { .. } => 3,
+            ConstraintKind::Parallel { .. } => 2,
             ConstraintKind::Angle { .. } => 1,
             ConstraintKind::Perpendicular { .. } => 1,
-            ConstraintKind::Concentric { .. } => 6,
+            ConstraintKind::Concentric { .. } => 4,
             ConstraintKind::PointOnPlane { .. } => 1,
             ConstraintKind::Lock { .. } => 6,
         }
@@ -435,14 +435,12 @@ impl ConstraintSolver {
                     body2: c2,
                     dir2,
                 } => {
-                    let d1w = world_unit_dir(rots[c1], dir1);
+                    // Two rows for two freedoms: see
+                    // `fill_direction_tangent_rows`.
+                    let basis = world_tangent_basis(rots[c1], dir1);
                     let d2w = world_unit_dir(rots[c2], dir2);
-                    let res = d1w.cross(d2w);
-                    rj.r[row] = res.x;
-                    rj.r[row + 1] = res.y;
-                    rj.r[row + 2] = res.z;
-                    Self::fill_direction_cross_jacobian((c1, d1w), (c2, d2w), rots, row, &mut rj.j);
-                    row += 3;
+                    Self::fill_direction_tangent_rows((c1, basis), (c2, d2w), rots, row, rj);
+                    row += 2;
                 }
                 ConstraintKind::Angle {
                     body1: c1,
@@ -477,60 +475,40 @@ impl ConstraintSolver {
                     point2,
                     dir2,
                 } => {
-                    // Rows 0-2: axis direction cross d1w×d2w (rank 2).
-                    // Rows 3-5: perpendicular offset of the two axis
-                    // points, (p2w−p1w)×d1w (rank 2) — 6 rows, rank 4,
-                    // the mate's 4 removed DOF.
-                    let d1w = world_unit_dir(rots[c1], dir1);
+                    // Four rows for four freedoms. Rows 0-1: axis 2 is
+                    // parallel to axis 1, as in `Parallel`. Rows 2-3: the
+                    // offset between the two axis points has no component
+                    // across axis 1, r_k = e_k · (p2w − p1w), over the same
+                    // basis e_1, e_2 of the plane perpendicular to axis 1.
+                    let basis = world_tangent_basis(rots[c1], dir1);
                     let d2w = world_unit_dir(rots[c2], dir2);
-                    let res = d1w.cross(d2w);
-                    rj.r[row] = res.x;
-                    rj.r[row + 1] = res.y;
-                    rj.r[row + 2] = res.z;
+                    Self::fill_direction_tangent_rows((c1, basis), (c2, d2w), rots, row, rj);
+
                     // Rotation columns differentiate rw = R·local (rotation
                     // only — translation enters separately), NOT the
                     // translated p_w.
                     let rw1 = rots[c1].mul_vec3(point1);
                     let rw2 = rots[c2].mul_vec3(point2);
-                    let p1w = positions[c1] + rw1;
-                    let p2w = positions[c2] + rw2;
-                    let off = p2w - p1w;
-                    let res_p = off.cross(d1w);
-                    rj.r[row + 3] = res_p.x;
-                    rj.r[row + 4] = res_p.y;
-                    rj.r[row + 5] = res_p.z;
-                    Self::fill_direction_cross_jacobian((c1, d1w), (c2, d2w), rots, row, &mut rj.j);
-
-                    // Offset rows: r_p = off×d1w, so δr = δp2×d1w − δp1×d1w
-                    // + off×δd1, with δp_i the body-frame omega columns for
-                    // rotations and ±1 translations.
-                    let row3 = row + 3;
-                    for jw in 0..3 {
-                        // translations: ∂r_p/∂p1w = [d1w]× (via −δp1×d1w),
-                        // ∂/∂p2w = −[d1w]×
-                        let dpx = d1w.cross(e_axis(jw)); // [d1w]× e_j
-                        for k in 0..3 {
-                            rj.j[row3 + k][c1 * 6 + jw] = dpx[k];
-                            rj.j[row3 + k][c2 * 6 + jw] = -dpx[k];
+                    let off = (positions[c2] + rw2) - (positions[c1] + rw1);
+                    for (k, e) in basis.into_iter().enumerate() {
+                        let r = row + 2 + k;
+                        rj.r[r] = e.dot(off);
+                        for jt in 0..3 {
+                            rj.j[r][c1 * 6 + jt] += -e[jt];
+                            rj.j[r][c2 * 6 + jt] += e[jt];
                         }
-                        // body-1 rotation: δp1 = a1p (on the rotated local
-                        // point), δd1 = a1d
-                        let axis1 = rots[c1].mul_vec3(e_axis(jw));
-                        let a1p = axis1.cross(rw1);
-                        let a1d = axis1.cross(d1w);
-                        let drp1 = d1w.cross(a1p) + off.cross(a1d); // (−a1p)×d1w + off×a1d
-                        for k in 0..3 {
-                            rj.j[row3 + k][c1 * 6 + 3 + jw] = drp1[k];
-                        }
-                        // body-2 rotation: δp2 = a2p, d1 fixed
-                        let axis2 = rots[c2].mul_vec3(e_axis(jw));
-                        let a2p = axis2.cross(rw2);
-                        let drp2 = a2p.cross(d1w);
-                        for k in 0..3 {
-                            rj.j[row3 + k][c2 * 6 + 3 + jw] = drp2[k];
+                        for jw in 0..3 {
+                            // Body 1 turns the basis vector and moves p1:
+                            // δr = δe·off − e·δp1.
+                            let axis1 = rots[c1].mul_vec3(e_axis(jw));
+                            rj.j[r][c1 * 6 + 3 + jw] +=
+                                axis1.cross(e).dot(off) - e.dot(axis1.cross(rw1));
+                            // Body 2 moves p2: δr = e·δp2.
+                            let axis2 = rots[c2].mul_vec3(e_axis(jw));
+                            rj.j[r][c2 * 6 + 3 + jw] += e.dot(axis2.cross(rw2));
                         }
                     }
-                    row += 6;
+                    row += 4;
                 }
                 ConstraintKind::PointOnPlane {
                     body1: c1,
@@ -648,31 +626,36 @@ impl ConstraintSolver {
         }
     }
 
-    /// Analytic Jacobian of the three rows `r = d1×d2` of two world
-    /// directions, each given with the body that carries it.
-    /// δr = δd1×d2 + d1×δd2 with δd_i = (R_i·e_j)×d_iw for the body-frame
-    /// omega column jw of body i; translation columns are zero (the
-    /// residual depends only on orientations). The analytic-vs-FD gate
-    /// keeps this in lockstep with the residual.
-    fn fill_direction_cross_jacobian(
-        (c1, d1w): (usize, DVec3),
+    /// Two rows saying that the direction `d2w` (on body `c2`) is parallel
+    /// to a direction on body `c1`, given by a `basis` e_1, e_2 of the plane
+    /// perpendicular to it: `r_k = e_k · d2`.
+    ///
+    /// Both rows vanish exactly when the directions are parallel, either
+    /// way round, and their gradients are independent there, so the
+    /// condition costs two equations for the two freedoms it removes. (The
+    /// cross product `d1 × d2` says the same in three rows of rank two; the
+    /// spare row then reads as a redundancy in the diagnosis.) The two forms
+    /// have the same sum of squares, `sin²` of the angle between the
+    /// directions.
+    ///
+    /// δr_k = δe_k·d2 + e_k·δd2, where a vector carried by body i turns by
+    /// (R_i·e_j)×v for the body-frame omega column j. The translation
+    /// columns are zero. Entries are added, so that a mate between a body
+    /// and itself sums its two contributions.
+    fn fill_direction_tangent_rows(
+        (c1, basis): (usize, [DVec3; 2]),
         (c2, d2w): (usize, DVec3),
         rots: &[DQuat],
         row: usize,
-        j: &mut [Vec<f64>],
+        rj: &mut ResidualJacobian,
     ) {
-        for jw in 0..3 {
-            let axis1 = rots[c1].mul_vec3(e_axis(jw));
-            let a1 = axis1.cross(d1w);
-            let dr1 = a1.cross(d2w); // δd1×d2
-            for k in 0..3 {
-                j[row + k][c1 * 6 + 3 + jw] = dr1[k];
-            }
-            let axis2 = rots[c2].mul_vec3(e_axis(jw));
-            let a2 = axis2.cross(d2w);
-            let dr2 = d1w.cross(a2); // d1×δd2
-            for k in 0..3 {
-                j[row + k][c2 * 6 + 3 + jw] = dr2[k];
+        for (k, e) in basis.into_iter().enumerate() {
+            rj.r[row + k] = e.dot(d2w);
+            for jw in 0..3 {
+                let axis1 = rots[c1].mul_vec3(e_axis(jw));
+                rj.j[row + k][c1 * 6 + 3 + jw] += axis1.cross(e).dot(d2w);
+                let axis2 = rots[c2].mul_vec3(e_axis(jw));
+                rj.j[row + k][c2 * 6 + 3 + jw] += e.dot(axis2.cross(d2w));
             }
         }
     }
@@ -750,6 +733,28 @@ fn world_unit_dir(rot: DQuat, local: DVec3) -> DVec3 {
     } else {
         v / len
     }
+}
+
+/// A basis of the plane perpendicular to a body's local direction, carried
+/// to world: two orthonormal vectors that turn with the body.
+///
+/// The basis is chosen in the body frame, from the coordinate axis the
+/// direction is least aligned with. It therefore depends only on the
+/// constraint's own data, not on the pose, and the world vectors vary
+/// smoothly as the body moves.
+fn world_tangent_basis(rot: DQuat, local: DVec3) -> [DVec3; 2] {
+    let unit = local.try_normalize().unwrap_or(DVec3::Z);
+    let (ax, ay, az) = (unit.x.abs(), unit.y.abs(), unit.z.abs());
+    let helper = if ax <= ay && ax <= az {
+        DVec3::X
+    } else if ay <= az {
+        DVec3::Y
+    } else {
+        DVec3::Z
+    };
+    let e1 = unit.cross(helper).normalize();
+    let e2 = unit.cross(e1);
+    [rot.mul_vec3(e1), rot.mul_vec3(e2)]
 }
 
 /// Rotation vector residual locking current orientation `q` to target `q_tgt`.
@@ -1096,6 +1101,38 @@ mod gate_tests {
     /// body orientations, every analytic Jacobian column must match the
     /// central finite difference of the residual map under the solver's own
     /// body-frame quaternion parameterization.
+    /// The two-row form of "parallel" and the four-row form of
+    /// "concentric" measure the same misalignment as the cross products
+    /// they replace: |d1 × d2| for the directions, and |(p2 − p1) × d1| for
+    /// the offset between the axes.
+    #[test]
+    fn tangent_rows_have_the_norm_of_the_cross_products() {
+        let positions = [DVec3::new(0.4, -1.0, 0.3), DVec3::new(1.2, -0.4, 0.8)];
+        let rots = [
+            DQuat::from_euler(EulerRot::XYZ, -0.3, 0.6, 1.1),
+            DQuat::from_euler(EulerRot::XYZ, 0.5, -0.9, 0.3),
+        ];
+        let (point1, dir1) = (DVec3::new(0.4, -0.1, 0.2), DVec3::new(0.3, -1.2, 0.5));
+        let (point2, dir2) = (DVec3::new(-0.2, 0.3, 0.1), DVec3::new(2.0, 0.1, -0.7));
+        let d1w = world_unit_dir(rots[0], dir1);
+        let d2w = world_unit_dir(rots[1], dir2);
+        let off =
+            (positions[1] + rots[1].mul_vec3(point2)) - (positions[0] + rots[0].mul_vec3(point1));
+
+        let mut system = ConstraintSystem::with_components(2);
+        system.add_constraint(Constraint::parallel(0, 0, dir1, 1, dir2));
+        system.add_constraint(Constraint::concentric(1, 0, point1, dir1, 1, point2, dir2));
+        let r = ConstraintSolver::build_residual_jacobian(&system, &positions, &rots).r;
+        assert_eq!(r.len(), 2 + 4);
+
+        let directions = d1w.cross(d2w).length();
+        let offset = off.cross(d1w).length();
+        assert!(directions > 0.1 && offset > 0.1, "a generic pose");
+        assert!((l2_norm(&r[0..2]) - directions).abs() < 1e-14);
+        assert!((l2_norm(&r[2..4]) - directions).abs() < 1e-14);
+        assert!((l2_norm(&r[4..6]) - offset).abs() < 1e-14);
+    }
+
     #[test]
     fn analytic_jacobian_matches_fd_at_rotated_pose() {
         let mut system = ConstraintSystem::with_components(3);
@@ -1170,6 +1207,36 @@ mod gate_tests {
             2,
             DVec3::new(0.7, -0.2, 0.4),
             DQuat::from_euler(EulerRot::XYZ, 0.2, 0.3, -0.1),
+        ));
+
+        // The same two mates again, on directions that are neither unit
+        // length nor along a coordinate axis: the rows are built on a basis
+        // of the plane across the first direction, and its choice must not
+        // show in the derivative.
+        system.add_constraint(Constraint::parallel(
+            9,
+            2,
+            DVec3::new(0.3, -1.2, 0.5),
+            1,
+            DVec3::new(2.0, 0.1, -0.7),
+        ));
+        system.add_constraint(Constraint::concentric(
+            10,
+            2,
+            DVec3::new(0.6, 0.1, -0.3),
+            DVec3::new(-0.4, 0.2, 1.5),
+            0,
+            DVec3::new(0.2, -0.5, 0.4),
+            DVec3::new(1.0, 1.0, 0.2),
+        ));
+        // Both directions on one body: the residual cannot change, and the
+        // two contributions to each column have to cancel.
+        system.add_constraint(Constraint::parallel(
+            11,
+            1,
+            DVec3::new(0.2, 0.9, -0.4),
+            1,
+            DVec3::new(1.0, 0.3, 0.5),
         ));
 
         // Body 1 sits at a non-identity orientation — the regime where a
