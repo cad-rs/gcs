@@ -241,6 +241,9 @@ through them from a host's side.
   `diagnose_assembly` called two constraints that asked for the same
   orientation in opposite signs conflicting. The rotation is now always
   taken the short way round.
+- An orientation error below about 2e-8 rad read as exactly zero, because
+  the conversion from a quaternion to a rotation vector gave up there. It
+  is now accurate at any size.
 - glam's `serde` support was compiled in whether or not this crate's `serde`
   feature was on. It now follows the feature, so a default build pulls in no
   serde at all.
@@ -275,6 +278,11 @@ through them from a host's side.
 
 ### Performance
 
+- No Jacobian row is finite-differenced any more. The orientation rows of
+  `Fixed` and `Lock` were the last ones; they now use the derivative of the
+  rotation logarithm, in closed form, where central differences evaluated
+  the residual twice per column. The benchmark fixtures hold a single
+  constraint of that kind, so their timings do not show the difference.
 - The normal equations are accumulated over the non-zero Jacobian entries
   only (bitwise the same result).
 - The rigid-pose solver and diagnosis make unknowns only of the bodies a

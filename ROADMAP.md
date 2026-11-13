@@ -12,11 +12,6 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
 
 ## 1. Numerical core
 
-- **Finish the analytic Jacobians.** The 2D and 3D-geometric families are
-  fully analytic, and so are the rigid-pose rows except the orientation rows
-  of `Fixed` and `Lock`, which still use central finite differences
-  (`FD_EPS = 1e-7`). Those two need the Jacobian of the rotation-vector
-  (log) map.
 - **Sparse linear algebra.** `numerics.rs` accumulates `JᵀJ` over the
   non-zero Jacobian entries, but stores it densely and solves
   `(JᵀJ + λI)Δ = Jᵀ(−F)` by dense Gaussian elimination, i.e. O(n³) in the

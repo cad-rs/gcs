@@ -18,8 +18,8 @@ Each family reduces to `F(x) = 0` over a parameter vector:
    it touches);
 2. residuals and **analytic** Jacobian rows come from the constraint set —
    a CI test keeps every derivative in lockstep with its residual by
-   comparing against finite differences (the rigid-pose family still
-   finite-differences the orientation rows of `Fixed` and `Lock`);
+   comparing against finite differences; no row is finite-differenced in
+   a solve;
 3. the step comes from the Tikhonov-regularised normal equations
    `(JᵀJ + λI) Δx = Jᵀ(−F)` — under-constrained systems get the
    minimum-norm step instead of diverging;

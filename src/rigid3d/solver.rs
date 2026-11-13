@@ -4,10 +4,10 @@
 //! quaternion integration (`q ← normalize(q · dq)`). Mate offsets `point1` /
 //! `point2` are in component space; world points use `t + R·local`. Direction
 //! mates (`Parallel`, `Angle`, `Perpendicular`) use unit vectors
-//! `normalize(R·local_dir)`. Jacobian rows are analytic (translation ±I,
-//! rotation via the `ω × r` linearization, direction rows via `δd = ω × d`)
-//! except the orientation rows of `Fixed` and `Lock`, which use central
-//! finite differences.
+//! `normalize(R·local_dir)`. Every Jacobian row is analytic: translation
+//! ±I, rotation via the `ω × r` linearization, direction rows via
+//! `δd = ω × d`, and the orientation rows of `Fixed` and `Lock` via the
+//! derivative of the rotation logarithm.
 //!
 //! This module supplies the equations (residuals and Jacobian rows per
 //! constraint) and the solver front end. The iteration itself — the
@@ -24,7 +24,8 @@ use super::equations::{pack, unpack, RigidEquations};
 use crate::numerics::{CoreOptions, FailurePolicy, ResidualNorm, SolveStatus};
 use crate::system;
 
-/// Finite-difference step for direction-mate Jacobian rows.
+/// Finite-difference step of the test that checks the analytic Jacobian.
+#[cfg(test)]
 const FD_EPS: f64 = 1e-7;
 
 /// Result of solving.
@@ -373,18 +374,19 @@ impl ConstraintSolver {
                     }
                     row += 3;
                     if let Some(q_tgt) = orientation {
+                        // r = log(q · q_tgt⁻¹). Turning the body by a small
+                        // body-frame rotation δ gives q·exp(δ)·q_tgt⁻¹ =
+                        // exp(r)·exp(R_tgt δ), so dr = A(r) R_tgt δ.
                         let res = fixed_orientation_residual(rots[c], q_tgt);
                         rj.r[row] = res.x;
                         rj.r[row + 1] = res.y;
                         rj.r[row + 2] = res.z;
-                        Self::fill_vec3_residual_fd(
-                            |_, rp| fixed_orientation_residual(rp[c], q_tgt),
-                            positions,
-                            rots,
-                            row,
-                            cols,
-                            &mut rj.j,
-                        );
+                        for jw in 0..3 {
+                            let col = log_step(res, q_tgt.mul_vec3(e_axis(jw)));
+                            for k in 0..3 {
+                                rj.j[row + k][c * 6 + 3 + jw] = col[k];
+                            }
+                        }
                         row += 3;
                     }
                 }
@@ -574,20 +576,34 @@ impl ConstraintSolver {
                     translation: rel_t,
                     rotation: rel_q,
                 } => {
-                    // Relative-pose lock. Translation rows are analytic;
-                    // the rotation rows reuse the Fixed-orientation FD
-                    // helper (the rotation-vector Jacobian is not worth an
-                    // analytic form here).
+                    // Relative-pose lock: three rows for the relative
+                    // translation in body 1's frame, three for the relative
+                    // rotation.
                     let r1i = rots[c1].inverse();
                     let t_rel = r1i.mul_vec3(positions[c2] - positions[c1]);
                     rj.r[row] = t_rel.x - rel_t.x;
                     rj.r[row + 1] = t_rel.y - rel_t.y;
                     rj.r[row + 2] = t_rel.z - rel_t.z;
-                    let q_rel = r1i * rots[c2];
-                    let res = rotation_vector(q_rel * rel_q.inverse());
+                    // r = log(q1⁻¹ · q2 · q_rel⁻¹) = log(E). Turning body 2
+                    // by δ2 gives E·exp(R_rel δ2), and turning body 1 by δ1
+                    // gives exp(−δ1)·E = E·exp(−Eᵀ δ1), so
+                    // dr = A(r) (R_rel δ2 − Eᵀ δ1).
+                    let q_err = r1i * rots[c2] * rel_q.inverse();
+                    let res = rotation_vector(q_err);
                     rj.r[row + 3] = res.x;
                     rj.r[row + 4] = res.y;
                     rj.r[row + 5] = res.z;
+                    let back = q_err.normalize().inverse();
+                    for jw in 0..3 {
+                        let by_body1 = log_step(res, -back.mul_vec3(e_axis(jw)));
+                        let by_body2 = log_step(res, rel_q.mul_vec3(e_axis(jw)));
+                        for k in 0..3 {
+                            // Added, so that a lock of a body to itself sums
+                            // its two contributions.
+                            rj.j[row + 3 + k][c1 * 6 + 3 + jw] += by_body1[k];
+                            rj.j[row + 3 + k][c2 * 6 + 3 + jw] += by_body2[k];
+                        }
+                    }
                     for k in 0..3 {
                         for jt in 0..3 {
                             let col = r1i.mul_vec3(e_axis(jt));
@@ -601,53 +617,12 @@ impl ConstraintSolver {
                             rj.j[row + k][c1 * 6 + 3 + jw] = col[k];
                         }
                     }
-                    Self::fill_vec3_residual_fd(
-                        |_, rp| rotation_vector(rp[c1].inverse() * rp[c2] * rel_q.inverse()),
-                        positions,
-                        rots,
-                        row + 3,
-                        cols,
-                        &mut rj.j,
-                    );
                     row += 6;
                 }
             }
         }
 
         debug_assert_eq!(row, m);
-    }
-
-    fn fill_vec3_residual_fd<F>(
-        residual_fn: F,
-        positions: &[DVec3],
-        rots: &[DQuat],
-        row: usize,
-        cols: usize,
-        j: &mut [Vec<f64>],
-    ) where
-        F: Fn(&[DVec3], &[DQuat]) -> DVec3 + Copy,
-    {
-        // One working copy, perturbed and restored a single body at a time
-        // (each column moves exactly one body).
-        let mut pp = positions.to_vec();
-        let mut rp = rots.to_vec();
-        for col in 0..cols {
-            let body = col / 6;
-
-            apply_parameter_delta(&mut pp, &mut rp, col, FD_EPS);
-            let vp = residual_fn(&pp, &rp);
-            pp[body] = positions[body];
-            rp[body] = rots[body];
-
-            apply_parameter_delta(&mut pp, &mut rp, col, -FD_EPS);
-            let vm = residual_fn(&pp, &rp);
-            pp[body] = positions[body];
-            rp[body] = rots[body];
-
-            for k in 0..3 {
-                j[row + k][col] = (vp[k] - vm[k]) / (2.0 * FD_EPS);
-            }
-        }
     }
 
     /// Two rows saying that the direction `d2w` (on body `c2`) is parallel
@@ -719,6 +694,7 @@ fn l2_norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
 
+#[cfg(test)]
 fn apply_parameter_delta(pos: &mut [DVec3], rot: &mut [DQuat], col: usize, delta: f64) {
     let comp = col / 6;
     let dim = col % 6;
@@ -788,13 +764,49 @@ fn world_tangent_basis(rot: DQuat, local: DVec3) -> [DVec3; 2] {
 /// come, one gives the angle `a` and the other `2π − a` about the opposite
 /// axis, so the size of an orientation error would depend on which of the
 /// two signs the poses happened to be written in.
+///
+/// The conversion is done here rather than through glam's
+/// `to_scaled_axis`, which reports no rotation at all below about 2e-8 rad:
+/// an orientation error that small would read as zero, and the residual
+/// would jump at that threshold.
 fn rotation_vector(q: DQuat) -> DVec3 {
     let q = q.normalize();
-    if q.w < 0.0 {
-        (-q).to_scaled_axis()
+    let sign = if q.w < 0.0 { -1.0 } else { 1.0 };
+    let (v, w) = (DVec3::new(q.x, q.y, q.z) * sign, q.w * sign);
+    // The angle is 2·atan2(|v|, w), about v.
+    let s = v.length();
+    let scale = if s < 1.0e-6 {
+        // atan2(s, w)/s = (1 − (s/w)²/3 + …)/w, without dividing one tiny
+        // number by another.
+        let x = s / w;
+        2.0 * (1.0 - x * x / 3.0) / w
     } else {
-        q.to_scaled_axis()
-    }
+        2.0 * s.atan2(w) / s
+    };
+    v * scale
+}
+
+/// How the rotation vector `r` of a rotation changes when the rotation is
+/// followed by a small one: `log(exp(r)·exp(ε)) = r + A(r) ε + O(ε²)`, and
+/// this returns `A(r) ε`.
+///
+/// `A` is the inverse of the right Jacobian of the rotation group,
+/// `A = I + ½[r]× + c(θ)[r]×²` with `θ = |r|` and
+/// `c = 1/θ² − cot(θ/2)/(2θ)`, which tends to `1/12` as `θ → 0`. It holds
+/// for `θ < 2π`; the residuals keep `θ ≤ π`.
+fn log_step(r: DVec3, epsilon: DVec3) -> DVec3 {
+    let theta_sq = r.length_squared();
+    let c = if theta_sq < 1.0e-6 {
+        // The series, where the closed form loses its digits to
+        // cancellation: c = 1/12 + θ²/720 + θ⁴/30240 + …
+        1.0 / 12.0 + theta_sq / 720.0
+    } else {
+        let theta = theta_sq.sqrt();
+        let half = 0.5 * theta;
+        1.0 / theta_sq - half.cos() / (2.0 * theta * half.sin())
+    };
+    let turned = r.cross(epsilon);
+    epsilon + 0.5 * turned + c * r.cross(turned)
 }
 
 /// Rotation vector residual locking current orientation `q` to target `q_tgt`.
@@ -1154,6 +1166,69 @@ mod gate_tests {
     /// body orientations, every analytic Jacobian column must match the
     /// central finite difference of the residual map under the solver's own
     /// body-frame quaternion parameterization.
+    /// `log_step` is the derivative of the rotation vector with respect to
+    /// a small rotation applied after it, from no rotation at all to almost
+    /// half a turn, through the switch between its series and its closed
+    /// form.
+    #[test]
+    fn log_step_matches_finite_differences() {
+        let axes = [
+            DVec3::Z,
+            DVec3::new(1.0, 2.0, -1.0).normalize(),
+            DVec3::new(-0.3, 0.1, 0.9).normalize(),
+        ];
+        // 1e-3 is where the formula changes branch (θ² = 1e-6).
+        let angles = [0.0, 1.0e-9, 1.0e-4, 0.999e-3, 1.001e-3, 0.5, 2.0, 3.1];
+        let h = 1.0e-6;
+        for axis in axes {
+            for angle in angles {
+                let r = axis * angle;
+                let q = DQuat::from_scaled_axis(r);
+                assert!((rotation_vector(q) - r).length() < 1e-12);
+                for j in 0..3 {
+                    let step = |s: f64| rotation_vector(q * DQuat::from_scaled_axis(e_axis(j) * s));
+                    let fd = (step(h) - step(-h)) / (2.0 * h);
+                    let analytic = log_step(r, e_axis(j));
+                    assert!(
+                        (analytic - fd).length() < 1.0e-8,
+                        "angle {angle} about {axis}, column {j}: {analytic} vs {fd}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The rotation vector is the same for a quaternion and its negative,
+    /// and never longer than half a turn.
+    #[test]
+    fn rotation_vector_takes_the_short_way() {
+        let axis = DVec3::new(1.0, 2.0, -1.0).normalize();
+        for angle in [1.0e-3, 0.5, 2.0, 3.1] {
+            let q = DQuat::from_axis_angle(axis, angle);
+            let r = rotation_vector(q);
+            assert!((r - axis * angle).length() < 1e-12, "{angle}");
+            assert!((rotation_vector(-q) - r).length() < 1e-12, "{angle}");
+        }
+        // More than half a turn one way is less than half a turn the other.
+        let r = rotation_vector(DQuat::from_axis_angle(axis, 4.0));
+        let short = 2.0 * std::f64::consts::PI - 4.0;
+        assert!((r + axis * short).length() < 1e-12);
+        assert_eq!(rotation_vector(DQuat::IDENTITY), DVec3::ZERO);
+        assert_eq!(rotation_vector(-DQuat::IDENTITY), DVec3::ZERO);
+
+        // A rotation far too small for glam's conversion to see is still
+        // measured, to its own relative precision.
+        for angle in [1.0e-9, 1.0e-12, 1.0e-15] {
+            let r = rotation_vector(DQuat::from_scaled_axis(axis * angle));
+            assert!((r - axis * angle).length() < 1e-12 * angle, "{angle}: {r}");
+            assert_eq!(
+                DQuat::from_scaled_axis(axis * angle).to_scaled_axis(),
+                DVec3::ZERO,
+                "glam reports nothing at {angle}"
+            );
+        }
+    }
+
     /// The two-row form of "parallel" and the four-row form of
     /// "concentric" measure the same misalignment as the cross products
     /// they replace: |d1 × d2| for the directions, and |(p2 − p1) × d1| for
@@ -1290,6 +1365,15 @@ mod gate_tests {
             DVec3::new(0.2, 0.9, -0.4),
             1,
             DVec3::new(1.0, 0.3, 0.5),
+        ));
+
+        // A full pose asked of body 2 that it is far from: the orientation
+        // rows away from zero error.
+        system.add_constraint(Constraint::fixed_with_orientation(
+            12,
+            2,
+            DVec3::new(0.5, 1.5, -0.5),
+            DQuat::from_euler(EulerRot::XYZ, 0.3, -0.2, 0.9),
         ));
 
         // Body 1 sits at a non-identity orientation — the regime where a

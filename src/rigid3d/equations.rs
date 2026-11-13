@@ -61,8 +61,8 @@ pub(crate) struct RigidEquations<'a> {
     alone: Vec<Alone>,
     /// Per constraint, its last evaluation. The Newton loop asks for the
     /// residuals and then the Jacobian at the same poses, and a constraint
-    /// evaluation yields both (some rows are finite-differenced), so the
-    /// second request is served from here. The buffers are reused.
+    /// evaluation yields both, so the second request is served from here.
+    /// The buffers are reused.
     last: RefCell<Vec<Evaluation>>,
 }
 

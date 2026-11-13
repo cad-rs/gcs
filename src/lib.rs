@@ -12,8 +12,7 @@
 //!
 //! The core treats a constraint system as `F(x) = 0` over a flat parameter
 //! vector. Every constraint supplies its residuals and its analytic Jacobian
-//! rows (the rigid-pose family still finite-differences two orientation
-//! row types); the step comes from the Tikhonov-regularised normal equations
+//! rows; the step comes from the Tikhonov-regularised normal equations
 //! `(JᵀJ + λI) Δx = Jᵀ(−F)` (minimum-norm steps for under-constrained
 //! systems), and each update is line-search damped. Systems are split into
 //! the connected components of the constraint graph and solved one

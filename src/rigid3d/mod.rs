@@ -2,10 +2,10 @@
 //!
 //! Unknowns per body: translation `(tx, ty, tz)` plus incremental orientation
 //! via quaternion manifold integration (`q ← normalize(q · dq)`) — 6 columns
-//! per component. Jacobian rows are analytic (translation columns ±I,
+//! per component. Every Jacobian row is analytic (translation columns ±I,
 //! rotation columns via the `ω × r` linearization, direction rows via
-//! `δd = ω × d`), except the orientation rows of `Fixed` and `Lock`, which
-//! use central finite differences. The solve and the diagnosis are the
+//! `δd = ω × d`, orientation rows via the derivative of the rotation
+//! logarithm). The solve and the diagnosis are the
 //! shared pipeline of the other families, run over these columns: the
 //! Newton core of [`crate::numerics`] steps a pose by adding the
 //! translation and rotating the quaternion. A body that a `Fixed` constraint
