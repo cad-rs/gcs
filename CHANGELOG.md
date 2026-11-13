@@ -111,6 +111,25 @@ minor version.
 
 ### Fixed
 
+- **Two spline constraints of the 3D family had wrong derivatives**, and no
+  test covered any of the four.
+  - `PointOnSpline` held the nearest point on the curve fixed while
+    differentiating, which is right only when the point is already on the
+    curve. Debug builds compare the analytic Jacobian with finite
+    differences at the start of every solve and panic on a mismatch, so a
+    point that started off the curve panicked there; release builds
+    iterated with the inexact rows. The rows now follow the nearest point,
+    and handle a point that lies beyond an end of the curve.
+  - `SplineControlPointSymmetric` had no derivative with respect to its
+    mirror line, and incomplete ones for the control points. A free mirror
+    line never moved and was not connected to the spline in the
+    decomposition. The constraint now shares the rows of `Symmetric`, which
+    has the same equations.
+  - `PointOnSpline` on a spline without control points underflowed an
+    index while building its rows (a panic in debug builds).
+
+  All four spline constraints are now in the per-variant
+  Jacobian-versus-finite-difference test and have solve tests.
 - The corpus manifest tests failed on checkouts with CRLF line endings
   (Git for Windows' default); they now compare modulo line endings, and the
   repository pins LF.

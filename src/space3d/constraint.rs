@@ -2045,71 +2045,12 @@ impl SpaceConstraint {
 
             // ── Symmetric ────────────────────────────────────────────────────
             SpaceConstraint::Symmetric { p1, p2, line } => {
-                let (x1, y1, z1) = p1.param_indices(entities);
-                let (x2, y2, z2) = p2.param_indices(entities);
-                let el = &entities[*line];
-                let (lx1, ly1, lz1) = (el.param(0), el.param(1), el.param(2));
-                let (lx2, ly2, lz2) = (el.param(3), el.param(4), el.param(5));
-                let d = (
-                    params[lx2] - params[lx1],
-                    params[ly2] - params[ly1],
-                    params[lz2] - params[lz1],
-                );
-                let (len, dl) = guarded_norm(d.0 * d.0 + d.1 * d.1 + d.2 * d.2);
-                let x = (
-                    0.5 * (params[x1] + params[x2]) - params[lx1],
-                    0.5 * (params[y1] + params[y2]) - params[ly1],
-                    0.5 * (params[z1] + params[z2]) - params[lz1],
-                );
-                let c = cross3(x, d);
-                let (i0, i1) = cross_pair(dominant_axis(d.0, d.1, d.2));
-                for (row_idx, i) in [(0usize, i0), (1usize, i1)] {
-                    // Same chain rule as PointOnLine, with mid = (p1+p2)/2.
-                    let dc_point = cross_u_deriv(i, d);
-                    let dc_end = cross_v_deriv(i, x);
-                    let r = comp(c, i) / len;
-                    let q = |dc: f64, dk: f64| dc / len - r * (2.0 * dl * dk / len);
-                    row!(out[row_idx],
-                        x1 => 0.5 * q(dc_point.0, 0.0),
-                        y1 => 0.5 * q(dc_point.1, 0.0),
-                        z1 => 0.5 * q(dc_point.2, 0.0),
-                        x2 => 0.5 * q(dc_point.0, 0.0),
-                        y2 => 0.5 * q(dc_point.1, 0.0),
-                        z2 => 0.5 * q(dc_point.2, 0.0),
-                        lx1 => q(-dc_point.0 - dc_end.0, -d.0),
-                        ly1 => q(-dc_point.1 - dc_end.1, -d.1),
-                        lz1 => q(-dc_point.2 - dc_end.2, -d.2),
-                        lx2 => q(dc_end.0, d.0),
-                        ly2 => q(dc_end.1, d.1),
-                        lz2 => q(dc_end.2, d.2),
-                    );
-                }
-                // Perpendicular joining segment: (p2-p1).d/|d|.
-                let s = (
-                    params[x2] - params[x1],
-                    params[y2] - params[y1],
-                    params[z2] - params[z1],
-                );
-                let e = (s.0 * d.0 + s.1 * d.1 + s.2 * d.2) / len;
-                // d/d(line_k) of s/|d|: the sign splits between the two
-                // endpoints; |d| also depends on both endpoints.
-                let line_deriv = |k: usize| {
-                    let (s_k, d_k) = (comp(s, k), comp(d, k));
-                    s_k / len - e * d_k / (len * len)
-                };
-                row!(out[2],
-                    x1 => -d.0 / len,
-                    y1 => -d.1 / len,
-                    z1 => -d.2 / len,
-                    x2 => d.0 / len,
-                    y2 => d.1 / len,
-                    z2 => d.2 / len,
-                    lx1 => -line_deriv(0),
-                    ly1 => -line_deriv(1),
-                    lz1 => -line_deriv(2),
-                    lx2 => line_deriv(0),
-                    ly2 => line_deriv(1),
-                    lz2 => line_deriv(2),
+                symmetric_jacobian(
+                    params,
+                    p1.param_indices(entities),
+                    p2.param_indices(entities),
+                    &entities[*line],
+                    out,
                 );
             }
 
@@ -2146,13 +2087,18 @@ impl SpaceConstraint {
             }
 
             // ── Spline constraints (3D-4) ──────────────────────────────────
-            // The envelope theorem at the nearest point: the derivative of
-            // the perpendicular residual through t* vanishes (the tangent is
-            // orthogonal to the perpendicular plane), so d r/d p is the
-            // perpendicular projector M = I - uu^T and d r/d cp_i is
-            // -B_i(t*) * M — exact wherever the nearest point is regular,
-            // matching the finite differences the residual is checked
-            // against.
+            // The residual is the offset v = p - c(t*) from the nearest
+            // curve point, with its component along the tangent taken out.
+            // Two regimes, each with its exact derivative:
+            //
+            // - The nearest point is inside the span (or at an end the
+            //   point is not beyond). Then v is perpendicular to c'(t*),
+            //   the residual is v itself, and t* follows the parameters:
+            //   differentiating v . c' = 0 gives
+            //   dt*/dq = (d(v . c')/dq) / (|c'|^2 - v . c'').
+            // - The point lies beyond an end of the curve. Then t* stays at
+            //   that end, and what moves is the tangent the residual is
+            //   projected against.
             SpaceConstraint::PointOnSpline { point, spline } => {
                 let (px, py, pz) = point.param_indices(entities);
                 let e = &entities[*spline];
@@ -2160,6 +2106,7 @@ impl SpaceConstraint {
                 if n < 2 {
                     // A degenerate spline carries no row (the residual arm
                     // reports zeros for it).
+                    return;
                 }
                 let cp: Vec<(f64, f64, f64)> = (0..n)
                     .map(|i| {
@@ -2172,34 +2119,79 @@ impl SpaceConstraint {
                     .collect();
                 let p = (params[px], params[py], params[pz]);
                 let (t, _dist) = nearest_on_bezier(&cp, p);
-                let (tx, ty, tz) = bezier_deriv(&cp, t);
-                let t_len = (tx * tx + ty * ty + tz * tz).sqrt().max(SOLVER_NORM_TOL);
-                let (ux, uy, uz) = (tx / t_len, ty / t_len, tz / t_len);
-                // The projector's rows: d comp_k(M v) / d v = row k of M.
-                let ex = (1.0 - ux * ux, -ux * uy, -ux * uz);
-                let ey = (-uy * ux, 1.0 - uy * uy, -uy * uz);
-                let ez = (-uz * ux, -uz * uy, 1.0 - uz * uz);
-                let (i0, i1) = cross_pair(dominant_axis(tx, ty, tz));
-                let c0 = [comp(ex, i0), comp(ey, i0), comp(ez, i0)];
-                let c1 = [comp(ex, i1), comp(ey, i1), comp(ez, i1)];
-                out[0].push((px, c0[0]));
-                out[0].push((py, c0[1]));
-                out[0].push((pz, c0[2]));
-                out[1].push((px, c1[0]));
-                out[1].push((py, c1[1]));
-                out[1].push((pz, c1[2]));
+                let on_curve = bezier_eval(&cp, t);
+                let d1 = bezier_deriv(&cp, t);
+                let d2 = bezier_second_deriv(&cp, t);
+                let v = (p.0 - on_curve.0, p.1 - on_curve.1, p.2 - on_curve.2);
+                let dot =
+                    |a: (f64, f64, f64), b: (f64, f64, f64)| a.0 * b.0 + a.1 * b.1 + a.2 * b.2;
+                let speed_sq = dot(d1, d1);
+                let speed = speed_sq.sqrt().max(SOLVER_NORM_TOL);
+                let u = (d1.0 / speed, d1.1 / speed, d1.2 / speed);
+                let (i0, i1) = cross_pair(dominant_axis(d1.0, d1.1, d1.2));
+
+                // Beyond an end: t* sits on the bound and the offset still
+                // has a component along the tangent, pointing outward.
+                let along = dot(v, d1);
+                let slack = 1.0e-9 * speed * dot(v, v).sqrt();
+                let beyond_an_end = (t <= 0.0 && along < -slack) || (t >= 1.0 && along > slack);
+                // |c'|^2 - v . c'': positive at a proper nearest point, zero
+                // at a centre of curvature, where the nearest point is not
+                // unique and t* has no derivative.
+                let denom = speed_sq - dot(v, d2);
+                let follows = !beyond_an_end && denom > 1.0e-12 * speed_sq;
+
                 let k = n - 1;
-                for i in 0..n {
-                    // The Bernstein basis value B_i(t*), negated for -c'.
-                    let mut binom = 1.0;
-                    for j in 0..i {
-                        binom *= (k - j) as f64 / (j + 1) as f64;
+                let unit = |a: usize| {
+                    (
+                        (a == 0) as u8 as f64,
+                        (a == 1) as u8 as f64,
+                        (a == 2) as u8 as f64,
+                    )
+                };
+                // d r / d q for one parameter, given d v/d q at fixed t
+                // (`dv`), d(v . c')/dq (`dg`) and d c'/d q (`dd1`).
+                let column = |dv: (f64, f64, f64), dg: f64, dd1: (f64, f64, f64)| {
+                    if follows {
+                        let dt = dg / denom;
+                        (dv.0 - d1.0 * dt, dv.1 - d1.1 * dt, dv.2 - d1.2 * dt)
+                    } else {
+                        // r = v - (v . u) u at fixed t, with
+                        // du = (dd1 - u (u . dd1)) / |c'|.
+                        let s = dot(u, dd1);
+                        let du = (
+                            (dd1.0 - u.0 * s) / speed,
+                            (dd1.1 - u.1 * s) / speed,
+                            (dd1.2 - u.2 * s) / speed,
+                        );
+                        let vu = dot(v, u);
+                        let d_vu = dot(dv, u) + dot(v, du);
+                        (
+                            dv.0 - d_vu * u.0 - vu * du.0,
+                            dv.1 - d_vu * u.1 - vu * du.1,
+                            dv.2 - d_vu * u.2 - vu * du.2,
+                        )
                     }
-                    let b = -binom * t.powi(i as i32) * (1.0 - t).powi((k - i) as i32);
+                };
+                let mut push = |param: usize, dr: (f64, f64, f64)| {
+                    out[0].push((param, comp(dr, i0)));
+                    out[1].push((param, comp(dr, i1)));
+                };
+                for (a, param) in [px, py, pz].into_iter().enumerate() {
+                    // The point: v moves with it, c' does not.
+                    push(param, column(unit(a), comp(d1, a), (0.0, 0.0, 0.0)));
+                }
+                for i in 0..n {
+                    let basis = bernstein(k, i, t);
+                    let slope = bernstein_deriv(k, i, t);
                     for a in 0..3 {
-                        let param = e.param(i * 3 + a);
-                        out[0].push((param, b * c0[a]));
-                        out[1].push((param, b * c1[a]));
+                        // Control point i: the curve point moves by B_i, the
+                        // tangent by B_i'.
+                        let axis = unit(a);
+                        let dv = (-basis * axis.0, -basis * axis.1, -basis * axis.2);
+                        let dd1 = (slope * axis.0, slope * axis.1, slope * axis.2);
+                        let dg = -basis * comp(d1, a) + slope * comp(v, a);
+                        push(e.param(i * 3 + a), column(dv, dg, dd1));
                     }
                 }
             }
@@ -2263,44 +2255,23 @@ impl SpaceConstraint {
                 second_index,
                 line,
             } => {
+                // The equations are `Symmetric`'s, read off two control
+                // points instead of two point references.
                 let e = &entities[*spline];
-                let fi = *first_index * 3;
-                let si = *second_index * 3;
-                let el = &entities[*line];
-                let lx1 = params[el.param(0)];
-                let ly1 = params[el.param(1)];
-                let lz1 = params[el.param(2)];
-                let d = line_dir(params, el);
-                let (len, _) = guarded_norm(d.0 * d.0 + d.1 * d.1 + d.2 * d.2);
-                // Midpoint lies on the line: two independent cross rows.
-                let x = (
-                    0.5 * (params[e.param(fi)] + params[e.param(si)]) - lx1,
-                    0.5 * (params[e.param(fi + 1)] + params[e.param(si + 1)]) - ly1,
-                    0.5 * (params[e.param(fi + 2)] + params[e.param(si + 2)]) - lz1,
+                let control_point = |index: usize| {
+                    (
+                        e.param(index * 3),
+                        e.param(index * 3 + 1),
+                        e.param(index * 3 + 2),
+                    )
+                };
+                symmetric_jacobian(
+                    params,
+                    control_point(*first_index),
+                    control_point(*second_index),
+                    &entities[*line],
+                    out,
                 );
-                let c = cross3(x, d);
-                let (i0, i1) = cross_pair(dominant_axis(d.0, d.1, d.2));
-                // d(cross)/d(midpoint) = cross3(0.5, d) for each control point.
-                let half_d = (0.5 * d.0, 0.5 * d.1, 0.5 * d.2);
-                row!(out[0],
-                    e.param(fi) => comp(cross3((1.0, 0.0, 0.0), d), i0) / len,
-                    e.param(si) => comp(cross3((1.0, 0.0, 0.0), d), i0) / len,
-                );
-                row!(out[1],
-                    e.param(fi + 1) => comp(cross3((0.0, 1.0, 0.0), d), i1) / len,
-                    e.param(si + 1) => comp(cross3((0.0, 1.0, 0.0), d), i1) / len,
-                );
-                // The joining segment is perpendicular to the line.
-                row!(out[2],
-                    e.param(fi) => -d.0 / len,
-                    e.param(si) => d.0 / len,
-                    e.param(fi + 1) => -d.1 / len,
-                    e.param(si + 1) => d.1 / len,
-                    e.param(fi + 2) => -d.2 / len,
-                    e.param(si + 2) => d.2 / len,
-                );
-                let _ = half_d;
-                let _ = c;
             }
         }
     }
@@ -2409,6 +2380,81 @@ fn plane_normal(params: &[f64], e: &SpaceEntity) -> (f64, f64, f64) {
     (params[e.param(0)], params[e.param(1)], params[e.param(2)])
 }
 
+/// Jacobian rows of "two points are mirror images about a line", shared by
+/// `Symmetric` and `SplineControlPointSymmetric`. The points are given by
+/// the parameter indices of their coordinates; `el` is the line.
+fn symmetric_jacobian(
+    params: &[f64],
+    (x1, y1, z1): (usize, usize, usize),
+    (x2, y2, z2): (usize, usize, usize),
+    el: &SpaceEntity,
+    out: &mut [Vec<(usize, f64)>],
+) {
+    let (lx1, ly1, lz1) = (el.param(0), el.param(1), el.param(2));
+    let (lx2, ly2, lz2) = (el.param(3), el.param(4), el.param(5));
+    let d = (
+        params[lx2] - params[lx1],
+        params[ly2] - params[ly1],
+        params[lz2] - params[lz1],
+    );
+    let (len, dl) = guarded_norm(d.0 * d.0 + d.1 * d.1 + d.2 * d.2);
+    let x = (
+        0.5 * (params[x1] + params[x2]) - params[lx1],
+        0.5 * (params[y1] + params[y2]) - params[ly1],
+        0.5 * (params[z1] + params[z2]) - params[lz1],
+    );
+    let c = cross3(x, d);
+    let (i0, i1) = cross_pair(dominant_axis(d.0, d.1, d.2));
+    for (row_idx, i) in [(0usize, i0), (1usize, i1)] {
+        // Same chain rule as PointOnLine, with mid = (p1+p2)/2.
+        let dc_point = cross_u_deriv(i, d);
+        let dc_end = cross_v_deriv(i, x);
+        let r = comp(c, i) / len;
+        let q = |dc: f64, dk: f64| dc / len - r * (2.0 * dl * dk / len);
+        out[row_idx].extend([
+            (x1, 0.5 * q(dc_point.0, 0.0)),
+            (y1, 0.5 * q(dc_point.1, 0.0)),
+            (z1, 0.5 * q(dc_point.2, 0.0)),
+            (x2, 0.5 * q(dc_point.0, 0.0)),
+            (y2, 0.5 * q(dc_point.1, 0.0)),
+            (z2, 0.5 * q(dc_point.2, 0.0)),
+            (lx1, q(-dc_point.0 - dc_end.0, -d.0)),
+            (ly1, q(-dc_point.1 - dc_end.1, -d.1)),
+            (lz1, q(-dc_point.2 - dc_end.2, -d.2)),
+            (lx2, q(dc_end.0, d.0)),
+            (ly2, q(dc_end.1, d.1)),
+            (lz2, q(dc_end.2, d.2)),
+        ]);
+    }
+    // Perpendicular joining segment: (p2-p1).d/|d|.
+    let s = (
+        params[x2] - params[x1],
+        params[y2] - params[y1],
+        params[z2] - params[z1],
+    );
+    let e = (s.0 * d.0 + s.1 * d.1 + s.2 * d.2) / len;
+    // d/d(line_k) of s/|d|: the sign splits between the two endpoints;
+    // |d| also depends on both endpoints.
+    let line_deriv = |k: usize| {
+        let (s_k, d_k) = (comp(s, k), comp(d, k));
+        s_k / len - e * d_k / (len * len)
+    };
+    out[2].extend([
+        (x1, -d.0 / len),
+        (y1, -d.1 / len),
+        (z1, -d.2 / len),
+        (x2, d.0 / len),
+        (y2, d.1 / len),
+        (z2, d.2 / len),
+        (lx1, -line_deriv(0)),
+        (ly1, -line_deriv(1)),
+        (lz1, -line_deriv(2)),
+        (lx2, line_deriv(0)),
+        (ly2, line_deriv(1)),
+        (lz2, line_deriv(2)),
+    ]);
+}
+
 // ── Bezier curve evaluation (3D-4) ─────────────────────────────────────────
 
 /// Binomial coefficient C(n, k).
@@ -2462,6 +2508,45 @@ fn bezier_deriv(cp: &[(f64, f64, f64)], t: f64) -> (f64, f64, f64) {
         z += basis * dz;
     }
     (x, y, z)
+}
+
+/// Evaluate the second derivative of a Bezier curve at parameter `t`.
+fn bezier_second_deriv(cp: &[(f64, f64, f64)], t: f64) -> (f64, f64, f64) {
+    let n = cp.len() - 1;
+    if n < 2 {
+        return (0.0, 0.0, 0.0);
+    }
+    // A degree-(n-2) Bezier with control points
+    // n (n-1) (P_{i+2} - 2 P_{i+1} + P_i).
+    let scale = (n * (n - 1)) as f64;
+    let mut out = (0.0, 0.0, 0.0);
+    for i in 0..n - 1 {
+        let basis = scale * bernstein(n - 2, i, t);
+        out.0 += basis * (cp[i + 2].0 - 2.0 * cp[i + 1].0 + cp[i].0);
+        out.1 += basis * (cp[i + 2].1 - 2.0 * cp[i + 1].1 + cp[i].1);
+        out.2 += basis * (cp[i + 2].2 - 2.0 * cp[i + 1].2 + cp[i].2);
+    }
+    out
+}
+
+/// The Bernstein polynomial `B_i` of degree `k` at `t`.
+fn bernstein(k: usize, i: usize, t: f64) -> f64 {
+    binom(k, i) * t.powi(i as i32) * (1.0 - t).powi((k - i) as i32)
+}
+
+/// The derivative of the Bernstein polynomial `B_i` of degree `k` at `t`:
+/// `k (B_{i-1}^{k-1} - B_i^{k-1})`.
+fn bernstein_deriv(k: usize, i: usize, t: f64) -> f64 {
+    if k == 0 {
+        return 0.0;
+    }
+    let lower = if i > 0 {
+        bernstein(k - 1, i - 1, t)
+    } else {
+        0.0
+    };
+    let upper = if i < k { bernstein(k - 1, i, t) } else { 0.0 };
+    k as f64 * (lower - upper)
 }
 
 /// Find the parameter `t` of the point on the Bezier curve nearest to `p`.
@@ -2525,7 +2610,8 @@ mod jacobian_tests {
     use crate::space3d::entity::{SpaceEntityKind, SpaceFrame3};
 
     /// Fixture entities: index 0/1 points, 2/3 lines, 4/5 planes,
-    /// 6/7 spheres, 8/9 cylinders, 10/11 circles, 12/13 arcs.
+    /// 6/7 spheres, 8/9 cylinders, 10/11 circles, 12/13 arcs, 14 a cubic
+    /// spline.
     fn fixture() -> (Vec<f64>, Vec<SpaceEntity>) {
         let params = vec![
             0.3, -0.7, 1.1, // point 0
@@ -2542,6 +2628,7 @@ mod jacobian_tests {
             -0.6, 1.4, 0.9, 2.1, // circle 11
             0.7, 0.2, -1.1, 1.3, // arc 12
             -1.3, -0.5, 0.8, 0.9, // arc 13
+            0.1, 0.2, -0.3, 1.2, 1.6, 0.4, 2.3, 1.1, 1.5, 3.4, -0.2, 0.6, // spline 14
         ];
         let frame = |normal: glam::DVec3, x: glam::DVec3, a0: f64, a1: f64| {
             SpaceFrame3::sanitized(normal, x, a0, a1)
@@ -2592,6 +2679,7 @@ mod jacobian_tests {
                     5.5,
                 ),
             ),
+            SpaceEntity::with_control_points(SpaceEntityKind::SpaceSpline, 64, 4),
         ];
         (params, entities)
     }
@@ -2797,7 +2885,154 @@ mod jacobian_tests {
                 p2: ArcCenter(12),
                 distance: 2.0,
             },
+            SpaceConstraint::SplineEndpoint {
+                point: Point(0),
+                spline: 14,
+                at_start: true,
+            },
+            SpaceConstraint::SplineEndpoint {
+                point: LineEnd(2),
+                spline: 14,
+                at_start: false,
+            },
+            SpaceConstraint::SplineControlPointMidpoint {
+                spline: 14,
+                midpoint_index: 1,
+                first_index: 0,
+                second_index: 3,
+            },
+            SpaceConstraint::SplineControlPointSymmetric {
+                spline: 14,
+                first_index: 1,
+                second_index: 2,
+                line: 3,
+            },
+            // Nearest points at the start of the curve, inside it, and
+            // (the sphere centre) wherever that one falls.
+            SpaceConstraint::PointOnSpline {
+                point: Point(0),
+                spline: 14,
+            },
+            SpaceConstraint::PointOnSpline {
+                point: Point(1),
+                spline: 14,
+            },
+            SpaceConstraint::PointOnSpline {
+                point: LineEnd(2),
+                spline: 14,
+            },
+            SpaceConstraint::PointOnSpline {
+                point: SphereCenter(7),
+                spline: 14,
+            },
         ]
+    }
+
+    /// The cubic of the fixture (entity 14) and a point exactly on it.
+    fn point_on_the_fixture_spline(t: f64) -> (Vec<f64>, Vec<SpaceEntity>) {
+        let (mut params, entities) = fixture();
+        let start = entities[14].param_start;
+        let cp: Vec<(f64, f64, f64)> = (0..4)
+            .map(|i| {
+                (
+                    params[start + 3 * i],
+                    params[start + 3 * i + 1],
+                    params[start + 3 * i + 2],
+                )
+            })
+            .collect();
+        let (x, y, z) = bezier_eval(&cp, t);
+        params[0] = x;
+        params[1] = y;
+        params[2] = z;
+        (params, entities)
+    }
+
+    fn on_fixture_spline() -> SpaceConstraint {
+        SpaceConstraint::PointOnSpline {
+            point: SpacePointRef::Point(0),
+            spline: 14,
+        }
+    }
+
+    /// The nearest-point parameter the constraint works with, read back
+    /// from the fixture layout.
+    fn nearest_parameter(params: &[f64], entities: &[SpaceEntity]) -> f64 {
+        let start = entities[14].param_start;
+        let cp: Vec<(f64, f64, f64)> = (0..4)
+            .map(|i| {
+                (
+                    params[start + 3 * i],
+                    params[start + 3 * i + 1],
+                    params[start + 3 * i + 2],
+                )
+            })
+            .collect();
+        nearest_on_bezier(&cp, (params[0], params[1], params[2])).0
+    }
+
+    /// On the curve, and beside it where the nearest point is inside the
+    /// span: the rows are the exact derivative, for the point and for every
+    /// control point. Beside the curve this includes how the nearest point
+    /// moves, which a Jacobian that held it fixed would get wrong.
+    #[test]
+    fn point_on_spline_jacobian_follows_the_nearest_point() {
+        let c = on_fixture_spline();
+        for t in [0.2, 0.45, 0.8] {
+            let (mut params, entities) = point_on_the_fixture_spline(t);
+            let mut f = [1.0_f64; 2];
+            c.residuals(&params, &entities, &mut f);
+            assert!(f.iter().all(|r| r.abs() < 1e-12), "on the curve: {f:?}");
+            check_one(&c, &params, &entities);
+
+            params[0] += 0.2;
+            params[1] -= 0.3;
+            params[2] += 0.25;
+            let nearest = nearest_parameter(&params, &entities);
+            assert!(nearest > 0.05 && nearest < 0.95, "t* = {nearest}");
+            check_one(&c, &params, &entities);
+        }
+    }
+
+    /// Beyond either end of the curve the nearest point is the end itself,
+    /// and the rows are exact there too.
+    #[test]
+    fn point_on_spline_jacobian_is_exact_beyond_the_ends() {
+        let c = on_fixture_spline();
+        // Step back from the start and on from the end, along the tangent
+        // and a little to the side.
+        for (t, offset) in [(0.0, (-0.9, -1.0, -0.7)), (1.0, (0.8, -1.1, -0.5))] {
+            let (mut params, entities) = point_on_the_fixture_spline(t);
+            params[0] += offset.0;
+            params[1] += offset.1;
+            params[2] += offset.2;
+            assert_eq!(nearest_parameter(&params, &entities), t);
+            let mut f = [0.0_f64; 2];
+            c.residuals(&params, &entities, &mut f);
+            assert!(f.iter().any(|r| r.abs() > 0.1), "off to the side: {f:?}");
+            check_one(&c, &params, &entities);
+        }
+    }
+
+    /// A spline without control points contributes no row and must not
+    /// panic while saying so.
+    #[test]
+    fn point_on_an_empty_spline_has_no_rows() {
+        let entities = vec![
+            SpaceEntity::new(SpaceEntityKind::SpacePoint, 0),
+            SpaceEntity::with_control_points(SpaceEntityKind::SpaceSpline, 3, 0),
+        ];
+        let params = vec![1.0, 2.0, 3.0];
+        let c = SpaceConstraint::PointOnSpline {
+            point: SpacePointRef::Point(0),
+            spline: 1,
+        };
+        let mut f = [1.0_f64; 2];
+        c.residuals(&params, &entities, &mut f);
+        assert_eq!(f, [0.0, 0.0]);
+        let mut rows: Vec<Vec<(usize, f64)>> = vec![Vec::new(); 2];
+        c.jacobian(&params, &entities, &mut rows);
+        assert!(rows.iter().all(Vec::is_empty));
     }
 
     fn check_one(c: &SpaceConstraint, params: &[f64], entities: &[SpaceEntity]) {
