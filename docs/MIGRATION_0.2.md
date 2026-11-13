@@ -14,6 +14,7 @@
 | 手写 `PoseSolveResult { … }`、`SolveResult { … }`、`DofReport { … }`、`SpaceDofReport { … }` 字面量报缺字段 | 分别多了 `status`；`status`；`rank` 和 `structural_dof` | 补上字段。只读不建的代码不受影响 |
 | 闭包或 `()` 块以 `sk.add_constraint(…)` 结尾时报类型不匹配 | 三个容器的 `add_constraint` 现在返回约束下标 `usize` | 在调用后加分号 |
 | 用了 `numerics::newton_solve_with_jacobian` | 它的一个参数类型本来就是库内私有的，现在函数也改成私有 | 用 `newton_solve` / `newton_solve_with` |
+| 用了常量 `numerics::LINE_SEARCH_RELAX`、`LINE_SEARCH_STEPS` | 减半线搜索换成了信赖域，这两个常量随之删除 | 没有对应物；它们只是内部步长控制的参数 |
 | 宿主自己的类型对 `glam` 向量派生 serde 时报 `Serialize` 未实现 | 0.1.0 无条件打开了 `glam/serde`，宿主可能在不知情的情况下依赖了它 | 打开本库的 `serde` 特性，或在宿主自己的 `Cargo.toml` 里给 `glam` 开 `serde` |
 | `-D warnings` 的构建在 `DOFAnalyzer` / `SolverDiagnostics` / `rigid3d::SolveOptions` 处报弃用 | 三者标了 `#[deprecated]` | 短期加 `#[allow(deprecated)]`，再按第 3 节换掉 |
 
@@ -28,6 +29,7 @@
 - **失败不再留下最后的迭代点。** 三族现在都一样：没收敛的连通分量（刚体是簇）回到求解开始时的状态，收敛了的保留结果。如果宿主在失败后自己做了“恢复快照”，现在可以去掉；如果宿主**依赖**失败后的迭代点（比如拿它显示“最接近的位置”），要显式要回来：2D / 3D 用 `SolveOptions { on_failure: FailurePolicy::KeepLast, .. }`，刚体用 `PoseSolveOptions { on_failure: FailurePolicy::KeepLast, .. }`。
 - `SolveResult::residual` 和 `PoseSolveResult::error` 是**留下来的那个状态**的残差：默认策略下，失败时它是起始状态的残差，不是迭代到最后的残差。
 - 失败原因在 `status` 里：`MaxIterations`、`Stalled`、`Singular`、`Diverged`。以前 NaN 会让消元 panic，现在报 `Diverged`。
+- **解不出来的系统现在很快结束，报 `Stalled`。** 冲突的约束组以前会在最小二乘折中点附近转到迭代上限（默认 100 次）才返回；现在一旦任何长度的步都不能再降低残差就停（测试里的冲突草图不到 20 次迭代）。交互中“加了一个矛盾约束”的反馈因此快得多。如果宿主用 `status == MaxIterations` 判断“这是个冲突”，要改成看 `Stalled`（更可靠的做法是看 `diagnose()` 的 `conflicting`）。`MaxIterations` 现在只表示“还在下降，但迭代次数用完了”。
 - **“没有自由参数”不再等于收敛。** 一个分量的参数全被固定而方程不成立时，0.1.0 报 `converged = true`，现在报 `false` / `Stalled`。如果宿主把“全固定”当成快速通过的路径，这里会开始报失败——这些失败是真的。
 
 ### 2.2 自由度的数字

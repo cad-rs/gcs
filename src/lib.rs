@@ -14,7 +14,7 @@
 //! vector. Every constraint supplies its residuals and its analytic Jacobian
 //! rows; the step comes from the Tikhonov-regularised normal equations
 //! `(JᵀJ + λI) Δx = Jᵀ(−F)` (minimum-norm steps for under-constrained
-//! systems), and each update is line-search damped. Systems are split into
+//! systems), and each update stays inside a trust radius. Systems are split into
 //! the connected components of the constraint graph and solved one
 //! component at a time. See [`numerics`].
 //!

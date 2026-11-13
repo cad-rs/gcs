@@ -62,6 +62,7 @@ pub(crate) trait Equations {
 
     /// Whether a solve cross-checks the Jacobian against finite differences
     /// in debug builds (two residual evaluations per free column).
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     fn debug_check_jacobian(&self) -> bool {
         true
     }

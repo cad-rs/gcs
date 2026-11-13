@@ -107,6 +107,34 @@ never takes the restore path. A single run of `assembly/solve_chain/5`
 read 125 µs; three repeats of it alone read 104 µs each, which is the
 scatter to expect from one pass at 10 samples.
 
+### After the step control became a trust region (P2.3)
+
+Same machine. The dogleg takes the same steps as the old line search
+wherever the full Gauss–Newton step is accepted, so the cost per iteration
+is what matters here, not the iteration count.
+
+| Benchmark | before | dogleg |
+|---|---:|---:|
+| `sketch/solve_chain/54` | 0.364 ms | 0.320 ms |
+| `sketch/solve_chain/198` | 7.54 ms | 6.24 ms |
+| `sketch/solve_chain/792` | 357 ms | 335 ms |
+| `sketch/solve_field/3600` | 8.66 ms | 7.66 ms |
+| `space/solve_truss/240` | 14.3 ms | 12.3 ms |
+| `space/solve_truss/780` | 396 ms | 352 ms |
+| `assembly/solve_chain/5` | 104 µs | 99.7 µs |
+| `assembly/solve_chain/20` | 0.917 ms | 0.910 ms |
+| `assembly/solve_chain/40` | 4.33 ms | 4.19 ms |
+| `assembly/solve_star/40` | 0.692 ms | 0.677 ms |
+
+The "before" column for the sketch and space rows is the P0 column above,
+measured earlier, so the few percent in the dogleg's favour there are
+within what separates two sessions; the assembly rows were measured the
+same day. The reading is "level", not "faster".
+
+A first version of the dogleg multiplied by the dense Jacobian three times
+per iteration and made the 5-body chain 30% slower (132 µs). The products
+now run over the non-zero entries of each row.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.

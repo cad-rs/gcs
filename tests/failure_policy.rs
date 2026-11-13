@@ -36,9 +36,15 @@ fn failed_solve_restores_the_start_by_default() {
     let result = sk.solve();
 
     assert!(!result.converged);
-    // A conflict settles toward its least-squares compromise and runs out
-    // of iterations there.
-    assert_eq!(result.status, SolveStatus::MaxIterations);
+    // A conflict settles at its least-squares compromise, where no step of
+    // any length lowers the residual further. The solve says so, well
+    // before the iteration limit.
+    assert_eq!(result.status, SolveStatus::Stalled);
+    assert!(
+        result.iterations < 20,
+        "{} iterations to find out",
+        result.iterations
+    );
     assert_eq!(
         sk.params_snapshot(),
         before,

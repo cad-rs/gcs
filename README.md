@@ -23,10 +23,9 @@ Each family reduces to `F(x) = 0` over a parameter vector:
 3. the step comes from the Tikhonov-regularised normal equations
    `(JᵀJ + λI) Δx = Jᵀ(−F)` — under-constrained systems get the
    minimum-norm step instead of diverging;
-4. the step is halved until it stops the residual from growing (a relative
-   increase of up to 1e-4 is tolerated); if no halving does, it is
-   recomputed with a stronger λ, and a step that still fails is discarded
-   rather than taken;
+4. the step is taken inside a trust radius (Powell's dogleg): whole while
+   it fits, otherwise bent toward steepest descent; a step that does not
+   lower the residual is discarded and the radius shrunk;
 5. iterate until the RMS residual drops below `RESIDUAL_TOL = 1e-10`
    (rigid-pose family: L2 norm < `tolerance`).
 

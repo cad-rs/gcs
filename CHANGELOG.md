@@ -32,20 +32,34 @@ through them from a host's side.
   discounts the two representation freedoms of the cylinder storage (axis
   point sliding along the axis, axis direction rescaling) unless a
   constraint pins them.
-- **A step that fails the line search is no longer taken.** 0.1.0 took the
-  last halving of a step even when all eight halvings had failed the
-  acceptance test. Now the step is recomputed with a stronger
-  regularisation (`LAMBDA_ESCALATION`); if that fails too, the iterate is
-  put back and the solve stops as `Stalled`. A numerically singular step is
-  retried the same way and ends the solve as `Singular` instead of idling
-  to the iteration limit. The acceptance test itself is unchanged (the
-  residual may grow by a relative 1e-4).
+- **Step control is a trust region (Powell's dogleg) instead of a halving
+  line search.** 0.1.0 halved the Gauss–Newton step up to eight times,
+  accepted a step that let the residual grow by a relative 1e-4, and took
+  the last halving even when all eight had failed. Now the Gauss–Newton
+  step is taken whole while it fits inside a trust radius that starts out
+  unbounded, so an easy solve is unchanged; a step is kept only if it
+  lowers the residual, and a rejected one shrinks the radius and bends the
+  next trial toward steepest descent, at the cost of a residual evaluation
+  and no new factorisation. On the 2D and assembly corpora the work is the
+  same to within 0.2% (linear solves and residual evaluations counted) and
+  every reported metric is identical, the large-drift branch flips
+  included; the 3D corpus passes unchanged. A serial
+  3D truss, where errors amplify along the chain, now converges from a
+  0.05 perturbation at every length tried; it did not at 160 and 260
+  points (`tests/hard_cases.rs`). The constants
+  `numerics::LINE_SEARCH_RELAX` and `LINE_SEARCH_STEPS` are gone with the
+  line search.
+- **A system that cannot be solved ends as `Stalled`, and soon.** A
+  conflict used to wander near its least-squares compromise until the
+  iteration limit and report `MaxIterations`. It now stops when no step of
+  any length lowers the residual. `MaxIterations` is left for a solve that
+  was still making progress when it ran out.
 - **Unsatisfied equations with no free parameter are no longer "converged".**
   A component whose parameters are all fixed used to report
   `converged = true` whatever its residual. It now reports
   `converged = false` and `Stalled` when its equations do not hold.
-- **The rigid-pose solve runs on the shared Newton core.** It gains the
-  line search and the regularisation escalation of the other families.
+- **The rigid-pose solve runs on the shared Newton core**, with the step
+  control of the other families.
   `ConstraintSolver::solve` and `solve_from` now solve every connected
   cluster on its own (as `solve_components` always did) instead of the
   whole system at once: `success` means every cluster's own residual norm

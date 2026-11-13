@@ -1,25 +1,27 @@
 //! The shared Newton-Raphson least-squares core.
 //!
-//! The 2D-sketch and 3D-geometric families run the same loop over a flat
-//! parameter vector: evaluate residuals, build the Jacobian (analytic rows
-//! supplied by the family; central finite differences for callers of
-//! [`newton_solve`] that have none), solve the regularised normal equations
-//! `(JᵀJ + λI) Δx = Jᵀ(−F)`, and take a damped step. The residual and
-//! Jacobian evaluation differ per family, so they are injected as closures.
-//! The rigid-pose family has its own loop on the same linear-algebra
-//! helpers.
+//! All three families run the same loop: evaluate residuals, build the
+//! Jacobian (analytic rows supplied by the family; central finite
+//! differences for callers of [`newton_solve`] that have none), solve the
+//! regularised normal equations `(JᵀJ + λI) Δx = Jᵀ(−F)`, and take a step
+//! inside a trust radius. The residual and Jacobian evaluation differ per
+//! family, so they are injected as closures; the rigid-pose family also
+//! supplies how a step is applied to a pose.
 //!
 //! The Moore-Penrose pseudo-inverse J⁺ is realised through the normal
 //! equations with Tikhonov regularisation λ: under-constrained systems get
 //! the minimum-norm step instead of diverging.
 //!
-//! Step control: each step is halved until it passes the acceptance test
-//! (the residual may not grow by more than [`LINE_SEARCH_RELAX`],
-//! relatively). If no halving passes, the step is recomputed with a stronger
-//! λ ([`LAMBDA_ESCALATION`]) before the iteration gives up; a step that
-//! failed the test is never kept. A solve that ends without converging
-//! reports why ([`SolveStatus`]) and, by default, puts the starting
-//! parameters back ([`FailurePolicy`]).
+//! Step control is Powell's dogleg. The Gauss–Newton step is taken whole
+//! while it fits inside the trust radius, which starts out unbounded, so a
+//! well-behaved solve is plain Gauss–Newton. A step is judged by its gain:
+//! the reduction of the squared residual it achieved over the reduction the
+//! linear model promised. A step with no gain is not taken; the radius
+//! shrinks and the next trial bends from the Gauss–Newton direction toward
+//! steepest descent, which costs a residual evaluation and no new
+//! factorisation. A solve that ends without converging reports why
+//! ([`SolveStatus`]) and, by default, puts the starting parameters back
+//! ([`FailurePolicy`]).
 
 use std::cmp::Ordering;
 
@@ -54,14 +56,13 @@ pub enum SolveStatus {
     /// The residual is below the tolerance.
     Converged,
     /// The iteration limit was reached while the residual was still above
-    /// the tolerance. This is also how a conflicting system usually ends:
-    /// it settles toward its least-squares compromise without ever meeting
-    /// the tolerance.
+    /// the tolerance and still falling.
     MaxIterations,
-    /// The iteration cannot move from here: no step passed the line search
-    /// at any regularisation (a stationary point of the residual norm that
-    /// is not a solution), or the unsatisfied equations have no free
-    /// parameter at all.
+    /// The iteration cannot move from here: no step, however short, lowers
+    /// the residual (a stationary point of the residual norm that is not a
+    /// solution), or the unsatisfied equations have no free parameter at
+    /// all. This is how a conflicting system ends: at its least-squares
+    /// compromise.
     Stalled,
     /// The regularised normal equations were numerically singular; no step
     /// could be computed.
@@ -86,8 +87,8 @@ pub enum FailurePolicy {
 
 /// Options for the 2D-sketch and 3D-geometric solver families.
 ///
-/// The rigid-pose family has its own [`crate::rigid3d::SolveOptions`]; the
-/// two are due to be merged when the families share one pipeline.
+/// The rigid-pose family has its own [`crate::rigid3d::PoseSolveOptions`]:
+/// its tolerance is an L2 norm and it has two more knobs.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SolveOptions {
@@ -135,7 +136,7 @@ pub(crate) struct CoreOptions {
     pub(crate) on_failure: FailurePolicy,
     /// Base Tikhonov regularisation of the normal equations.
     pub(crate) lambda: f64,
-    /// The step length the line search starts from (1 is the full step).
+    /// The factor the Gauss–Newton step is scaled by (1 is the full step).
     pub(crate) initial_step: f64,
     /// Upper bound on convergence-polish steps (see [`POLISH_STEPS`]).
     pub(crate) polish_steps: usize,
@@ -187,16 +188,17 @@ pub const LAMBDA: f64 = 1e-10;
 pub const PIVOT_TOL: f64 = 1e-14;
 /// Normalization guard threshold — prevents division by near-zero vectors.
 pub const SOLVER_NORM_TOL: f64 = 1e-10;
-/// Relative non-worsening tolerance for the damped line search (Armijo-type:
-/// accept a step whose residual is not larger than the old one by this factor).
-pub const LINE_SEARCH_RELAX: f64 = 1e-4;
-/// Halving attempts of the damped line search.
-pub const LINE_SEARCH_STEPS: usize = 8;
-/// Regularisation strengths tried, in order, after a step at the base
-/// [`LAMBDA`] fails its line search — as multiples of the largest diagonal
-/// entry of `JᵀJ`, so they are relative to the scale of the system. The
-/// last one makes the step essentially a short steepest-descent move.
-pub const LAMBDA_ESCALATION: [f64; 5] = [1e-6, 1e-4, 1e-2, 1.0, 1e2];
+/// A step whose gain (achieved over promised reduction of the squared
+/// residual) is above this widens the trust radius.
+const TRUST_WIDEN_ABOVE: f64 = 0.75;
+/// A step whose gain is at or below this narrows the trust radius.
+const TRUST_NARROW_BELOW: f64 = 0.25;
+/// How far a good step lets the radius grow, as a multiple of its length.
+const TRUST_GROWTH: f64 = 3.0;
+/// Trial steps per iteration before the iterate is declared stationary.
+/// Every rejection halves the radius, so the last trial is some twelve
+/// orders of magnitude shorter than the first.
+const TRUST_ATTEMPTS: usize = 40;
 /// Bounded strictly-improving convergence-polish steps after convergence
 /// (unregularised, accepted only on strict residual improvement). Each
 /// unregularised refinement lands within linear-solve rounding (~1e-16
@@ -447,6 +449,10 @@ where
     // hands its residuals over, so each point is evaluated once.
     let mut f = eval_vec(&mut eval_residuals, params, n_eq);
 
+    // The trust radius, in the norm of the step vector. Unbounded until a
+    // step has been judged poor.
+    let mut radius = f64::INFINITY;
+
     for _ in 0..options.max_iterations {
         residual = rms(&f);
         if residual < tolerance {
@@ -467,69 +473,43 @@ where
             numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
         }
 
-        // Solve (J^T J + λI) Δx = J^T (−F)  →  Δx, with the base λ first.
-        // When the damped line search cannot keep the residual from growing
-        // (or the system is numerically singular), retry with a stronger λ
-        // scaled to JᵀJ: that bends the step from Gauss–Newton toward
-        // steepest descent, which does reduce the residual for a short
-        // enough step unless the iterate is stationary. A step that fails
-        // the acceptance test is never kept.
+        // The linear model f + J·h at this iterate, and a dogleg step
+        // inside the trust radius. A trial that gains nothing is undone and
+        // the radius halved; the next one is shorter and closer to the
+        // steepest-descent direction. The model is not rebuilt for it.
         let saved = save(params, storage);
-        let mut step = vec![0.0_f64; n_free];
-        let diag_scale = max_normal_diagonal(&j, n_free);
-        let mut accepted = false;
-        let mut solved_any = false;
-        let mut non_finite = false;
-        for attempt in 0..=LAMBDA_ESCALATION.len() {
-            let lambda = match attempt {
-                0 => options.lambda,
-                k => LAMBDA_ESCALATION[k - 1] * diag_scale,
-            };
-            let Some(delta) = try_solve_normal_equations(&j, &f, n_free, lambda) else {
-                continue;
-            };
-            if delta.iter().any(|d| !d.is_finite()) {
-                non_finite = true;
+        let model = LinearModel::new(&j, &f, n_free, options);
+        // The residuals of the trial step that was accepted, if one was.
+        let mut accepted: Option<Vec<f64>> = None;
+        for _ in 0..TRUST_ATTEMPTS {
+            let Some(step) = model.step(radius) else {
                 break;
+            };
+            let length = norm(&step);
+            space.apply(params, &saved, &step);
+            let f_new = eval_vec(&mut eval_residuals, params, n_eq);
+            let gain = model.gain(&step, &f_new);
+            if gt(gain, TRUST_WIDEN_ABOVE) {
+                radius = radius.max(TRUST_GROWTH * length);
+            } else if !gt(gain, TRUST_NARROW_BELOW) {
+                radius = 0.5 * radius.min(length);
             }
-            solved_any = true;
-            if delta.iter().all(|&d| d == 0.0) {
-                // A zero step "keeps the residual from growing" trivially;
-                // it is no progress.
-                continue;
-            }
-
-            // Damped update: halve the step while the residual grows.
-            let mut alpha = options.initial_step;
-            for _ in 0..LINE_SEARCH_STEPS {
-                for (s, d) in step.iter_mut().zip(&delta) {
-                    *s = alpha * d;
-                }
-                space.apply(params, &saved, &step);
-                let f_new = eval_vec(&mut eval_residuals, params, n_eq);
-                if rms(&f_new) < residual * (1.0 + LINE_SEARCH_RELAX) {
-                    accepted = true;
-                    f = f_new;
-                    break;
-                }
-                alpha *= 0.5;
-            }
-            if accepted {
+            if gt(gain, 0.0) {
+                accepted = Some(f_new);
                 break;
             }
         }
-        if !accepted {
-            // No step at any regularisation helped: put the iterate back
-            // and stop — the next iteration would recompute the same steps.
-            restore(params, storage, &saved);
-            failure = if non_finite {
-                SolveStatus::Diverged
-            } else if solved_any {
-                SolveStatus::Stalled
-            } else {
-                SolveStatus::Singular
-            };
-            break;
+        let stuck = model.failure();
+        match accepted {
+            Some(f_new) => f = f_new,
+            None => {
+                // No step of any length lowered the residual: put the
+                // iterate back and stop — the next iteration would rebuild
+                // the same model.
+                restore(params, storage, &saved);
+                failure = stuck;
+                break;
+            }
         }
 
         iters += 1;
@@ -611,6 +591,165 @@ where
         residual,
         iterations: iters,
         status,
+    }
+}
+
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+fn norm(v: &[f64]) -> f64 {
+    dot(v, v).sqrt()
+}
+
+/// The linear model `f + J·h` of the residuals around one iterate, with the
+/// two steps a dogleg is drawn between.
+struct LinearModel<'a> {
+    /// The non-zero entries of each row of `J`, as `(column, value)`. A
+    /// constraint touches a handful of parameters, so products with `J`
+    /// cost far less over these than over the dense rows.
+    rows: Vec<Vec<(usize, f64)>>,
+    f: &'a [f64],
+    /// `‖f‖²`.
+    cost: f64,
+    /// `Jᵀf`: the squared residual falls fastest along `−g`.
+    g: Vec<f64>,
+    /// The Gauss–Newton step: the regularised normal equations, scaled by
+    /// the caller's step factor. `None` when they are numerically singular.
+    newton: Option<Vec<f64>>,
+    /// The Cauchy step: where the model is smallest along `−g`. `None` at a
+    /// stationary point, where `g` vanishes.
+    cauchy: Option<Vec<f64>>,
+    /// Whether the normal equations gave something that is not a number.
+    non_finite: bool,
+}
+
+impl<'a> LinearModel<'a> {
+    fn new(j: &'a [Vec<f64>], f: &'a [f64], n_free: usize, options: &CoreOptions) -> Self {
+        let rows: Vec<Vec<(usize, f64)>> = j
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .enumerate()
+                    .filter(|(_, v)| **v != 0.0)
+                    .map(|(col, v)| (col, *v))
+                    .collect()
+            })
+            .collect();
+        let mut g = vec![0.0_f64; n_free];
+        for (row, fi) in rows.iter().zip(f) {
+            for &(col, v) in row {
+                g[col] += v * fi;
+            }
+        }
+        let g_sq = dot(&g, &g);
+        let jg_sq: f64 = rows
+            .iter()
+            .map(|row| {
+                let jg: f64 = row.iter().map(|&(col, v)| v * g[col]).sum();
+                jg * jg
+            })
+            .sum();
+        let cauchy = (gt(g_sq, 0.0) && gt(jg_sq, 0.0)).then(|| {
+            let alpha = g_sq / jg_sq;
+            g.iter().map(|gk| -alpha * gk).collect()
+        });
+
+        let solved = try_solve_normal_equations(j, f, n_free, options.lambda);
+        let non_finite = solved
+            .as_ref()
+            .is_some_and(|h| h.iter().any(|d| !d.is_finite()));
+        let newton = solved
+            .filter(|_| !non_finite)
+            .map(|h| h.iter().map(|d| options.initial_step * d).collect());
+
+        Self {
+            rows,
+            f,
+            cost: dot(f, f),
+            g,
+            newton,
+            cauchy,
+            non_finite,
+        }
+    }
+
+    /// The dogleg step of length at most `radius`: the Gauss–Newton step if
+    /// it fits; otherwise the point where the path from the Cauchy step to
+    /// the Gauss–Newton step leaves the radius, or, if even the Cauchy step
+    /// is too long, a step of length `radius` straight down the gradient.
+    /// `None` when there is no step to take.
+    fn step(&self, radius: f64) -> Option<Vec<f64>> {
+        let step: Vec<f64> = match (&self.newton, &self.cauchy) {
+            (Some(newton), _) if norm(newton) <= radius => newton.clone(),
+            (_, Some(cauchy)) if norm(cauchy) >= radius => {
+                let scale = radius / norm(&self.g);
+                self.g.iter().map(|gk| -scale * gk).collect()
+            }
+            (Some(newton), Some(cauchy)) => {
+                // cauchy + β (newton − cauchy), with β such that the length
+                // is the radius.
+                let across: Vec<f64> = newton.iter().zip(cauchy).map(|(b, a)| b - a).collect();
+                let (dd, ad, aa) = (
+                    dot(&across, &across),
+                    dot(cauchy, &across),
+                    dot(cauchy, cauchy),
+                );
+                let root = (ad * ad + dd * (radius * radius - aa)).max(0.0).sqrt();
+                let beta = if ad <= 0.0 {
+                    (-ad + root) / dd
+                } else {
+                    (radius * radius - aa) / (ad + root)
+                };
+                cauchy
+                    .iter()
+                    .zip(&across)
+                    .map(|(a, d)| a + beta * d)
+                    .collect()
+            }
+            (Some(newton), None) => {
+                let scale = radius / norm(newton);
+                newton.iter().map(|b| scale * b).collect()
+            }
+            (None, Some(cauchy)) => cauchy.clone(),
+            (None, None) => return None,
+        };
+        (step.iter().all(|d| d.is_finite()) && step.iter().any(|&d| d != 0.0)).then_some(step)
+    }
+
+    /// The gain of a step: the reduction of the squared residual it
+    /// achieved, over the reduction `‖f‖² − ‖f + J·h‖²` the model promised.
+    /// Negative when the model promised nothing or a number went missing.
+    fn gain(&self, step: &[f64], f_new: &[f64]) -> f64 {
+        let modelled: f64 = self
+            .rows
+            .iter()
+            .zip(self.f)
+            .map(|(row, fi)| {
+                let jh: f64 = row.iter().map(|&(col, v)| v * step[col]).sum();
+                let r = fi + jh;
+                r * r
+            })
+            .sum();
+        let promised = self.cost - modelled;
+        let achieved = self.cost - dot(f_new, f_new);
+        if gt(promised, 0.0) && achieved.is_finite() {
+            achieved / promised
+        } else {
+            -1.0
+        }
+    }
+
+    /// Why no step could be accepted from this iterate.
+    fn failure(&self) -> SolveStatus {
+        if self.non_finite {
+            SolveStatus::Diverged
+        } else if self.newton.is_none() && self.cauchy.is_none() && gt(dot(&self.g, &self.g), 0.0) {
+            // A gradient, and still no step: the linear algebra failed.
+            SolveStatus::Singular
+        } else {
+            SolveStatus::Stalled
+        }
     }
 }
 
@@ -908,22 +1047,6 @@ pub(crate) fn solve_normal_equations_with_lambda(
     lambda: f64,
 ) -> Vec<f64> {
     try_solve_normal_equations(j, f, n, lambda).unwrap_or_else(|| vec![0.0; n])
-}
-
-/// Largest diagonal entry of `JᵀJ` (the largest squared column norm of `J`):
-/// the scale that an escalated regularisation is measured against. Falls
-/// back to 1 for an all-zero Jacobian.
-fn max_normal_diagonal(j: &[Vec<f64>], n: usize) -> f64 {
-    let mut best = 0.0_f64;
-    for col in 0..n {
-        let sq: f64 = j.iter().map(|row| row[col] * row[col]).sum();
-        best = best.max(sq);
-    }
-    if gt(best, 0.0) {
-        best
-    } else {
-        1.0
-    }
 }
 
 /// [`solve_normal_equations_with_lambda`] that reports a singular system as

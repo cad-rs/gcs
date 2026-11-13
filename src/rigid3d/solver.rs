@@ -11,7 +11,7 @@
 //!
 //! This module supplies the equations (residuals and Jacobian rows per
 //! constraint) and the solver front end. The iteration itself — the
-//! normal-equation step, the line search, the convergence polish — is the
+//! normal-equation step, the trust region, the convergence polish — is the
 //! Newton core the other families use, driven per connected cluster. A body
 //! that a `Fixed` constraint pins in full is grounded: placed at its pose and
 //! left out of the unknowns, so the clusters hanging off it solve

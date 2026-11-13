@@ -20,12 +20,14 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   `benches/BASELINE.md` for where it sits today). Going through the normal
   equations also squares the condition number; a QR-based minimum-norm step
   would not.
-- **Better step control.** The core uses a fixed Tikhonov λ with step
-  halving, and escalates λ only when the halving fails. A proper
-  Levenberg–Marquardt / dogleg trust region, automatic
-  scaling/equilibration, scale-aware tolerances, and a homotopy/continuation
-  path for hard starts would raise the convergence rate on badly conditioned
-  systems.
+- **Scaling and hard starts.** The step control is a dogleg trust region,
+  but the radius is measured in the raw parameter vector, where a length
+  and an angle weigh the same. Automatic scaling/equilibration, scale-aware
+  tolerances, and a homotopy/continuation path for hard starts would raise
+  the convergence rate on badly conditioned systems. A long serial chain
+  from a large perturbation still runs out of iterations
+  (`tests/hard_cases.rs` prints the table); solving such a chain block by
+  block is the better answer there.
 - **Parallel residual / Jacobian evaluation.** The residual closure is pure;
   `rayon` could parallelise the FD column sweep and the per-constraint
   residuals behind an opt-in feature.
