@@ -50,6 +50,10 @@ minor version.
   builds these structs by literal needs the new fields).
 - `numerics::newton_solve_with_jacobian` is crate-private. It took a
   crate-private argument type and could not be called from outside.
+- `space3d::diagnosis::SpaceDiagnosis` is a type alias of `Diagnosis` (the
+  fields were already the same; serialized key order now follows
+  `Diagnosis`), and the 3D threshold constants are re-exports of the 2D
+  ones.
 
 ### Added
 
@@ -85,6 +89,14 @@ minor version.
 - The unit test `large_system_makes_progress` built its grid with
   overlapping parameters, which is why it never converged. With the layout
   fixed it converges and is now `grid_system_converges`.
+
+### Internal
+
+- The 2D and 3D-geometric families run through one implementation of the
+  decomposition, the per-component solve and the diagnosis
+  (`src/system.rs`); each family is now an adapter that supplies residuals
+  and Jacobian rows, plus the plane and cylinder gauge for 3D. Results are
+  unchanged: the corpus reports are identical to the last digit.
 
 ### Performance
 

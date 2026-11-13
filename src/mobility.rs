@@ -23,8 +23,8 @@
 use crate::constraint::Constraint;
 use crate::diagnosis::RANK_REL_TOL;
 use crate::entity::Entity;
-use crate::graph::constraint_components;
-use crate::solver::{analytic_jacobian, touched_params};
+use crate::solver::SketchEquations;
+use crate::system;
 use std::collections::HashMap;
 
 /// Marks every parameter that can move at the current configuration.
@@ -48,16 +48,19 @@ pub fn mobility(
         return movable;
     }
 
-    for group in constraint_components(params, entities, constraints) {
-        let sub: Vec<&Constraint> = group.iter().map(|&i| &constraints[i]).collect();
-        let n_eq: usize = sub.iter().map(|c| c.equation_count()).sum();
+    let eqs = SketchEquations {
+        entities,
+        constraints,
+    };
+    for group in system::components(&eqs, params) {
+        let n_eq = system::equation_total(&eqs, &group);
         if n_eq == 0 {
             continue;
         }
 
         // Touched free parameters of this component, in ascending index
         // order (the Jacobian touch set includes structural zeros).
-        let mut touched = touched_params(params, entities, &sub);
+        let mut touched = system::touched_params(&eqs, &group, params);
         touched.retain(|&param| !fixed[param]);
         if touched.is_empty() {
             continue;
@@ -69,7 +72,7 @@ pub fn mobility(
             .map(|(col, &param)| (param, col))
             .collect();
         let mut jacobian = vec![vec![0.0_f64; touched.len()]; n_eq];
-        analytic_jacobian(params, &col_of, entities, &sub, &mut jacobian);
+        system::analytic_jacobian(&eqs, &group, params, &col_of, &mut jacobian);
 
         // Convert to sparse representation: each row stores only non-zero
         // entries as (column, value) pairs.

@@ -1,69 +1,81 @@
 //! Newton-Raphson GCS solver for 3D geometric constraints.
 //!
-//! A thin family adapter over the shared core ([`crate::numerics`]), exactly
-//! like the 2D solver: the 3D constraint set contributes the residual
-//! evaluation and the analytic Jacobian assembly, the core contributes the
-//! normal equations and the damped update loop.
+//! A thin family adapter, exactly like the 2D solver: the 3D constraint set
+//! contributes the residuals and the analytic Jacobian rows; the
+//! decomposition and the per-component solve are the shared pipeline of
+//! the crate-internal `system` module over the Newton core of [`crate::numerics`]. What is
+//! specific to this family is the plane representation, which is pinned to
+//! a unit normal around every solve.
 //!
-//! Since solver 3D-0 the solve runs PER CONNECTED COMPONENT of the
-//! constraint graph ([`crate::space3d::graph`]). A full solve is therefore
-//! the composition of independent component solves, and a localized
-//! (incremental) re-solve iterates only the components an edit landed in —
-//! untouched components keep their parameters bitwise.
-
-use std::collections::HashMap;
+//! The solve runs PER CONNECTED COMPONENT of the constraint graph
+//! ([`crate::space3d::graph`]). A full solve is therefore the composition
+//! of independent component solves, and a localized (incremental) re-solve
+//! iterates only the components an edit landed in — untouched components
+//! keep their parameters bitwise.
 
 use crate::numerics::{self, SolveOptions, SolveResult, SolveStatus};
 use crate::space3d::constraint::SpaceConstraint;
 use crate::space3d::entity::{SpaceEntity, SpaceEntityKind};
+use crate::system::{self, Equations, SparseRow};
 
 pub use crate::numerics::{FD_H, LAMBDA, MAX_ITER, PIVOT_TOL, RESIDUAL_TOL, SOLVER_NORM_TOL};
 
+/// The 3D constraint list as the pipeline's [`Equations`].
+pub(crate) struct SpaceEquations<'a> {
+    pub(crate) entities: &'a [SpaceEntity],
+    pub(crate) constraints: &'a [SpaceConstraint],
+}
+
+impl Equations for SpaceEquations<'_> {
+    fn constraint_count(&self) -> usize {
+        self.constraints.len()
+    }
+
+    fn equation_count(&self, index: usize) -> usize {
+        self.constraints[index].equation_count()
+    }
+
+    fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]) {
+        self.constraints[index].residuals(params, self.entities, out);
+    }
+
+    fn jacobian(&self, index: usize, params: &[f64], out: &mut [SparseRow]) {
+        self.constraints[index].jacobian(params, self.entities, out);
+    }
+}
+
 /// Evaluate the stacked residual vector of `constraints` at `params`.
-pub(crate) fn eval_residuals<C: AsRef<SpaceConstraint>>(
+#[cfg(test)]
+pub(crate) fn eval_residuals(
     params: &[f64],
     entities: &[SpaceEntity],
-    constraints: &[C],
+    constraints: &[SpaceConstraint],
     n_eq: usize,
 ) -> Vec<f64> {
-    let mut f = vec![0.0_f64; n_eq];
-    let mut row = 0;
-    for c in constraints {
-        let c = c.as_ref();
-        let cnt = c.equation_count();
-        c.residuals(params, entities, &mut f[row..row + cnt]);
-        row += cnt;
-    }
+    let eqs = SpaceEquations {
+        entities,
+        constraints,
+    };
+    let f = system::eval_residuals(&eqs, &system::all_indices(&eqs), params);
+    debug_assert_eq!(f.len(), n_eq);
     f
 }
 
-/// Assemble the analytic Jacobian (m equations x n_free columns) from the
-/// per-constraint sparse derivative rows, filtering parameters held by the
-/// solver's fixed mask. `out` arrives zeroed and is overwritten.
-pub(crate) fn analytic_jacobian<C: AsRef<SpaceConstraint>>(
+/// Assemble the analytic Jacobian (m equations × the columns of `col_of`).
+/// `out` arrives zeroed.
+#[cfg(test)]
+pub(crate) fn analytic_jacobian(
     params: &[f64],
-    col_of: &HashMap<usize, usize>,
+    col_of: &std::collections::HashMap<usize, usize>,
     entities: &[SpaceEntity],
-    constraints: &[C],
+    constraints: &[SpaceConstraint],
     out: &mut [Vec<f64>],
 ) {
-    let mut rows: Vec<Vec<(usize, f64)>> = Vec::new();
-    let mut row = 0;
-    for c in constraints {
-        let c = c.as_ref();
-        let cnt = c.equation_count();
-        rows.clear();
-        rows.resize_with(cnt, Vec::new);
-        c.jacobian(params, entities, &mut rows);
-        for (k, entries) in rows.iter().enumerate() {
-            for &(pidx, v) in entries {
-                if let Some(&col) = col_of.get(&pidx) {
-                    out[row + k][col] += v;
-                }
-            }
-        }
-        row += cnt;
-    }
+    let eqs = SpaceEquations {
+        entities,
+        constraints,
+    };
+    system::analytic_jacobian(&eqs, &system::all_indices(&eqs), params, col_of, out);
 }
 
 /// The plane gauge fix: rescale `(nx, ny, nz, d)` to a unit normal (scaling
@@ -229,39 +241,21 @@ pub fn solve_components_with(
     only: Option<&[usize]>,
     options: &SolveOptions,
 ) -> SolveResult {
-    let n_eq_total: usize = constraints.iter().map(|c| c.equation_count()).sum();
-    let mut iterations = 0usize;
-    let mut converged = true;
-    let mut status = SolveStatus::Converged;
-    let mut solved_touched: Vec<usize> = Vec::new();
-
-    for (ordinal, group) in components.iter().enumerate() {
-        if let Some(sel) = only {
-            if !sel.contains(&ordinal) {
-                continue;
-            }
-        }
-        let sub: Vec<&SpaceConstraint> = group.iter().map(|&i| &constraints[i]).collect();
-        let (result, touched) = solve_one(params, fixed, entities, &sub, options);
-        iterations += result.iterations;
-        converged &= result.converged;
-        status = status.max(result.status);
-        // Components share no parameters, so the union stays duplicate-free.
-        solved_touched.extend(touched);
-    }
-    solved_touched.sort_unstable();
-
+    let eqs = SpaceEquations {
+        entities,
+        constraints,
+    };
     // Plane representation is pinned only for the planes the solved
     // components touched (bitwise guarantee for untouched components).
-    normalize_planes_touched(params, entities, fixed, &solved_touched);
-
-    let f = eval_residuals(params, entities, constraints, n_eq_total);
-    SolveResult {
-        converged,
-        residual: numerics::rms(&f),
-        iterations,
-        status,
-    }
+    system::solve_components(
+        &eqs,
+        params,
+        fixed,
+        components,
+        only,
+        options,
+        |params, touched| normalize_planes_touched(params, entities, fixed, touched),
+    )
 }
 
 /// Residual report for the current parameters without iterating — the
@@ -275,8 +269,11 @@ pub(crate) fn residual_report(
     constraints: &[SpaceConstraint],
     tolerance: f64,
 ) -> SolveResult {
-    let n_eq: usize = constraints.iter().map(|c| c.equation_count()).sum();
-    let f = eval_residuals(params, entities, constraints, n_eq);
+    let eqs = SpaceEquations {
+        entities,
+        constraints,
+    };
+    let f = system::eval_residuals(&eqs, &system::all_indices(&eqs), params);
     let residual = numerics::rms(&f);
     let converged = residual < tolerance;
     SolveResult {
@@ -291,103 +288,12 @@ pub(crate) fn residual_report(
     }
 }
 
-/// Sorted, de-duplicated set of the parameters `constraints` touch.
-///
-/// Read from the Jacobian rows, which list every touched parameter
-/// regardless of the derivative value there.
-pub(crate) fn touched_params<C: AsRef<SpaceConstraint>>(
-    params: &[f64],
-    entities: &[SpaceEntity],
-    constraints: &[C],
-) -> Vec<usize> {
-    let mut touched: Vec<usize> = Vec::new();
-    let mut scratch: Vec<Vec<(usize, f64)>> = Vec::new();
-    for c in constraints {
-        let c = c.as_ref();
-        scratch.clear();
-        scratch.resize_with(c.equation_count(), Vec::new);
-        c.jacobian(params, entities, &mut scratch);
-        for row in &scratch {
-            touched.extend(row.iter().map(|&(p, _)| p));
-        }
-    }
-    touched.sort_unstable();
-    touched.dedup();
-    touched
-}
-
-/// Solve one connected subsystem: `sub` are the constraints (already
-/// component-local), and only the free parameters they touch may move.
-/// Returns the result and the component's touched parameter set (used by
-/// the caller for the plane gauge fix).
-fn solve_one(
-    params: &mut [f64],
-    fixed: &[bool],
-    entities: &[SpaceEntity],
-    sub: &[&SpaceConstraint],
-    options: &SolveOptions,
-) -> (SolveResult, Vec<usize>) {
-    let touched = touched_params(params, entities, sub);
-    // Component-local fixed mask: everything not touched by this component
-    // is held, so the Newton loop's free list is exactly this component's
-    // movable parameters.
-    let mut fixed_c: Vec<bool> = vec![true; params.len()];
-    let free: Vec<usize> = touched.iter().copied().filter(|&p| !fixed[p]).collect();
-    for &p in &free {
-        fixed_c[p] = false;
-    }
-    let col_of: HashMap<usize, usize> = free.iter().enumerate().map(|(c, &p)| (p, c)).collect();
-
-    let n_eq: usize = sub.iter().map(|c| c.equation_count()).sum();
-    let mut build = |p: &[f64], out: &mut [Vec<f64>]| {
-        analytic_jacobian(p, &col_of, entities, sub, out);
-    };
-
-    // One-shot integration check (debug builds): the analytic assembly
-    // must agree with central differences at the starting point. The
-    // exhaustive per-variant gate lives in `constraint.rs` tests; this
-    // catches per-call assembly bugs (column mapping, mask filtering).
-    #[cfg(debug_assertions)]
-    if n_eq > 0 && !free.is_empty() {
-        let mut eval = |p: &[f64], f: &mut [f64]| {
-            let v = eval_residuals(p, entities, sub, n_eq);
-            f.copy_from_slice(&v);
-        };
-        let mut j_analytic = vec![vec![0.0_f64; free.len()]; n_eq];
-        build(params, &mut j_analytic);
-        let mut j_fd = vec![vec![0.0_f64; free.len()]; n_eq];
-        numerics::numerical_jacobian_into(params, &free, n_eq, &mut eval, &mut j_fd);
-        for (ri, (ra, rf)) in j_analytic.iter().zip(j_fd.iter()).enumerate() {
-            for (ci, (va, vf)) in ra.iter().zip(rf.iter()).enumerate() {
-                assert!(
-                    (va - vf).abs() <= 1.0e-4 * (1.0 + vf.abs()),
-                    "analytic Jacobian drifts from finite differences at row {ri} col {ci}: {va} vs {vf}"
-                );
-            }
-        }
-    }
-
-    let result = numerics::newton_solve_with_jacobian(
-        params,
-        &fixed_c,
-        n_eq,
-        |p, f| {
-            let v = eval_residuals(p, entities, sub, n_eq);
-            f.copy_from_slice(&v);
-        },
-        numerics::Jacobian::Analytic(&mut build),
-        options,
-    );
-    (result, touched)
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::space3d::constraint::SpaceConstraint;
     use crate::space3d::entity::{SpaceEntity, SpaceEntityKind, SpacePointRef};
+    use std::collections::HashMap;
 
     #[test]
     fn fixed_point_3d() {

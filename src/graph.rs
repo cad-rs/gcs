@@ -15,7 +15,8 @@
 
 use crate::constraint::Constraint;
 use crate::entity::Entity;
-use std::collections::HashMap;
+use crate::solver::SketchEquations;
+use crate::system;
 
 /// Connected components of the constraint graph.
 ///
@@ -27,88 +28,13 @@ pub fn constraint_components(
     entities: &[Entity],
     constraints: &[Constraint],
 ) -> Vec<Vec<usize>> {
-    let n_params = params.len();
-    // Union-find over parameters.
-    let mut parent: Vec<usize> = (0..n_params).collect();
-    fn find(parent: &mut [usize], x: usize) -> usize {
-        let mut root = x;
-        while parent[root] != root {
-            root = parent[root];
-        }
-        let mut cur = x;
-        while parent[cur] != root {
-            let next = parent[cur];
-            parent[cur] = root;
-            cur = next;
-        }
-        root
-    }
-    fn union(parent: &mut [usize], a: usize, b: usize) {
-        let ra = find(parent, a);
-        let rb = find(parent, b);
-        if ra != rb {
-            parent[ra] = rb;
-        }
-    }
-
-    // Pass 1: every constraint unions the parameters it touches (from its
-    // Jacobian rows — the complete touched set regardless of derivative
-    // values).
-    let mut scratch: Vec<Vec<(usize, f64)>> = Vec::new();
-    for c in constraints {
-        let cnt = c.equation_count();
-        scratch.clear();
-        scratch.resize_with(cnt, Vec::new);
-        c.jacobian(params, entities, &mut scratch);
-        let mut first: Option<usize> = None;
-        for row in &scratch {
-            for &(p, _) in row {
-                if let Some(f) = first {
-                    union(&mut parent, f, p);
-                } else {
-                    first = Some(p);
-                }
-            }
-        }
-    }
-
-    // Pass 2: group constraints by the FINAL root of their first touched
-    // parameter. Grouping during pass 1 would key earlier constraints by
-    // stale roots when a later constraint merges two established groups
-    // (regression-tested).
-    let mut order: Vec<usize> = Vec::new();
-    let mut by_root: HashMap<usize, Vec<usize>> = HashMap::new();
-    scratch.clear();
-    for (idx, c) in constraints.iter().enumerate() {
-        let cnt = c.equation_count();
-        scratch.clear();
-        scratch.resize_with(cnt, Vec::new);
-        c.jacobian(params, entities, &mut scratch);
-        let root = scratch
-            .first()
-            .and_then(|row| row.first())
-            .map(|&(p, _)| find(&mut parent, p));
-        match root {
-            Some(root) => {
-                let group = by_root.entry(root).or_insert_with(|| {
-                    order.push(root);
-                    Vec::new()
-                });
-                group.push(idx);
-            }
-            // A constraint touching no parameters has no equations to
-            // satisfy through the solver; it forms its own (trivial)
-            // group so indices are never dropped.
-            None => {
-                order.push(usize::MAX - idx);
-                by_root.insert(usize::MAX - idx, vec![idx]);
-            }
-        }
-    }
-    order
-        .into_iter()
-        .filter_map(|root| by_root.remove(&root))
-        .collect()
+    system::components(
+        &SketchEquations {
+            entities,
+            constraints,
+        },
+        params,
+    )
 }
 
 #[cfg(test)]

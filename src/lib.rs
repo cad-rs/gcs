@@ -58,6 +58,7 @@ pub mod rigid3d;
 pub mod sketch;
 pub mod solver;
 pub mod space3d;
+mod system;
 
 pub use constraint::Constraint;
 pub use diagnosis::Diagnosis;

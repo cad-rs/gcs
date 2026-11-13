@@ -25,11 +25,8 @@
 
 use crate::constraint::Constraint;
 use crate::entity::Entity;
-use crate::numerics::{
-    householder_qr_column_pivoting, le, solve_normal_equations, RowSpaceGram, LAMBDA,
-};
-use crate::solver::{analytic_jacobian, eval_residuals, touched_params};
-use std::collections::HashMap;
+use crate::solver::SketchEquations;
+use crate::system::{self, NoGauge};
 
 /// Column-pivot rank threshold, relative to the largest initial column
 /// norm of the (row-equilibrated) transpose Jacobian. With analytic
@@ -90,177 +87,15 @@ pub fn diagnose(
     entities: &[Entity],
     constraints: &[Constraint],
 ) -> Diagnosis {
-    let free_total = params.iter().zip(fixed).filter(|(_, &f)| !f).count();
-    let n_eq: usize = constraints.iter().map(|c| c.equation_count()).sum();
-
-    if n_eq == 0 {
-        return Diagnosis {
-            dof: free_total as i64,
-            ..Default::default()
-        };
-    }
-
-    // Global residuals once; per-component slices below.
-    let f = eval_residuals(params, entities, constraints, n_eq);
-    // Row offset of each constraint in the stacked residual vector.
-    let mut row_of: Vec<usize> = Vec::with_capacity(constraints.len() + 1);
-    let mut acc = 0usize;
-    for c in constraints {
-        row_of.push(acc);
-        acc += c.equation_count();
-    }
-
-    let components = crate::graph::constraint_components(params, entities, constraints);
-    let mut d = Diagnosis::default();
-    // True DOF = free_total − Σ rank_c: parameters claimed by no component
-    // are unconstrained and count fully (e.g. an entity whose only
-    // constraint pins one endpoint).
-    let mut total_rank = 0i64;
-
-    for group in &components {
-        let sub: Vec<&Constraint> = group.iter().map(|&i| &constraints[i]).collect();
-        let n_eq_c: usize = sub.iter().map(|c| c.equation_count()).sum();
-        // Local residual slice, in component row order.
-        let mut f_c = Vec::with_capacity(n_eq_c);
-        for &gi in group {
-            let (s, e) = (row_of[gi], row_of[gi] + constraints[gi].equation_count());
-            f_c.extend_from_slice(&f[s..e]);
-        }
-
-        // Touched free parameters of this component.
-        let mut touched = touched_params(params, entities, &sub);
-        touched.retain(|&p| !fixed[p]);
-        let n_free_c = touched.len();
-
-        // Map component-local rows back to global constraint indices.
-        let mut row_constraint: Vec<usize> = Vec::with_capacity(n_eq_c);
-        for &gi in group {
-            for _ in 0..constraints[gi].equation_count() {
-                row_constraint.push(gi);
-            }
-        }
-
-        if n_free_c == 0 {
-            // Nothing in this component can move: any unsatisfied residual
-            // is a genuine conflict.
-            let scale = f_c.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            for (r, fi) in f_c.iter().enumerate() {
-                if fi.abs() > CONSIST_TOL * scale {
-                    d.conflicting.push(row_constraint[r]);
-                }
-            }
-            continue;
-        }
-
-        let col_of: HashMap<usize, usize> =
-            touched.iter().enumerate().map(|(c, &p)| (p, c)).collect();
-        let mut j = vec![vec![0.0_f64; n_free_c]; n_eq_c];
-        analytic_jacobian(params, &col_of, entities, &sub, &mut j);
-
-        // Row-equilibrate the Jacobian and the residuals together so a
-        // distance in mm and an angle in radians contribute comparable
-        // column norms to the rank decision.
-        for (row, fi) in j.iter_mut().zip(f_c.iter_mut()) {
-            let s = row.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-            if s > 0.0 {
-                for v in row.iter_mut() {
-                    *v /= s;
-                }
-                *fi /= s;
-            }
-        }
-
-        // A = Jᵀ: column i of A is component row i (equilibrated).
-        let mut a = vec![vec![0.0_f64; n_eq_c]; n_free_c];
-        for (i, row) in j.iter().enumerate() {
-            for (p, v) in row.iter().enumerate() {
-                a[p][i] = *v;
-            }
-        }
-        // The QR mutates `a` in place; the group extraction needs the
-        // ORIGINAL columns, so keep a copy for it.
-        let a_original = a.clone();
-        let (pivots, rank) = householder_qr_column_pivoting(&mut a, RANK_REL_TOL);
-        total_rank += rank as i64;
-
-        let independent = &pivots[..rank];
-        let dependent: Vec<usize> = (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
-        if dependent.is_empty() || rank == 0 {
-            continue;
-        }
-
-        // Null-space dependency groups (sketch_singular v2): the
-        // dependency lives in ROW space — find coefficients y with
-        // SUM y_j*row_j = dep_row via the row-space Gram system
-        // (G + lambda*I) y = -(rows*dep), G[i][j] = row_i.row_j. The
-        // coefficient support is the whole mutually-dependent row group,
-        // invariant to pivot tie-breaking.
-        let rows: Vec<Vec<f64>> = independent
-            .iter()
-            .map(|&col| (0..n_free_c).map(|rr| a_original[rr][col]).collect())
-            .collect();
-        let r = rows.len();
-        // One Gram matrix serves every dependent row: build and factor it
-        // once instead of once per row.
-        let gram = RowSpaceGram::new(&rows, n_free_c, LAMBDA);
-        for &dep in &dependent {
-            let dep_row: Vec<f64> = (0..n_free_c).map(|rr| a_original[rr][dep]).collect();
-            let y = gram.coefficients(&dep_row);
-            let max_c = y.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            let support: Vec<usize> = (0..r).filter(|&jj| y[jj].abs() > 1.0e-6 * max_c).collect();
-            // Self-verification: the reported group must be a REAL
-            // relation — reconstruct the dependent row from the support
-            // and reject the group when the reconstruction residual is
-            // not at roundoff (an ill-conditioned basis must never
-            // surface a fake dependency group).
-            let residual: f64 = (0..n_free_c)
-                .map(|rr| {
-                    let recon: f64 = support.iter().map(|&jj| y[jj] * rows[jj][rr]).sum();
-                    (recon - dep_row[rr]).abs()
-                })
-                .fold(0.0_f64, f64::max);
-            let scale = dep_row.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            if !le(residual, 1.0e-9 * scale) {
-                continue;
-            }
-            let mut group: Vec<usize> = support
-                .iter()
-                .map(|&jj| row_constraint[independent[jj]])
-                .chain(std::iter::once(row_constraint[dep]))
-                .collect();
-            group.sort_unstable();
-            group.dedup();
-            if group.len() > 1 && !d.dependency_groups.contains(&group) {
-                d.dependency_groups.push(group);
-            }
-        }
-
-        // Least-squares step of the independent rows (minimizes |Jₛ z + fₛ|).
-        let j_sub: Vec<Vec<f64>> = independent.iter().map(|&i| j[i].clone()).collect();
-        let f_sub: Vec<f64> = independent.iter().map(|&i| f_c[i]).collect();
-        let z = solve_normal_equations(&j_sub, &f_sub, n_free_c);
-
-        let scale = f_c.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-        for &r in &dependent {
-            let drive: f64 = j[r].iter().zip(z.iter()).map(|(ji, zi)| ji * zi).sum();
-            let e = (f_c[r] + drive).abs();
-            let global = row_constraint[r];
-            if e <= CONSIST_TOL * scale {
-                if !d.redundant.contains(&global) {
-                    d.redundant.push(global);
-                }
-            } else if e <= PARTIAL_TOL * scale {
-                if !d.partially_redundant.contains(&global) {
-                    d.partially_redundant.push(global);
-                }
-            } else if !d.conflicting.contains(&global) {
-                d.conflicting.push(global);
-            }
-        }
-    }
-    d.dof = free_total as i64 - total_rank;
-    d.rank = total_rank.max(0) as usize;
-    d
+    system::diagnose(
+        &SketchEquations {
+            entities,
+            constraints,
+        },
+        params,
+        fixed,
+        &NoGauge,
+    )
 }
 
 /// Rank of the constraint Jacobian over the free parameters at `params`.
@@ -283,6 +118,7 @@ pub fn rank(
 mod tests {
     use super::*;
     use crate::entity::{EntityId, PointRef};
+    use crate::numerics::householder_qr_column_pivoting;
     use crate::sketch::Sketch;
 
     // ── direct QR kernel test ────────────────────────────────────────────

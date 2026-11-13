@@ -39,52 +39,19 @@
 //! pins is subtracted from the DOF count. The rank and the redundant /
 //! conflicting classification are unaffected (they live in row space).
 
-use crate::numerics::{
-    gt, householder_qr_column_pivoting, le, solve_normal_equations, RowSpaceGram, LAMBDA,
-};
+use crate::diagnosis::Diagnosis;
+use crate::numerics::gt;
 use crate::space3d::constraint::SpaceConstraint;
 use crate::space3d::entity::{SpaceEntity, SpaceEntityKind};
-use crate::space3d::solver::{analytic_jacobian, eval_residuals, touched_params, SOLVER_NORM_TOL};
-use std::collections::HashMap;
+use crate::space3d::solver::{SpaceEquations, SOLVER_NORM_TOL};
+use crate::system::{self, Gauge, SparseRow};
 
-/// Column-pivot rank threshold, relative to the largest initial column
-/// norm of the (row-equilibrated) transpose Jacobian. With analytic
-/// derivatives an exact dependency projects to floating-point roundoff
-/// (~1e-14 relative), so 1e-9 sits comfortably above it.
-pub const RANK_REL_TOL: f64 = 1.0e-9;
+pub use crate::diagnosis::{CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL};
 
-/// Dependent-row consistency threshold (relative to the residual scale):
-/// at or below this the row agrees with the independent rows' least-squares
-/// step — redundant.
-pub const CONSIST_TOL: f64 = 1.0e-9;
-
-/// Upper end of the gray band between redundant and conflicting
-/// (relative). Rows in between are reported as partially redundant.
-pub const PARTIAL_TOL: f64 = 1.0e-6;
-
-/// Structured diagnosis of a 3D constraint system.
-#[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct SpaceDiagnosis {
-    /// Jacobian rank: number of linearly independent constraint rows over
-    /// all components (redundant rows consume none).
-    pub rank: usize,
-    /// True degrees of freedom: effective free parameters − Jacobian rank.
-    pub dof: i64,
-    /// Constraints that are dependent but consistent — removable without
-    /// changing the solution.
-    pub redundant: Vec<usize>,
-    /// Constraints whose demands are inconsistent with the rest — no
-    /// solution exists at this linearization.
-    pub conflicting: Vec<usize>,
-    /// Dependent rows in the gray band (weakly inconsistent; possibly
-    /// genuine nonlinearity). Informational.
-    pub partially_redundant: Vec<usize>,
-    /// Mutually-dependent constraint groups: each group is the full support
-    /// of one linear dependency among rows, extracted from the pivoted QR's
-    /// R factor (flip-free: the whole relation, not a pivot-chosen member).
-    pub dependency_groups: Vec<Vec<usize>>,
-}
+/// Structured diagnosis of a 3D constraint system: the same report as the
+/// 2D [`Diagnosis`], with `dof` counting physical freedoms (effective free
+/// parameters − Jacobian rank; see the gauge notes in the module docs).
+pub type SpaceDiagnosis = Diagnosis;
 
 /// Diagnose a 3D constraint system at the current parameters.
 ///
@@ -96,221 +63,49 @@ pub fn diagnose(
     entities: &[SpaceEntity],
     constraints: &[SpaceConstraint],
 ) -> SpaceDiagnosis {
-    let free_total = params.iter().zip(fixed).filter(|(_, &f)| !f).count();
-    let n_eq: usize = constraints.iter().map(|c| c.equation_count()).sum();
-
-    // One gauge dimension per fully free plane with a usable normal.
-    let gauge_reduction: usize = entities
-        .iter()
-        .filter(|e| e.kind == SpaceEntityKind::Plane)
-        .filter(|e| {
-            let idx = [e.param(0), e.param(1), e.param(2), e.param(3)];
-            idx.iter().all(|&i| !fixed[i])
-                && plane_tangents(params[idx[0]], params[idx[1]], params[idx[2]]).is_some()
-        })
-        .count();
-
-    // Cylinder gauge directions; how many of them stay unpinned is settled
-    // per component below.
-    let cylinder_gauges = cylinder_gauge_vectors(params, fixed, entities);
-    let mut gauge_seen = vec![false; cylinder_gauges.len()];
-    let mut cylinder_gauge_free = 0usize;
-
-    if n_eq == 0 {
-        return SpaceDiagnosis {
-            dof: free_total as i64 - gauge_reduction as i64 - cylinder_gauges.len() as i64,
-            ..Default::default()
-        };
-    }
-
-    // Global residuals once; per-component slices below.
-    let f = eval_residuals(params, entities, constraints, n_eq);
-    // Row offset of each constraint in the stacked residual vector.
-    let mut row_of: Vec<usize> = Vec::with_capacity(constraints.len() + 1);
-    let mut acc = 0usize;
-    for c in constraints {
-        row_of.push(acc);
-        acc += c.equation_count();
-    }
-
-    let components = crate::space3d::graph::constraint_components(params, entities, constraints);
-    let mut d = SpaceDiagnosis::default();
-    let mut total_rank = 0i64;
-
-    for group in &components {
-        let sub: Vec<&SpaceConstraint> = group.iter().map(|&i| &constraints[i]).collect();
-        let n_eq_c: usize = sub.iter().map(|c| c.equation_count()).sum();
-        // Local residual slice, in component row order.
-        let mut f_c = Vec::with_capacity(n_eq_c);
-        for &gi in group {
-            let (s, e) = (row_of[gi], row_of[gi] + constraints[gi].equation_count());
-            f_c.extend_from_slice(&f[s..e]);
-        }
-
-        // Touched free parameters of this component.
-        let mut touched = touched_params(params, entities, &sub);
-        touched.retain(|&p| !fixed[p]);
-
-        // Map component-local rows back to global constraint indices.
-        let mut row_constraint: Vec<usize> = Vec::with_capacity(n_eq_c);
-        for &gi in group {
-            for _ in 0..constraints[gi].equation_count() {
-                row_constraint.push(gi);
-            }
-        }
-
-        if touched.is_empty() {
-            // Nothing in this component can move: any unsatisfied residual
-            // is a genuine conflict.
-            let scale = f_c.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            for (r, fi) in f_c.iter().enumerate() {
-                if fi.abs() > CONSIST_TOL * scale {
-                    d.conflicting.push(row_constraint[r]);
-                }
-            }
-            continue;
-        }
-
-        // Raw Jacobian over the touched local columns.
-        let col_of: HashMap<usize, usize> =
-            touched.iter().enumerate().map(|(c, &p)| (p, c)).collect();
-        let mut j_raw = vec![vec![0.0_f64; touched.len()]; n_eq_c];
-        analytic_jacobian(params, &col_of, entities, &sub, &mut j_raw);
-
-        // Cylinder gauge directions this component touches but does not pin.
-        cylinder_gauge_free +=
-            unpinned_gauge_dims(&j_raw, &col_of, &cylinder_gauges, &mut gauge_seen);
-
-        // Effective free directions: plane gauge is removed here.
-        let columns = effective_columns(params, fixed, entities, &touched);
-        let n_eff = columns.len();
-        if n_eff == 0 {
-            let scale = f_c.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            for (r, fi) in f_c.iter().enumerate() {
-                if fi.abs() > CONSIST_TOL * scale {
-                    d.conflicting.push(row_constraint[r]);
-                }
-            }
-            continue;
-        }
-        let mut j = vec![vec![0.0_f64; n_eff]; n_eq_c];
-        for (row, jr) in j_raw.iter().enumerate() {
-            for (c, col) in columns.iter().enumerate() {
-                let mut v = 0.0_f64;
-                for &(lc, coeff) in col {
-                    v += jr[lc] * coeff;
-                }
-                j[row][c] = v;
-            }
-        }
-
-        // Row-equilibrate the Jacobian and the residuals together so a
-        // distance in mm and an angle in radians contribute comparable
-        // column norms to the rank decision.
-        for (row, fi) in j.iter_mut().zip(f_c.iter_mut()) {
-            let s = row.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-            if s > 0.0 {
-                for v in row.iter_mut() {
-                    *v /= s;
-                }
-                *fi /= s;
-            }
-        }
-
-        // A = J^T: column i of A is component row i (equilibrated).
-        let mut a = vec![vec![0.0_f64; n_eq_c]; n_eff];
-        for (i, row) in j.iter().enumerate() {
-            for (p, v) in row.iter().enumerate() {
-                a[p][i] = *v;
-            }
-        }
-        // The QR mutates `a` in place; the group extraction needs the
-        // ORIGINAL columns, so keep a copy for it.
-        let a_original = a.clone();
-        let (pivots, rank) = householder_qr_column_pivoting(&mut a, RANK_REL_TOL);
-        total_rank += rank as i64;
-
-        let independent = &pivots[..rank];
-        let dependent: Vec<usize> = (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
-        if dependent.is_empty() || rank == 0 {
-            continue;
-        }
-
-        // Null-space dependency groups: the dependency lives in ROW space —
-        // find coefficients y with SUM y_j*row_j = dep_row via the row-space
-        // Gram system (G + lambda*I) y = -(rows*dep), G[i][j] = row_i.row_j.
-        // The coefficient support is the whole mutually-dependent row group,
-        // invariant to pivot tie-breaking.
-        let rows: Vec<Vec<f64>> = independent
-            .iter()
-            .map(|&col| (0..n_eff).map(|rr| a_original[rr][col]).collect())
-            .collect();
-        let r = rows.len();
-        // One Gram matrix serves every dependent row: build and factor it
-        // once instead of once per row.
-        let gram = RowSpaceGram::new(&rows, n_eff, LAMBDA);
-        for &dep in &dependent {
-            let dep_row: Vec<f64> = (0..n_eff).map(|rr| a_original[rr][dep]).collect();
-            let y = gram.coefficients(&dep_row);
-            let max_c = y.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            let support: Vec<usize> = (0..r).filter(|&jj| y[jj].abs() > 1.0e-6 * max_c).collect();
-            // Self-verification: the reported group must be a REAL relation —
-            // reconstruct the dependent row from the support and reject the
-            // group when the reconstruction residual is not at roundoff.
-            let residual: f64 = (0..n_eff)
-                .map(|rr| {
-                    let recon: f64 = support.iter().map(|&jj| y[jj] * rows[jj][rr]).sum();
-                    (recon - dep_row[rr]).abs()
-                })
-                .fold(0.0_f64, f64::max);
-            let scale = dep_row.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            if !le(residual, 1.0e-9 * scale) {
-                continue;
-            }
-            let mut group: Vec<usize> = support
-                .iter()
-                .map(|&jj| row_constraint[independent[jj]])
-                .chain(std::iter::once(row_constraint[dep]))
-                .collect();
-            group.sort_unstable();
-            group.dedup();
-            if group.len() > 1 && !d.dependency_groups.contains(&group) {
-                d.dependency_groups.push(group);
-            }
-        }
-
-        // Least-squares step of the independent rows (minimizes |J_s z + f_s|).
-        let j_sub: Vec<Vec<f64>> = independent.iter().map(|&i| j[i].clone()).collect();
-        let f_sub: Vec<f64> = independent.iter().map(|&i| f_c[i]).collect();
-        let z = solve_normal_equations(&j_sub, &f_sub, n_eff);
-
-        let scale = f_c.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-        for &r in &dependent {
-            let drive: f64 = j[r].iter().zip(z.iter()).map(|(ji, zi)| ji * zi).sum();
-            let e = (f_c[r] + drive).abs();
-            let global = row_constraint[r];
-            if e <= CONSIST_TOL * scale {
-                if !d.redundant.contains(&global) {
-                    d.redundant.push(global);
-                }
-            } else if e <= PARTIAL_TOL * scale {
-                if !d.partially_redundant.contains(&global) {
-                    d.partially_redundant.push(global);
-                }
-            } else if !d.conflicting.contains(&global) {
-                d.conflicting.push(global);
-            }
-        }
-    }
-    // Gauge directions no component touches are unpinned by definition.
-    cylinder_gauge_free += gauge_seen.iter().filter(|seen| !**seen).count();
-    d.rank = total_rank as usize;
-    d.dof = free_total as i64 - gauge_reduction as i64 - cylinder_gauge_free as i64 - total_rank;
-    d
+    system::diagnose(
+        &SpaceEquations {
+            entities,
+            constraints,
+        },
+        params,
+        fixed,
+        &SpaceGauge { entities },
+    )
 }
 
-/// A sparse direction in parameter space: `(parameter index, coefficient)`.
-type SparseDir = Vec<(usize, f64)>;
+/// The representation gauge of the 3D entities (see the module docs).
+struct SpaceGauge<'a> {
+    entities: &'a [SpaceEntity],
+}
+
+impl Gauge for SpaceGauge<'_> {
+    /// One gauge dimension per fully free plane with a usable normal.
+    fn removed_dimensions(&self, params: &[f64], fixed: &[bool]) -> usize {
+        self.entities
+            .iter()
+            .filter(|e| e.kind == SpaceEntityKind::Plane)
+            .filter(|e| {
+                let idx = [e.param(0), e.param(1), e.param(2), e.param(3)];
+                idx.iter().all(|&i| !fixed[i])
+                    && plane_tangents(params[idx[0]], params[idx[1]], params[idx[2]]).is_some()
+            })
+            .count()
+    }
+
+    fn effective_columns(
+        &self,
+        params: &[f64],
+        fixed: &[bool],
+        touched: &[usize],
+    ) -> Option<Vec<SparseRow>> {
+        Some(effective_columns(params, fixed, self.entities, touched))
+    }
+
+    fn soft_directions(&self, params: &[f64], fixed: &[bool]) -> Vec<SparseRow> {
+        cylinder_gauge_vectors(params, fixed, self.entities)
+    }
+}
 
 /// Representation-gauge directions of the cylinders.
 ///
@@ -324,12 +119,12 @@ type SparseDir = Vec<(usize, f64)>;
 /// Unlike the plane gauge these are not removed up front: `Concentric3D`
 /// reads the axis point as a centre, which pins the slide. Whether a
 /// direction is still free is decided against the Jacobian
-/// ([`unpinned_gauge_dims`]).
+/// (in [`crate::system::diagnose`]).
 fn cylinder_gauge_vectors(
     params: &[f64],
     fixed: &[bool],
     entities: &[SpaceEntity],
-) -> Vec<SparseDir> {
+) -> Vec<SparseRow> {
     let mut out = Vec::new();
     for e in entities {
         if e.kind != SpaceEntityKind::Cylinder {
@@ -350,55 +145,6 @@ fn cylinder_gauge_vectors(
         }
     }
     out
-}
-
-/// Number of gauge directions that this component touches and that no row of
-/// its Jacobian pins — freedom of the representation, not of the geometry.
-///
-/// `j_raw` is the component Jacobian over its touched columns (`col_of` maps
-/// global parameter index to local column). `seen` is flagged for every
-/// direction the component touches, so the caller can count the directions
-/// no component touches at all. The count is `k − rank(J·G)` for the `k`
-/// touched directions `G`: the dimension of their span inside the null space.
-fn unpinned_gauge_dims(
-    j_raw: &[Vec<f64>],
-    col_of: &HashMap<usize, usize>,
-    gauges: &[SparseDir],
-    seen: &mut [bool],
-) -> usize {
-    let mut local: Vec<SparseDir> = Vec::new();
-    for (gauge, flag) in gauges.iter().zip(seen.iter_mut()) {
-        let cols: SparseDir = gauge
-            .iter()
-            .filter_map(|&(p, coeff)| col_of.get(&p).map(|&lc| (lc, coeff)))
-            .collect();
-        if !cols.is_empty() {
-            *flag = true;
-            local.push(cols);
-        }
-    }
-    if local.is_empty() {
-        return 0;
-    }
-
-    // M = J·G, rows scaled to a unit largest Jacobian entry like the rank
-    // analysis. Against such a row a unit gauge direction is O(1) when the
-    // row pins it and roundoff when it does not.
-    let mut m = vec![vec![0.0_f64; local.len()]; j_raw.len()];
-    for (m_row, j_row) in m.iter_mut().zip(j_raw) {
-        let scale = j_row.iter().fold(0.0_f64, |mx, v| mx.max(v.abs()));
-        if !gt(scale, 0.0) {
-            continue;
-        }
-        for (entry, cols) in m_row.iter_mut().zip(&local) {
-            let v = cols.iter().map(|&(lc, c)| j_row[lc] * c).sum::<f64>() / scale;
-            if v.abs() > RANK_REL_TOL {
-                *entry = v;
-            }
-        }
-    }
-    let (_, rank) = householder_qr_column_pivoting(&mut m, RANK_REL_TOL);
-    local.len() - rank
 }
 
 /// Effective free directions over the component-local `touched` columns.
@@ -508,7 +254,7 @@ fn cross(a: (f64, f64, f64), b: (f64, f64, f64)) -> (f64, f64, f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::numerics::householder_qr_column_pivoting;
     use crate::space3d::constraint::SpaceConstraint;
     use crate::space3d::entity::SpacePointRef;
     use crate::space3d::sketch::SpaceSketch;

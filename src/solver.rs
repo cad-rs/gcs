@@ -1,68 +1,76 @@
 //! Newton-Raphson GCS solver for 2D sketch constraints.
 //!
-//! A thin family adapter over the shared core ([`crate::numerics`]): the 2D
-//! constraint set contributes the residual evaluation and the analytic
-//! Jacobian assembly (solver roadmap M2 — each [`Constraint`] derivative
-//! stays in lockstep with its residual via the generic finite-difference
-//! CI test), the core contributes the regularised normal equations and the
-//! damped update loop.
-
-use std::collections::HashMap;
+//! A thin family adapter: the 2D constraint set contributes the residuals
+//! and the analytic Jacobian rows (each [`Constraint`] derivative stays in
+//! lockstep with its residual via the generic finite-difference CI test);
+//! the decomposition and the per-component solve are the shared pipeline of
+//! the crate-internal `system` module over the Newton core of [`crate::numerics`].
 
 use crate::constraint::Constraint;
 use crate::entity::Entity;
+use crate::system::{self, Equations, SparseRow};
 
-use crate::numerics;
 pub use crate::numerics::{
     SolveOptions, SolveResult, SolveStatus, FD_H, LAMBDA, MAX_ITER, PIVOT_TOL, RESIDUAL_TOL,
     SOLVER_NORM_TOL,
 };
 
+/// The 2D constraint list as the pipeline's [`Equations`].
+pub(crate) struct SketchEquations<'a> {
+    pub(crate) entities: &'a [Entity],
+    pub(crate) constraints: &'a [Constraint],
+}
+
+impl Equations for SketchEquations<'_> {
+    fn constraint_count(&self) -> usize {
+        self.constraints.len()
+    }
+
+    fn equation_count(&self, index: usize) -> usize {
+        self.constraints[index].equation_count()
+    }
+
+    fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]) {
+        self.constraints[index].residuals(params, self.entities, out);
+    }
+
+    fn jacobian(&self, index: usize, params: &[f64], out: &mut [SparseRow]) {
+        self.constraints[index].jacobian(params, self.entities, out);
+    }
+}
+
 /// Evaluate the stacked residual vector of `constraints` at `params`.
-pub(crate) fn eval_residuals<C: AsRef<Constraint>>(
+#[cfg(test)]
+pub(crate) fn eval_residuals(
     params: &[f64],
     entities: &[Entity],
-    constraints: &[C],
+    constraints: &[Constraint],
     n_eq: usize,
 ) -> Vec<f64> {
-    let mut f = vec![0.0_f64; n_eq];
-    let mut row = 0;
-    for c in constraints {
-        let cnt = c.as_ref().equation_count();
-        c.as_ref()
-            .residuals(params, entities, &mut f[row..row + cnt]);
-        row += cnt;
-    }
+    let eqs = SketchEquations {
+        entities,
+        constraints,
+    };
+    let f = system::eval_residuals(&eqs, &system::all_indices(&eqs), params);
+    debug_assert_eq!(f.len(), n_eq);
     f
 }
 
-/// Assemble the analytic Jacobian (m equations × n_free columns) from the
-/// per-constraint sparse derivative rows, filtering parameters held by the
-/// solver's fixed mask. `out` arrives zeroed and is overwritten.
-pub(crate) fn analytic_jacobian<C: AsRef<Constraint>>(
+/// Assemble the analytic Jacobian (m equations × the columns of `col_of`).
+/// `out` arrives zeroed.
+#[cfg(test)]
+pub(crate) fn analytic_jacobian(
     params: &[f64],
-    col_of: &HashMap<usize, usize>,
+    col_of: &std::collections::HashMap<usize, usize>,
     entities: &[Entity],
-    constraints: &[C],
+    constraints: &[Constraint],
     out: &mut [Vec<f64>],
 ) {
-    let mut rows: Vec<Vec<(usize, f64)>> = Vec::new();
-    let mut row = 0;
-    for c in constraints {
-        let c = c.as_ref();
-        let cnt = c.equation_count();
-        rows.clear();
-        rows.resize_with(cnt, Vec::new);
-        c.jacobian(params, entities, &mut rows);
-        for (k, entries) in rows.iter().enumerate() {
-            for &(pidx, v) in entries {
-                if let Some(&col) = col_of.get(&pidx) {
-                    out[row + k][col] += v;
-                }
-            }
-        }
-        row += cnt;
-    }
+    let eqs = SketchEquations {
+        entities,
+        constraints,
+    };
+    system::analytic_jacobian(&eqs, &system::all_indices(&eqs), params, col_of, out);
 }
 
 /// Run the Newton-Raphson solver over every connected component of the
@@ -149,123 +157,12 @@ pub fn solve_components_with(
     only: Option<&[usize]>,
     options: &SolveOptions,
 ) -> SolveResult {
-    let n_eq_total: usize = constraints.iter().map(|c| c.equation_count()).sum();
-    let mut iterations = 0usize;
-    let mut converged = true;
-    let mut status = SolveStatus::Converged;
-
-    for (ordinal, group) in components.iter().enumerate() {
-        if let Some(sel) = only {
-            if !sel.contains(&ordinal) {
-                continue;
-            }
-        }
-        let sub: Vec<&Constraint> = group.iter().map(|&i| &constraints[i]).collect();
-        let result = solve_one(params, fixed, entities, &sub, options);
-        iterations += result.iterations;
-        converged &= result.converged;
-        status = status.max(result.status);
-    }
-
-    let f = eval_residuals(params, entities, constraints, n_eq_total);
-    SolveResult {
-        converged,
-        residual: numerics::rms(&f),
-        iterations,
-        status,
-    }
-}
-
-/// Sorted, de-duplicated set of the parameters `constraints` touch.
-///
-/// Read from the Jacobian rows, which list every touched parameter
-/// regardless of the derivative value there.
-pub(crate) fn touched_params<C: AsRef<Constraint>>(
-    params: &[f64],
-    entities: &[Entity],
-    constraints: &[C],
-) -> Vec<usize> {
-    let mut touched: Vec<usize> = Vec::new();
-    let mut scratch: Vec<Vec<(usize, f64)>> = Vec::new();
-    for c in constraints {
-        let c = c.as_ref();
-        scratch.clear();
-        scratch.resize_with(c.equation_count(), Vec::new);
-        c.jacobian(params, entities, &mut scratch);
-        for row in &scratch {
-            touched.extend(row.iter().map(|&(p, _)| p));
-        }
-    }
-    touched.sort_unstable();
-    touched.dedup();
-    touched
-}
-
-/// Solve one connected subsystem: `sub` are the constraints (already
-/// component-local), and only the free parameters they touch may move.
-fn solve_one(
-    params: &mut [f64],
-    fixed: &[bool],
-    entities: &[Entity],
-    sub: &[&Constraint],
-    options: &SolveOptions,
-) -> SolveResult {
-    let touched = touched_params(params, entities, sub);
-    // Component-local fixed mask: everything not touched by this component
-    // is held, so the Newton loop's free list is exactly this component's
-    // movable parameters.
-    let mut fixed_c: Vec<bool> = vec![true; params.len()];
-    let free: Vec<usize> = touched.iter().copied().filter(|&p| !fixed[p]).collect();
-    for &p in &free {
-        fixed_c[p] = false;
-    }
-    let col_of: HashMap<usize, usize> = free.iter().enumerate().map(|(c, &p)| (p, c)).collect();
-
-    let n_eq: usize = sub.iter().map(|c| c.equation_count()).sum();
-    let mut build = |p: &[f64], out: &mut [Vec<f64>]| {
-        analytic_jacobian(p, &col_of, entities, sub, out);
+    let eqs = SketchEquations {
+        entities,
+        constraints,
     };
-
-    // One-shot integration check (debug builds): the analytic assembly
-    // must agree with central differences at the starting point. The
-    // exhaustive per-variant gate lives in `constraint.rs` tests; this
-    // catches per-call assembly bugs (column mapping, mask filtering).
-    #[cfg(debug_assertions)]
-    if n_eq > 0 && !free.is_empty() {
-        let mut eval = |p: &[f64], f: &mut [f64]| {
-            let v = eval_residuals(p, entities, sub, n_eq);
-            f.copy_from_slice(&v);
-        };
-        let mut j_analytic = vec![vec![0.0_f64; free.len()]; n_eq];
-        build(params, &mut j_analytic);
-        let mut j_fd = vec![vec![0.0_f64; free.len()]; n_eq];
-        numerics::numerical_jacobian_into(params, &free, n_eq, &mut eval, &mut j_fd);
-        for (ri, (ra, rf)) in j_analytic.iter().zip(j_fd.iter()).enumerate() {
-            for (ci, (va, vf)) in ra.iter().zip(rf.iter()).enumerate() {
-                assert!(
-                    (va - vf).abs() <= 1.0e-4 * (1.0 + vf.abs()),
-                    "analytic Jacobian drifts from finite differences at row {ri} col {ci}: {va} vs {vf}"
-                );
-            }
-        }
-    }
-
-    numerics::newton_solve_with_jacobian(
-        params,
-        &fixed_c,
-        n_eq,
-        |p, f| {
-            let v = eval_residuals(p, entities, sub, n_eq);
-            f.copy_from_slice(&v);
-        },
-        numerics::Jacobian::Analytic(&mut build),
-        options,
-    )
+    system::solve_components(&eqs, params, fixed, components, only, options, |_, _| {})
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Unit tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
