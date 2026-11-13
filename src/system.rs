@@ -67,6 +67,16 @@ pub(crate) trait Equations {
         params[column].abs()
     }
 
+    /// The size of the geometry the constraints `group` act on, if every
+    /// equation of the family is a length: a component smaller than one
+    /// unit is then held to the tolerance in proportion to that size,
+    /// rather than to an absolute number that would let its equations stop
+    /// far short of holding relative to it. `None` (the default) keeps the
+    /// tolerance absolute.
+    fn length_scale(&self, _group: &[usize], _params: &[f64]) -> Option<f64> {
+        None
+    }
+
     /// Whether a solve cross-checks the Jacobian against finite differences
     /// in debug builds (two residual evaluations per free column).
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
@@ -370,6 +380,7 @@ fn solve_one<E: Equations + ?Sized>(
         }
     };
     let mut rows = |p: &[f64], out: &mut [f64]| row_magnitudes(eqs, group, p, out);
+    let unit = equation_unit(eqs.length_scale(group, params));
     let result = numerics::newton_solve_in(
         params,
         &*space,
@@ -381,10 +392,24 @@ fn solve_one<E: Equations + ?Sized>(
         Some(numerics::Magnitudes {
             columns: &mut columns,
             rows: &mut rows,
+            unit,
         }),
         options,
     );
     (result, touched)
+}
+
+/// The unit a component's equations are measured in, from its
+/// [`Equations::length_scale`]: that size when it is below one, and one
+/// otherwise — a model larger than a unit keeps the absolute tolerance,
+/// which the precision of its numbers already bounds (see
+/// [`numerics::PRECISION_ULPS`]). A size of zero (every point in one
+/// place) or none at all gives one too.
+pub(crate) fn equation_unit(length_scale: Option<f64>) -> f64 {
+    match length_scale {
+        Some(size) if size > 0.0 && size < 1.0 => size,
+        _ => 1.0,
+    }
 }
 
 /// The debug-build cross-check of [`solve_one`]: the analytic Jacobian of a

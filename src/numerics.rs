@@ -415,20 +415,37 @@ pub(crate) struct Magnitudes<'a> {
     /// Per equation: `Σ|∂f/∂q|·|q|` over everything the equation touches,
     /// held or free.
     pub(crate) rows: &'a mut dyn FnMut(&[f64], &mut [f64]),
+    /// The unit the equations are measured in, at most one: the tolerance
+    /// applies to `residual / unit`. A family whose equations are all
+    /// lengths passes the size of a component smaller than one unit, so
+    /// that the tolerance is relative to it; one passes 1 otherwise.
+    pub(crate) unit: f64,
 }
 
-/// The weight of an equation whose terms have magnitude `size`: one, unless
-/// the tolerance is finer than those terms resolve, in which case the
-/// equation is measured in units of that resolution instead. One rounding
-/// of the terms is worth `ε·size`; the weight is
-/// `PRECISION_ULPS·ε·size / tolerance` once that exceeds one.
-fn weight_of(size: f64, tolerance: f64) -> f64 {
+/// The weight of an equation whose terms have magnitude `size`: `unit`,
+/// unless the tolerance is finer than those terms resolve, in which case
+/// the equation is measured in units of that resolution instead. One
+/// rounding of the terms is worth `ε·size`; the weight is
+/// `PRECISION_ULPS·ε·size / tolerance` once that exceeds `unit`.
+fn weight_of(size: f64, tolerance: f64, unit: f64) -> f64 {
     let weight = PRECISION_ULPS * f64::EPSILON * size / tolerance;
     // A tolerance of zero, or a size that is not a number, weighs nothing.
     if weight.is_finite() {
-        weight.max(1.0)
+        weight.max(unit)
     } else {
-        1.0
+        unit
+    }
+}
+
+/// The unit of [`Magnitudes`], if any: one for a family that has none.
+fn unit_of(magnitudes: &Option<Magnitudes<'_>>) -> f64 {
+    magnitudes.as_ref().map_or(1.0, |m| m.unit)
+}
+
+/// Move residuals weighted by `old` onto the weights `new`.
+fn reweigh(f: &mut [f64], old: &[f64], new: &[f64]) {
+    for ((fi, old), new) in f.iter_mut().zip(old).zip(new) {
+        *fi = *fi * old / new;
     }
 }
 
@@ -457,19 +474,35 @@ fn weights_from_rows(
     rows: &[Vec<(usize, f64)>],
     column: &[f64],
     tolerance: f64,
+    unit: f64,
 ) -> bool {
     let mut any = false;
     for (weight, row) in weights.iter_mut().zip(rows) {
         let size: f64 = row.iter().map(|&(col, v)| v.abs() * column[col]).sum();
-        *weight = weight_of(size, tolerance);
+        *weight = weight_of(size, tolerance, unit);
         any |= *weight != 1.0;
     }
     any
 }
 
-/// The weights at `params`, from the full magnitudes of the equations — if
-/// they differ enough from `weights` to be worth another pass: some weight
-/// at least twice what it was.
+/// The weights at `params`, from the full magnitudes of the `n_eq`
+/// equations.
+fn weights_at(
+    n_eq: usize,
+    params: &[f64],
+    magnitudes: &mut Magnitudes<'_>,
+    tolerance: f64,
+) -> Vec<f64> {
+    let mut size = vec![0.0_f64; n_eq];
+    (magnitudes.rows)(params, &mut size);
+    size.iter()
+        .map(|s| weight_of(*s, tolerance, magnitudes.unit))
+        .collect()
+}
+
+/// The weights at `params` ([`weights_at`]) — if they differ enough from
+/// `weights` to be worth another pass: some weight at least twice what it
+/// was.
 fn fresh_weights(
     weights: &[f64],
     params: &[f64],
@@ -477,9 +510,7 @@ fn fresh_weights(
     tolerance: f64,
 ) -> Option<Vec<f64>> {
     let magnitudes = magnitudes.as_mut()?;
-    let mut size = vec![0.0_f64; weights.len()];
-    (magnitudes.rows)(params, &mut size);
-    let fresh: Vec<f64> = size.iter().map(|s| weight_of(*s, tolerance)).collect();
+    let fresh = weights_at(weights.len(), params, magnitudes, tolerance);
     fresh
         .iter()
         .zip(weights)
@@ -603,30 +634,38 @@ where
         ResidualNorm::L2 => options.tolerance / (n_eq as f64).sqrt(),
     };
 
-    // One per equation; `weighted` says whether any is not one.
-    let mut weights = vec![1.0_f64; n_eq];
-    let mut weighted = false;
+    // One per equation; `weighted` says whether any is not one. Until the
+    // first Jacobian gives the precision of each equation, every weight is
+    // the unit of the equations (see `Magnitudes::unit`).
+    let unit = unit_of(&magnitudes);
+    let mut weights = vec![unit; n_eq];
+    let mut weighted = unit != 1.0;
 
     if n_free == 0 {
         // Equations but nothing that may move: the state is what it is,
         // satisfied or not. Report which (0.1.0 called both converged).
         let f = eval_vec(&mut eval_residuals, params, n_eq);
         let residual = rms(&f);
-        let status = if residual < tolerance {
-            SolveStatus::Converged
+        // Judged in the units of the equations and as far as their numbers
+        // go: met as stated, met to the precision of the numbers, or unmet.
+        let mut weighed = f;
+        if let Some(magnitudes) = magnitudes.as_mut() {
+            weigh(
+                &mut weighed,
+                &weights_at(n_eq, params, magnitudes, tolerance),
+            );
+        }
+        let judged = rms(&weighed);
+        let status = if judged < tolerance {
+            if residual < tolerance {
+                SolveStatus::Converged
+            } else {
+                SolveStatus::ConvergedToPrecision
+            }
         } else if !residual.is_finite() {
             SolveStatus::Diverged
         } else {
-            // Unmet as stated; perhaps met as far as the numbers go.
-            let mut weighed = f;
-            if let Some(fresh) = fresh_weights(&weights, params, &mut magnitudes, tolerance) {
-                weigh(&mut weighed, &fresh);
-            }
-            if rms(&weighed) < tolerance {
-                SolveStatus::ConvergedToPrecision
-            } else {
-                SolveStatus::Stalled
-            }
+            SolveStatus::Stalled
         };
         return SolveResult {
             converged: status <= SolveStatus::ConvergedToPrecision,
@@ -658,6 +697,9 @@ where
     // weights). An accepted trial step hands its residuals over, so each
     // point is evaluated once.
     let mut f = eval_vec(&mut eval_residuals, params, n_eq);
+    if weighted {
+        weigh(&mut f, &weights);
+    }
 
     // The trust radius, in the norm of the step vector. Unbounded until a
     // step has been judged poor.
@@ -698,12 +740,15 @@ where
                 if let Some(magnitudes) = magnitudes.as_mut() {
                     let mut column = vec![0.0_f64; n_free];
                     (magnitudes.columns)(params, &mut column);
-                    weighted = weights_from_rows(&mut weights, &rows, &column, tolerance);
-                    if weighted {
-                        weigh(&mut f, &weights);
-                        if rms(&f) < tolerance {
-                            break;
-                        }
+                    let before = weighted.then(|| weights.clone());
+                    weighted = weights_from_rows(&mut weights, &rows, &column, tolerance, unit);
+                    match &before {
+                        Some(before) => reweigh(&mut f, before, &weights),
+                        None if weighted => weigh(&mut f, &weights),
+                        None => {}
+                    }
+                    if rms(&f) < tolerance {
+                        break;
                     }
                 }
             }

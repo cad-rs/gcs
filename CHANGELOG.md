@@ -83,10 +83,24 @@ through them from a host's side.
   converged with the line 10% short); the other 3D angular relations were
   already normalised. The same triangle now solves to within 2e-15 of its
   size from 1e-6 to 1e6 across (`tests/scale.rs`). Every metric of the 2D
-  and assembly corpora is unchanged; the 3D corpus passes. What is still
-  open is the tolerance itself: it is absolute, so a small component with
-  freedom left (no convergence polish) stops with its equations met only
-  to 1e-10 in model units — 2.7e-8 of the size of a triangle 1e-4 across.
+  and assembly corpora is unchanged; the 3D corpus passes.
+- **A 2D component smaller than one unit is held to the tolerance in
+  proportion to its size.** The tolerance is an absolute number, and a
+  component with freedom left gets no convergence polish, so a small one
+  used to stop as soon as its equations were within 1e-10 model units: a
+  triangle 1e-4 across, free to turn, was left with its lengths 2.7e-8 of
+  its size out, against 7e-16 at unit size. Now the residual of a 2D
+  component is measured in units of its size — the larger side of the box
+  around the entities its constraints refer to — when that is below one,
+  and the same triangle comes back to within 1.4e-15 of its size, in three
+  iterations, at every size from 1e-8 to 1e3 (`tests/scale.rs`). A
+  component one unit across or larger keeps the absolute tolerance, and
+  the four rounding units of its numbers still bound it (so the 2D corpus
+  is unchanged, metrics included). The reported `residual` stays in model
+  units; with a small component it is accordingly smaller than the
+  tolerance. The 3D-geometric family mixes lengths with pure numbers (its
+  angular relations are normalised), and the rigid-pose family lengths
+  with angles, so both keep the absolute tolerance.
 - `SolveStatus` has the new variant `ConvergedToPrecision`, between
   `Converged` and `MaxIterations`; a `match` over the statuses needs an arm
   for it. The same status is how a tolerance below what double precision

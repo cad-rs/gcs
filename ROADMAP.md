@@ -20,19 +20,16 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   `benches/BASELINE.md` for where it sits today). Going through the normal
   equations also squares the condition number; a QR-based minimum-norm step
   would not.
-- **Small geometry.** Large coordinates are handled: an equation is held
-  to the tolerance or to a few rounding units of its own numbers, whichever
-  is larger. Every 2D equation is now a length (the angular relations
-  included), and a fully constrained model solves to rounding at any size
-  (`the_triangle_solves_exactly_at_any_size`). What is left is the
-  tolerance: it is absolute, so a small component with freedom left — which
-  gets no convergence polish — stops as soon as its equations are within
-  1e-10 model units: a triangle 1e-4 across, free to turn, is left with its
-  lengths 2.7e-8 of its size out
-  (`cargo test --release --test scale -- --ignored report_small_geometry_free --nocapture`).
-  A host should keep features above about 1e-4 units until the tolerance
-  is scaled by the size of the component. Arc angles are columns in
-  radians, not lengths, and have not been looked at for scale.
+- **Small geometry outside 2D solving.** A 2D component is solved at any
+  size: every 2D equation is a length, and a component smaller than one
+  unit is held to the tolerance in proportion to its size
+  (`tests/scale.rs`). Not yet: the 3D-geometric family, whose angular
+  relations are pure numbers beside its lengths, and the rigid-pose family,
+  which mixes lengths and angles, keep an absolute tolerance, so a small 3D
+  model with freedom left stops with its equations within 1e-10 model
+  units. The diagnosis (`diagnose`) has its own absolute thresholds and has
+  not been checked on small geometry. Arc angles are columns in radians,
+  not lengths, and have not been looked at for scale.
 - **Hard starts.** The step control is a dogleg trust region, but the
   radius is measured in the raw parameter vector, where a length and an
   angle weigh the same, and there is no homotopy/continuation path for

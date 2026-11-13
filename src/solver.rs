@@ -8,7 +8,7 @@
 
 use crate::constraint::Constraint;
 use crate::edit::ConstraintState;
-use crate::entity::Entity;
+use crate::entity::{Entity, EntityKind};
 use crate::numerics::CoreOptions;
 use crate::system::{self, Equations, SparseRow};
 
@@ -81,6 +81,39 @@ impl Equations for SketchEquations<'_> {
         if self.is_active(index) {
             self.constraints[index].jacobian(params, self.entities, out);
         }
+    }
+
+    /// Every 2D equation is a length (the angular relations are scaled by
+    /// the lengths of their lines). The size of a component is the larger
+    /// side of the box around the entities its active constraints refer
+    /// to, circles and arcs taken whole.
+    fn length_scale(&self, group: &[usize], params: &[f64]) -> Option<f64> {
+        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        let mut add = |x: f64, y: f64, r: f64| {
+            lo[0] = lo[0].min(x - r);
+            lo[1] = lo[1].min(y - r);
+            hi[0] = hi[0].max(x + r);
+            hi[1] = hi[1].max(y + r);
+        };
+        for &index in group {
+            if !self.is_active(index) {
+                continue;
+            }
+            for (id, _) in self.constraints[index].references() {
+                let e = &self.entities[id];
+                let p = |k: usize| params[e.param(k)];
+                match e.kind {
+                    EntityKind::Point => add(p(0), p(1), 0.0),
+                    EntityKind::Line => {
+                        add(p(0), p(1), 0.0);
+                        add(p(2), p(3), 0.0);
+                    }
+                    EntityKind::Circle | EntityKind::Arc => add(p(0), p(1), p(2).abs()),
+                }
+            }
+        }
+        let size = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+        size.is_finite().then_some(size)
     }
 }
 

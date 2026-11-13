@@ -497,21 +497,49 @@ fn a_3d_equal_length_holds_on_small_lines() {
 #[test]
 #[ignore]
 fn report_small_geometry_free() {
-    for s in [1.0, 1.0e-2, 1.0e-4, 1.0e-6] {
-        let (mut sk, _) = triangle(s, 0.0, 0.02);
-        assert!(sk.remove_constraint(2));
-        let r = sk.solve();
-        let a = sk.point_coords(PointRef::LineStart(1));
-        let b = sk.point_coords(PointRef::LineEnd(1));
-        let c = sk.point_coords(PointRef::Point(2));
-        let d = |p: glam::DVec2, q: glam::DVec2| (p - q).length();
-        let worst = [(d(a, b), 3.0), (d(b, c), 4.0), (d(a, c), 5.0)]
-            .iter()
-            .map(|(l, k)| (l - k * s).abs() / s)
-            .fold(0.0_f64, f64::max);
+    for s in [1.0e3, 1.0, 1.0e-2, 1.0e-4, 1.0e-6, 1.0e-8] {
+        let (r, worst) = free_triangle_error(s, 0.0);
         println!(
             "size {s:e}: {:?} it {} residual {:e} worst relative error {worst:e}",
             r.status, r.iterations, r.residual
         );
+    }
+}
+
+/// The worst error of the free triangle's three lengths after a solve,
+/// relative to its size `s`.
+fn free_triangle_error(s: f64, o: f64) -> (SolveResult, f64) {
+    let (mut sk, _) = triangle(s, o, 0.02);
+    assert!(sk.remove_constraint(2));
+    let r = sk.solve();
+    let a = sk.point_coords(PointRef::LineStart(1));
+    let b = sk.point_coords(PointRef::LineEnd(1));
+    let c = sk.point_coords(PointRef::Point(2));
+    let d = |p: glam::DVec2, q: glam::DVec2| (p - q).length();
+    let worst = [(d(a, b), 3.0), (d(b, c), 4.0), (d(a, c), 5.0)]
+        .iter()
+        .map(|(l, k)| (l - k * s).abs() / s)
+        .fold(0.0_f64, f64::max);
+    (r, worst)
+}
+
+/// A small model with freedom left is held to the tolerance in proportion
+/// to its size. Such a component gets no convergence polish, so the
+/// tolerance is all there is: with an absolute 1e-10 the free triangle
+/// stopped with its lengths 2.7e-8 of its size out at 1e-4 and at 1e-6
+/// across, against 7e-16 at unit size. Far from the origin the rounding of
+/// the coordinates sets the bound instead.
+#[test]
+fn a_small_model_with_freedom_left_is_held_to_its_own_size() {
+    for s in [1.0, 1.0e-2, 1.0e-4, 1.0e-6, 1.0e-8] {
+        for factor in [0.0, 1.0e3] {
+            let o = factor * s;
+            let (r, error) = free_triangle_error(s, o);
+            assert!(r.converged, "size {s:e} at {o:e}: {r:?}");
+            assert!(
+                error <= 1.0e-12 + 64.0 * f64::EPSILON * factor,
+                "size {s:e} at {o:e}: lengths off by {error:e} of the size"
+            );
+        }
     }
 }

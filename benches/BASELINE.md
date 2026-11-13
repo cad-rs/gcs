@@ -158,6 +158,34 @@ kernel inline made the solve 3.5× slower, so its code generation is
 sensitive to the surroundings.) Worth a look when the factorisation is
 replaced in P2.1 / P2.2, not before.
 
+### After a small 2D component was held to its own size (P2.4)
+
+Same machine. The fixtures are 4 × 3 rectangles, so every component is
+larger than one unit and keeps the absolute tolerance; what is new on
+them is the box around each component's entities, taken once per solve.
+The `sketch/` group, the previous commit and this one run alternately,
+three rounds each (criterion medians, 6 s of measurement per run):
+
+| Benchmark | before, mean | after, mean | change |
+|---|---:|---:|---:|
+| `sketch/solve_chain/54` | 0.363 ms | 0.383 ms | +5.4% |
+| `sketch/solve_chain/198` | 7.07 ms | 7.16 ms | +1.3% |
+| `sketch/solve_chain/792` | 379 ms | 395 ms | +4.1% |
+| `sketch/resolve_chain/54` | 0.362 ms | 0.385 ms | +6.5% |
+| `sketch/resolve_chain/198` | 7.55 ms | 7.23 ms | −4.2% |
+| `sketch/resolve_chain/792` | 388 ms | 390 ms | +0.6% |
+| `sketch/solve_field/360` | 1.36 ms | 1.33 ms | −2.2% |
+| `sketch/solve_field/3600` | 8.97 ms | 9.19 ms | +2.4% |
+| `sketch/diagnose_chain/198` (code unchanged) | 9.17 ms | 9.01 ms | −1.8% |
+
+No difference is resolved. The machine drifted during this run: one
+build's own rounds differ by 10–20% (`solve_chain/54` before:
+0.343 / 0.357 / 0.390 ms; `solve_chain/792` before: 349 / 370 / 420 ms),
+the first round being the fastest for both builds; within that round the
+pairs are within 3% either way (`solve_chain/54` 0.343 → 0.348 ms,
+`solve_chain/792` 349 → 337 ms). The diagnosis, whose code did not change,
+scatters by the same couple of percent.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.
