@@ -66,6 +66,27 @@ through them from a host's side.
   round-trip drift went from 1.0e-13 to 1.6e-13. A contradiction is still
   a failed solve wherever it is larger than that rounding
   (`tests/scale.rs`).
+- **The 2D angular relations and equal length are lengths, at any size.**
+  `Parallel`, `Perpendicular` and `Angle` were the cross product, the dot
+  product and `sin·dot − cos·cross` of the two line vectors, and
+  `EqualLength` the difference of the squared lengths: all products of two
+  lengths, while every other 2D equation is a length. On small geometry
+  they fell under the tolerance before they held (a triangle 1e-5 across
+  came back `Converged` with a corner 0.12% of its size out of place; at
+  1e-6 with a tolerance of 1e-16 it never converged), and on large geometry
+  they dwarfed the rest. Now the three angular relations are stated on the
+  unit directions (`sin θ`, `cos θ`, `sin(angle − θ)`) times the geometric
+  mean of the two lengths, and equal length is `|d1| − |d2|`. The solution
+  sets are the same (an `Angle` is still also met at `angle + π`); the
+  residual values, and so a solve's path, are not. The 3D
+  `EqualLineLength` gets the same change (at 1e-8 across it used to report
+  converged with the line 10% short); the other 3D angular relations were
+  already normalised. The same triangle now solves to within 2e-15 of its
+  size from 1e-6 to 1e6 across (`tests/scale.rs`). Every metric of the 2D
+  and assembly corpora is unchanged; the 3D corpus passes. What is still
+  open is the tolerance itself: it is absolute, so a small component with
+  freedom left (no convergence polish) stops with its equations met only
+  to 1e-10 in model units — 2.7e-8 of the size of a triangle 1e-4 across.
 - `SolveStatus` has the new variant `ConvergedToPrecision`, between
   `Converged` and `MaxIterations`; a `match` over the statuses needs an arm
   for it. The same status is how a tolerance below what double precision

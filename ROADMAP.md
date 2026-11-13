@@ -22,18 +22,17 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   would not.
 - **Small geometry.** Large coordinates are handled: an equation is held
   to the tolerance or to a few rounding units of its own numbers, whichever
-  is larger. The other direction is not. The tolerance is absolute, and
-  several 2D relations (angle, parallel, perpendicular, equal length) are
-  written as products of two lengths, so for small geometry they fall under the
-  tolerance before they hold: a triangle 1e-5 across is reported converged
-  with its third corner 0.1% of its size out of place, and with a tighter
-  tolerance the fixed regularisation swamps those rows instead (27
-  iterations at 1e-5, none that work at 1e-6;
-  `cargo test --test scale -- --ignored report_small_geometry`). Until this
-  is fixed a host should keep features above about 1e-4 units. The fix is
-  to state those relations on unit directions, so that every equation is
-  either a length or an angle, and to scale the tolerance by the size of
-  the component.
+  is larger. Every 2D equation is now a length (the angular relations
+  included), and a fully constrained model solves to rounding at any size
+  (`the_triangle_solves_exactly_at_any_size`). What is left is the
+  tolerance: it is absolute, so a small component with freedom left — which
+  gets no convergence polish — stops as soon as its equations are within
+  1e-10 model units: a triangle 1e-4 across, free to turn, is left with its
+  lengths 2.7e-8 of its size out
+  (`cargo test --release --test scale -- --ignored report_small_geometry_free --nocapture`).
+  A host should keep features above about 1e-4 units until the tolerance
+  is scaled by the size of the component. Arc angles are columns in
+  radians, not lengths, and have not been looked at for scale.
 - **Hard starts.** The step control is a dogleg trust region, but the
   radius is measured in the raw parameter vector, where a length and an
   angle weigh the same, and there is no homotopy/continuation path for

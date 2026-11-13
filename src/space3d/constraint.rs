@@ -84,7 +84,8 @@ pub enum SpaceConstraint {
     /// A SpaceLine is perpendicular to another SpaceLine. (1 equation)
     LinePerpendicularLine(SpaceEntityId, SpaceEntityId),
 
-    /// Two SpaceLines have equal length. (1 equation)
+    /// Two SpaceLines have equal length. (1 equation: the difference of the
+    /// lengths)
     EqualLineLength(SpaceEntityId, SpaceEntityId),
 
     // ── Plane constraints ────────────────────────────────────────────────────
@@ -558,7 +559,9 @@ impl SpaceConstraint {
                 let dx2 = params[e2.param(3)] - params[e2.param(0)];
                 let dy2 = params[e2.param(4)] - params[e2.param(1)];
                 let dz2 = params[e2.param(5)] - params[e2.param(2)];
-                out[0] = (dx1 * dx1 + dy1 * dy1 + dz1 * dz1) - (dx2 * dx2 + dy2 * dy2 + dz2 * dz2);
+                // The difference of the lengths, not of their squares: a
+                // length, so it is judged on the scale of the geometry.
+                out[0] = dx1.hypot(dy1).hypot(dz1) - dx2.hypot(dy2).hypot(dz2);
             }
 
             // ── PlaneNormal ──────────────────────────────────────────────────
@@ -1406,21 +1409,31 @@ impl SpaceConstraint {
             SpaceConstraint::EqualLineLength(l1, l2) => {
                 let e1 = &entities[*l1];
                 let e2 = &entities[*l2];
-                let (dx1, dy1, dz1) = line_dir(params, e1);
-                let (dx2, dy2, dz2) = line_dir(params, e2);
+                // r = |d1| − |d2|: each end moves its length along the
+                // line. A line of zero length has no gradient.
+                let unit = |(x, y, z): (f64, f64, f64)| {
+                    let length = x.hypot(y).hypot(z);
+                    if length > 0.0 {
+                        (x / length, y / length, z / length)
+                    } else {
+                        (0.0, 0.0, 0.0)
+                    }
+                };
+                let (ux1, uy1, uz1) = unit(line_dir(params, e1));
+                let (ux2, uy2, uz2) = unit(line_dir(params, e2));
                 row!(out[0],
-                    e1.param(0) => -2.0 * dx1,
-                    e1.param(1) => -2.0 * dy1,
-                    e1.param(2) => -2.0 * dz1,
-                    e1.param(3) => 2.0 * dx1,
-                    e1.param(4) => 2.0 * dy1,
-                    e1.param(5) => 2.0 * dz1,
-                    e2.param(0) => 2.0 * dx2,
-                    e2.param(1) => 2.0 * dy2,
-                    e2.param(2) => 2.0 * dz2,
-                    e2.param(3) => -2.0 * dx2,
-                    e2.param(4) => -2.0 * dy2,
-                    e2.param(5) => -2.0 * dz2,
+                    e1.param(0) => -ux1,
+                    e1.param(1) => -uy1,
+                    e1.param(2) => -uz1,
+                    e1.param(3) => ux1,
+                    e1.param(4) => uy1,
+                    e1.param(5) => uz1,
+                    e2.param(0) => ux2,
+                    e2.param(1) => uy2,
+                    e2.param(2) => uz2,
+                    e2.param(3) => -ux2,
+                    e2.param(4) => -uy2,
+                    e2.param(5) => -uz2,
                 );
             }
 

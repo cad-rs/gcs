@@ -190,7 +190,7 @@ fn error_allowed(x: f64) -> f64 {
 /// The same two models, from a thousandth of a unit to a million units
 /// across and from the origin to a billion times their own size away:
 /// every one solves, to the accuracy its coordinates can hold. (Smaller
-/// than this is a separate matter: see `report_small_geometry`.)
+/// and larger at the origin: `the_triangle_solves_exactly_at_any_size`.)
 #[test]
 fn the_same_model_solves_at_any_size_and_place() {
     for s in [1.0e-3, 1.0, 1.0e3, 1.0e6] {
@@ -402,16 +402,42 @@ fn an_assembly_solves_far_from_the_origin() {
     }
 }
 
-/// Small geometry at the origin, at the default tolerance and at tighter
-/// ones. This is the open half of the scale problem, and the reason the
-/// gate below stops at a size of 1e-3 for the triangle: the tolerance is an
-/// absolute number, and the angle equation is a product of two lengths, so
-/// below about 1e-5 it is under the tolerance before it holds.
+/// The triangle at the origin, from a millionth of a unit to a million
+/// units across, at the default tolerance and at a tighter one: its third
+/// corner lands within a rounding-level fraction of its size every time.
+///
+/// Every 2D equation is a length, the angle included (it is the sine of the
+/// angle error times the lengths of its lines). Before that, the angle was
+/// stated as a product of two lengths: at 1e-5 across it fell under the
+/// tolerance with the corner 0.12% of the size out of place, and at 1e-6
+/// with a tolerance of 1e-16 the solve never converged.
+#[test]
+fn the_triangle_solves_exactly_at_any_size() {
+    for tolerance in [1.0e-10, 1.0e-16] {
+        for s in [1.0e-6, 1.0e-5, 1.0e-4, 1.0e-3, 1.0, 1.0e3, 1.0e6] {
+            let (mut sk, c) = triangle(s, 0.0, 0.02);
+            let r = sk.solve_with(&rcad_gcs::SolveOptions {
+                tolerance,
+                ..Default::default()
+            });
+            assert!(r.converged, "size {s:e}, tolerance {tolerance:e}: {r:?}");
+            let p = sk.point_coords(PointRef::Point(2));
+            let error = (p.x - c[0]).abs().max((p.y - c[1]).abs()) / s;
+            assert!(
+                error <= 1.0e-12,
+                "size {s:e}, tolerance {tolerance:e}: off by {error:e} of the size"
+            );
+        }
+    }
+}
+
+/// The triangle at the origin, small and large, at the default tolerance
+/// and at tighter ones (the measurement behind the gate above).
 #[test]
 #[ignore]
 fn report_small_geometry() {
     for tolerance in [1.0e-10, 1.0e-16, 1.0e-22] {
-        for s in [1.0, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6] {
+        for s in [1.0e6, 1.0e3, 1.0, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6] {
             let (mut sk, c) = triangle(s, 0.0, 0.02);
             let r = sk.solve_with(&rcad_gcs::SolveOptions {
                 tolerance,
@@ -424,5 +450,68 @@ fn report_small_geometry() {
                 r.status, r.iterations, r.residual
             );
         }
+    }
+}
+
+/// The 3D-geometric family's equal length, on small lines: a held line of
+/// length `3s` and a second one that may only stretch along X. Its residual
+/// was the difference of the squared lengths, an area: at 1e-8 across it
+/// starts under the default tolerance, and the solve reported converged
+/// with the line still 10% short.
+#[test]
+fn a_3d_equal_length_holds_on_small_lines() {
+    use rcad_gcs::space3d::constraint::SpaceConstraint;
+    use rcad_gcs::space3d::SpaceSketch;
+
+    for (s, tolerance) in [1.0e-8, 1.0e-7, 1.0e-6, 1.0e-3, 1.0, 1.0e3]
+        .into_iter()
+        .flat_map(|s| [(s, 1.0e-10), (s, 1.0e-16)])
+    {
+        let mut sk = SpaceSketch::new();
+        let held = sk.add_line(0.0, 0.0, 0.0, 0.0, 3.0 * s, 0.0);
+        sk.fix_entity(held);
+        let line = sk.add_line(0.0, 0.0, s, 2.7 * s, 0.0, s);
+        let start = sk.entities[line].param_start;
+        for k in [0, 1, 2, 4, 5] {
+            sk.fix_param(start + k);
+        }
+        sk.add_constraint(SpaceConstraint::EqualLineLength(held, line));
+        let r = sk.solve_with(&rcad_gcs::SolveOptions {
+            tolerance,
+            ..Default::default()
+        });
+        assert!(r.converged, "size {s:e}, tolerance {tolerance:e}: {r:?}");
+        let x = sk.params_snapshot()[start + 3];
+        assert!(
+            (x - 3.0 * s).abs() <= 1.0e-12 * s,
+            "size {s:e}, tolerance {tolerance:e}: the end is at {x:e}, not {:e}",
+            3.0 * s
+        );
+    }
+}
+
+/// The triangle without its angle, so free to turn about its pinned corner:
+/// how far its three lengths are from holding after a solve, relative to
+/// its size. A component with freedom left gets no convergence polish, so
+/// this is what the tolerance alone buys.
+#[test]
+#[ignore]
+fn report_small_geometry_free() {
+    for s in [1.0, 1.0e-2, 1.0e-4, 1.0e-6] {
+        let (mut sk, _) = triangle(s, 0.0, 0.02);
+        assert!(sk.remove_constraint(2));
+        let r = sk.solve();
+        let a = sk.point_coords(PointRef::LineStart(1));
+        let b = sk.point_coords(PointRef::LineEnd(1));
+        let c = sk.point_coords(PointRef::Point(2));
+        let d = |p: glam::DVec2, q: glam::DVec2| (p - q).length();
+        let worst = [(d(a, b), 3.0), (d(b, c), 4.0), (d(a, c), 5.0)]
+            .iter()
+            .map(|(l, k)| (l - k * s).abs() / s)
+            .fold(0.0_f64, f64::max);
+        println!(
+            "size {s:e}: {:?} it {} residual {:e} worst relative error {worst:e}",
+            r.status, r.iterations, r.residual
+        );
     }
 }

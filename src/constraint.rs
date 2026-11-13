@@ -64,16 +64,27 @@ pub enum Constraint {
     Vertical(EntityId),
 
     // ── Line–line relations ──────────────────────────────────────────────────
-    /// Two Line entities are parallel. (1 equation)
+    /// Two Line entities are parallel. (1 equation: the sine of the angle
+    /// between them, so either sense of the second line satisfies it)
     Parallel(EntityId, EntityId),
 
-    /// Two Line entities are perpendicular. (1 equation)
+    /// Two Line entities are perpendicular. (1 equation: the cosine of the
+    /// angle between them)
     Perpendicular(EntityId, EntityId),
 
-    /// Two Line entities have equal length. (1 equation)
+    /// Two Line entities have equal length. (1 equation: the difference of
+    /// the lengths)
     EqualLength(EntityId, EntityId),
 
-    /// Angle from line `l1` to line `l2` equals `angle_rad`. (1 equation)
+    /// Angle from line `l1` to line `l2` equals `angle_rad`. (1 equation:
+    /// `sin(angle_rad − θ)` for the angle `θ` the lines make, which also
+    /// holds at `angle_rad + π`)
+    ///
+    /// The three angular relations are stated on the unit directions of the
+    /// lines and multiplied by the geometric mean of the two lengths, so
+    /// that their residual is a length like that of every other 2D
+    /// equation: roughly how far the end of a line is from where the
+    /// relation would put it.
     Angle {
         l1: EntityId,
         l2: EntityId,
@@ -271,53 +282,43 @@ impl Constraint {
                 out[0] = params[e.param(0)] - params[e.param(2)]; // x1 - x2
             }
 
-            // ── Parallel ─────────────────────────────────────────────────────
+            // ── Line–line relations ───────────────────────────────────────────
+            // Stated on the unit directions and measured in the lines' own
+            // length (see `angular_length`), so that each is a length
+            // whatever the size of the lines.
             Constraint::Parallel(l1, l2) => {
-                let e1 = &entities[*l1];
-                let e2 = &entities[*l2];
-                let dx1 = params[e1.param(2)] - params[e1.param(0)];
-                let dy1 = params[e1.param(3)] - params[e1.param(1)];
-                let dx2 = params[e2.param(2)] - params[e2.param(0)];
-                let dy2 = params[e2.param(3)] - params[e2.param(1)];
-                // cross product of direction vectors = 0
-                out[0] = dx1 * dy2 - dy1 * dx2;
+                let (a, b) = (
+                    line_direction(params, &entities[*l1]),
+                    line_direction(params, &entities[*l2]),
+                );
+                // sin of the angle from l1 to l2
+                out[0] = angular_length(&a, &b) * (a.x * b.y - a.y * b.x);
             }
-
-            // ── Perpendicular ─────────────────────────────────────────────────
             Constraint::Perpendicular(l1, l2) => {
-                let e1 = &entities[*l1];
-                let e2 = &entities[*l2];
-                let dx1 = params[e1.param(2)] - params[e1.param(0)];
-                let dy1 = params[e1.param(3)] - params[e1.param(1)];
-                let dx2 = params[e2.param(2)] - params[e2.param(0)];
-                let dy2 = params[e2.param(3)] - params[e2.param(1)];
-                // dot product = 0
-                out[0] = dx1 * dx2 + dy1 * dy2;
+                let (a, b) = (
+                    line_direction(params, &entities[*l1]),
+                    line_direction(params, &entities[*l2]),
+                );
+                // cos of the angle from l1 to l2
+                out[0] = angular_length(&a, &b) * (a.x * b.x + a.y * b.y);
             }
-
-            // ── EqualLength ───────────────────────────────────────────────────
             Constraint::EqualLength(l1, l2) => {
-                let e1 = &entities[*l1];
-                let e2 = &entities[*l2];
-                let dx1 = params[e1.param(2)] - params[e1.param(0)];
-                let dy1 = params[e1.param(3)] - params[e1.param(1)];
-                let dx2 = params[e2.param(2)] - params[e2.param(0)];
-                let dy2 = params[e2.param(3)] - params[e2.param(1)];
-                out[0] = (dx1 * dx1 + dy1 * dy1) - (dx2 * dx2 + dy2 * dy2);
+                let (a, b) = (
+                    line_direction(params, &entities[*l1]),
+                    line_direction(params, &entities[*l2]),
+                );
+                out[0] = a.length - b.length;
             }
-
-            // ── Angle ─────────────────────────────────────────────────────────
             Constraint::Angle { l1, l2, angle_rad } => {
-                let e1 = &entities[*l1];
-                let e2 = &entities[*l2];
-                let dx1 = params[e1.param(2)] - params[e1.param(0)];
-                let dy1 = params[e1.param(3)] - params[e1.param(1)];
-                let dx2 = params[e2.param(2)] - params[e2.param(0)];
-                let dy2 = params[e2.param(3)] - params[e2.param(1)];
-                // sin(angle)*(d1·d2) - cos(angle)*(d1×d2) = 0
-                let dot = dx1 * dx2 + dy1 * dy2;
-                let cross = dx1 * dy2 - dy1 * dx2;
-                out[0] = angle_rad.sin() * dot - angle_rad.cos() * cross;
+                let (a, b) = (
+                    line_direction(params, &entities[*l1]),
+                    line_direction(params, &entities[*l2]),
+                );
+                // sin(angle − θ), θ the angle from l1 to l2:
+                // sin(angle)·cos θ − cos(angle)·sin θ
+                let dot = a.x * b.x + a.y * b.y;
+                let cross = a.x * b.y - a.y * b.x;
+                out[0] = angular_length(&a, &b) * (angle_rad.sin() * dot - angle_rad.cos() * cross);
             }
 
             // ── EqualRadius ───────────────────────────────────────────────────
@@ -570,77 +571,48 @@ impl Constraint {
                 row!(out[0], e.param(0) => 1.0, e.param(2) => -1.0);
             }
 
-            // ── Parallel ─────────────────────────────────────────────────────
+            // ── Line–line relations ───────────────────────────────────────────
+            // Each residual is `m·c`, `c` bilinear in the two unit directions
+            // `a`, `b` and `m` their `angular_length`; given `∂c/∂a` and
+            // `∂c/∂b` the entries are `direction_row`'s.
             Constraint::Parallel(l1, l2) => {
-                let e1 = &entities[*l1];
-                let e2 = &entities[*l2];
-                let dx1 = params[e1.param(2)] - params[e1.param(0)];
-                let dy1 = params[e1.param(3)] - params[e1.param(1)];
-                let dx2 = params[e2.param(2)] - params[e2.param(0)];
-                let dy2 = params[e2.param(3)] - params[e2.param(1)];
-                // r = dx1·dy2 − dy1·dx2
-                row!(out[0],
-                    e1.param(0) => -dy2, e1.param(2) => dy2,
-                    e1.param(1) => dx2,  e1.param(3) => -dx2,
-                    e2.param(0) => dy1,  e2.param(2) => -dy1,
-                    e2.param(1) => -dx1, e2.param(3) => dx1,
-                );
+                let (e1, e2) = (&entities[*l1], &entities[*l2]);
+                let (a, b) = (line_direction(params, e1), line_direction(params, e2));
+                // c = a.x·b.y − a.y·b.x
+                let (c, m) = (a.x * b.y - a.y * b.x, angular_length(&a, &b));
+                direction_row(&mut out[0], e1, &a, (b.y, -b.x), c, m);
+                direction_row(&mut out[0], e2, &b, (-a.y, a.x), c, m);
             }
-
-            // ── Perpendicular ─────────────────────────────────────────────────
             Constraint::Perpendicular(l1, l2) => {
-                let e1 = &entities[*l1];
-                let e2 = &entities[*l2];
-                let dx1 = params[e1.param(2)] - params[e1.param(0)];
-                let dy1 = params[e1.param(3)] - params[e1.param(1)];
-                let dx2 = params[e2.param(2)] - params[e2.param(0)];
-                let dy2 = params[e2.param(3)] - params[e2.param(1)];
-                // r = dx1·dx2 + dy1·dy2
-                row!(out[0],
-                    e1.param(0) => -dx2, e1.param(2) => dx2,
-                    e1.param(1) => -dy2, e1.param(3) => dy2,
-                    e2.param(0) => -dx1, e2.param(2) => dx1,
-                    e2.param(1) => -dy1, e2.param(3) => dy1,
-                );
+                let (e1, e2) = (&entities[*l1], &entities[*l2]);
+                let (a, b) = (line_direction(params, e1), line_direction(params, e2));
+                // c = a·b
+                let (c, m) = (a.x * b.x + a.y * b.y, angular_length(&a, &b));
+                direction_row(&mut out[0], e1, &a, (b.x, b.y), c, m);
+                direction_row(&mut out[0], e2, &b, (a.x, a.y), c, m);
             }
-
-            // ── EqualLength ───────────────────────────────────────────────────
             Constraint::EqualLength(l1, l2) => {
-                let e1 = &entities[*l1];
-                let e2 = &entities[*l2];
-                let dx1 = params[e1.param(2)] - params[e1.param(0)];
-                let dy1 = params[e1.param(3)] - params[e1.param(1)];
-                let dx2 = params[e2.param(2)] - params[e2.param(0)];
-                let dy2 = params[e2.param(3)] - params[e2.param(1)];
-                // r = |d1|² − |d2|²
+                let (e1, e2) = (&entities[*l1], &entities[*l2]);
+                let (a, b) = (line_direction(params, e1), line_direction(params, e2));
+                // r = |d1| − |d2|: each end moves its length along the line.
                 row!(out[0],
-                    e1.param(0) => -2.0 * dx1, e1.param(2) => 2.0 * dx1,
-                    e1.param(1) => -2.0 * dy1, e1.param(3) => 2.0 * dy1,
-                    e2.param(0) => 2.0 * dx2,  e2.param(2) => -2.0 * dx2,
-                    e2.param(1) => 2.0 * dy2,  e2.param(3) => -2.0 * dy2,
+                    e1.param(0) => -a.x, e1.param(2) => a.x,
+                    e1.param(1) => -a.y, e1.param(3) => a.y,
+                    e2.param(0) => b.x,  e2.param(2) => -b.x,
+                    e2.param(1) => b.y,  e2.param(3) => -b.y,
                 );
             }
-
-            // ── Angle ─────────────────────────────────────────────────────────
             Constraint::Angle { l1, l2, angle_rad } => {
-                let e1 = &entities[*l1];
-                let e2 = &entities[*l2];
-                let dx1 = params[e1.param(2)] - params[e1.param(0)];
-                let dy1 = params[e1.param(3)] - params[e1.param(1)];
-                let dx2 = params[e2.param(2)] - params[e2.param(0)];
-                let dy2 = params[e2.param(3)] - params[e2.param(1)];
-                // r = sin·dot − cos·cross → ∂r = sin·∂dot − cos·∂cross
-                let (s, c) = (angle_rad.sin(), angle_rad.cos());
-                row!(out[0],
-                    e1.param(0) => -s * dx2 + c * dy2,
-                    e1.param(2) => s * dx2 - c * dy2,
-                    e1.param(1) => -s * dy2 - c * dx2,
-                    e1.param(3) => s * dy2 + c * dx2,
-                    e2.param(0) => -s * dx1 - c * dy1,
-                    e2.param(2) => s * dx1 + c * dy1,
-                    e2.param(1) => -s * dy1 + c * dx1,
-                    e2.param(3) => s * dy1 - c * dx1,
-                );
+                let (e1, e2) = (&entities[*l1], &entities[*l2]);
+                let (a, b) = (line_direction(params, e1), line_direction(params, e2));
+                // c = sin·(a·b) − cos·(a×b)
+                let (sin, cos) = (angle_rad.sin(), angle_rad.cos());
+                let c = sin * (a.x * b.x + a.y * b.y) - cos * (a.x * b.y - a.y * b.x);
+                let m = angular_length(&a, &b);
+                let ga = (sin * b.x - cos * b.y, sin * b.y + cos * b.x);
+                let gb = (sin * a.x + cos * a.y, sin * a.y - cos * a.x);
+                direction_row(&mut out[0], e1, &a, ga, c, m);
+                direction_row(&mut out[0], e2, &b, gb, c, m);
             }
 
             // ── EqualRadius / Radius / Diameter ───────────────────────────────
@@ -895,6 +867,81 @@ fn point_param_deps(
             ]
         }
     }
+}
+
+/// The direction of a Line entity: its unit vector, its length and the
+/// reciprocal of that.
+struct Direction {
+    x: f64,
+    y: f64,
+    length: f64,
+    /// `1 / length`, or zero for a line of zero length.
+    inverse: f64,
+}
+
+/// The [`Direction`] of line `e`. A line of zero length has no direction:
+/// it reads as the zero vector with a zero gradient, which leaves the
+/// relations it takes part in unmet and still (rather than NaN) until
+/// something else gives it a length.
+fn line_direction(params: &[f64], e: &Entity) -> Direction {
+    let dx = params[e.param(2)] - params[e.param(0)];
+    let dy = params[e.param(3)] - params[e.param(1)];
+    // `hypot` rather than a sum of squares: no underflow on tiny lines.
+    let length = dx.hypot(dy);
+    if length > 0.0 {
+        let inverse = 1.0 / length;
+        Direction {
+            x: dx * inverse,
+            y: dy * inverse,
+            length,
+            inverse,
+        }
+    } else {
+        Direction {
+            x: 0.0,
+            y: 0.0,
+            length: 0.0,
+            inverse: 0.0,
+        }
+    }
+}
+
+/// The length an angular relation between lines `a` and `b` is measured
+/// in: the geometric mean of their lengths. A relation `c(a, b)` on the
+/// unit directions is a pure number; stated as `√(|a|·|b|)·c` it is a
+/// length, like every other 2D equation, so that one tolerance and one
+/// regularisation suit them all at any size. (A product of the two lengths
+/// instead would be an area, and would fall under the tolerance on small
+/// geometry long before the relation held.)
+fn angular_length(a: &Direction, b: &Direction) -> f64 {
+    // Two roots rather than the root of the product: no underflow.
+    a.length.sqrt() * b.length.sqrt()
+}
+
+/// The entries for line `e` of a residual `m·c`, where `c` depends on the
+/// line through its unit direction `u` with `g = ∂c/∂u` and is bilinear in
+/// the directions (so `g·u = c`), and `m` is the [`angular_length`].
+///
+/// Moving the end of the line by `δ` turns `u` by `(I − u·uᵀ)·δ / length`
+/// and stretches `m` by `½·m·(u·δ) / length`, so the derivative with
+/// respect to the end is `m·(g − ½·c·u) / length`. The start moves it the
+/// other way.
+fn direction_row(
+    row: &mut Vec<(usize, f64)>,
+    e: &Entity,
+    u: &Direction,
+    g: (f64, f64),
+    c: f64,
+    m: f64,
+) {
+    let dx = m * (g.0 - 0.5 * c * u.x) * u.inverse;
+    let dy = m * (g.1 - 0.5 * c * u.y) * u.inverse;
+    row.extend([
+        (e.param(0), -dx),
+        (e.param(1), -dy),
+        (e.param(2), dx),
+        (e.param(3), dy),
+    ]);
 }
 
 /// Accumulate Jacobian entries for a point using the chain rule.
