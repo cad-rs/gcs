@@ -232,6 +232,15 @@ through them from a host's side.
   body it was mated to on the redundant list. The spare rows of those mates
   were the cause; with as many rows as freedoms the reports are gone, and a
   genuinely repeated mate is still found (`tests/assembly_rank.rs`).
+- **The orientation error of `Fixed` and `Lock` depended on the sign of a
+  quaternion.** A quaternion and its negative are the same rotation, but
+  the rotation vector was read off as it came: a part 0.001 rad from where
+  a lock wanted it reported an error of 0.001 in one sign and 6.282 (a full
+  turn less 0.001) in the other. The solves tried still ended at the right
+  pose, but the `error` reported for such a pose was wrong, and
+  `diagnose_assembly` called two constraints that asked for the same
+  orientation in opposite signs conflicting. The rotation is now always
+  taken the short way round.
 - glam's `serde` support was compiled in whether or not this crate's `serde`
   feature was on. It now follows the feature, so a default build pulls in no
   serde at all.

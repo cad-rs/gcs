@@ -584,7 +584,7 @@ impl ConstraintSolver {
                     rj.r[row + 1] = t_rel.y - rel_t.y;
                     rj.r[row + 2] = t_rel.z - rel_t.z;
                     let q_rel = r1i * rots[c2];
-                    let res = (q_rel * rel_q.inverse()).normalize().to_scaled_axis();
+                    let res = rotation_vector(q_rel * rel_q.inverse());
                     rj.r[row + 3] = res.x;
                     rj.r[row + 4] = res.y;
                     rj.r[row + 5] = res.z;
@@ -602,10 +602,7 @@ impl ConstraintSolver {
                         }
                     }
                     Self::fill_vec3_residual_fd(
-                        |_, rp| {
-                            let q_err = (rp[c1].inverse() * rp[c2] * rel_q.inverse()).normalize();
-                            q_err.to_scaled_axis()
-                        },
+                        |_, rp| rotation_vector(rp[c1].inverse() * rp[c2] * rel_q.inverse()),
                         positions,
                         rots,
                         row + 3,
@@ -784,10 +781,25 @@ fn world_tangent_basis(rot: DQuat, local: DVec3) -> [DVec3; 2] {
     [rot.mul_vec3(e1), rot.mul_vec3(e2)]
 }
 
+/// The rotation vector of the rotation a quaternion stands for, taken the
+/// short way round: its length is the angle, at most π.
+///
+/// A quaternion and its negative are the same rotation. Read off as they
+/// come, one gives the angle `a` and the other `2π − a` about the opposite
+/// axis, so the size of an orientation error would depend on which of the
+/// two signs the poses happened to be written in.
+fn rotation_vector(q: DQuat) -> DVec3 {
+    let q = q.normalize();
+    if q.w < 0.0 {
+        (-q).to_scaled_axis()
+    } else {
+        q.to_scaled_axis()
+    }
+}
+
 /// Rotation vector residual locking current orientation `q` to target `q_tgt`.
 fn fixed_orientation_residual(q: DQuat, q_tgt: DQuat) -> DVec3 {
-    let q_err = (q * q_tgt.inverse()).normalize();
-    q_err.to_scaled_axis()
+    rotation_vector(q * q_tgt.inverse())
 }
 
 impl Default for ConstraintSolver {
