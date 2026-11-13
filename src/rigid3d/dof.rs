@@ -81,7 +81,7 @@ impl DOFAnalyzer {
             let dof_removed = constraint.dof_removed();
 
             // Remove DOFs from first component
-            let comp1 = constraint.component1;
+            let comp1 = constraint.component1();
             for _ in 0..dof_removed.min(component_dof[comp1]) {
                 if !free_dofs[comp1].is_empty() {
                     free_dofs[comp1].pop();
@@ -90,9 +90,9 @@ impl DOFAnalyzer {
             component_dof[comp1] = free_dofs[comp1].len();
 
             // For two-component constraints, also affect second component
-            if let Some(comp2) = constraint.component2 {
+            if let Some(comp2) = constraint.component2() {
                 // The second component loses DOFs as it's constrained relative to first
-                let remaining_dof = constraint.constraint_type.dof_for_second();
+                let remaining_dof = constraint.constraint_type().dof_for_second();
                 component_dof[comp2] = component_dof[comp2].min(remaining_dof);
                 free_dofs[comp2].truncate(component_dof[comp2]);
             }

@@ -19,7 +19,7 @@
 
 use glam::{DQuat, DVec3, EulerRot};
 
-use super::constraint::{Constraint, ConstraintSystem, ConstraintType};
+use super::constraint::{Constraint, ConstraintKind, ConstraintSystem};
 use super::equations::{pack, unpack, RigidEquations, COLUMNS_PER_BODY};
 use crate::numerics::{CoreOptions, FailurePolicy, ResidualNorm};
 use crate::system;
@@ -107,11 +107,15 @@ impl ConstraintSolver {
         let mut positions: Vec<DVec3> = (0..n).map(|_| DVec3::ZERO).collect();
         let mut rots: Vec<DQuat> = (0..n).map(|_| DQuat::IDENTITY).collect();
         for constraint in &system.constraints {
-            if constraint.constraint_type == ConstraintType::Fixed {
-                let c = constraint.component1;
-                positions[c] = constraint.point1;
-                if let Some(q) = constraint.fixed_orientation {
-                    rots[c] = q.normalize();
+            if let ConstraintKind::Fixed {
+                body,
+                position,
+                orientation,
+            } = constraint.kind
+            {
+                positions[body] = position;
+                if let Some(q) = orientation {
+                    rots[body] = q.normalize();
                 }
             }
         }
@@ -132,8 +136,9 @@ impl ConstraintSolver {
         }
         // Pass 1: union the bodies of every constraint.
         for c in &system.constraints {
-            let a = find(&mut parent, c.component1);
-            if let Some(c2) = c.component2 {
+            let (first, second) = c.kind.bodies();
+            let a = find(&mut parent, first);
+            if let Some(c2) = second {
                 let b = find(&mut parent, c2);
                 if a != b {
                     parent[a] = b;
@@ -147,8 +152,9 @@ impl ConstraintSolver {
         let mut first_root: std::collections::HashMap<usize, usize> =
             std::collections::HashMap::new();
         for (idx, c) in system.constraints.iter().enumerate() {
-            let mut root = find(&mut parent, c.component1);
-            if let Some(c2) = c.component2 {
+            let (first, second) = c.kind.bodies();
+            let mut root = find(&mut parent, first);
+            if let Some(c2) = second {
                 root = find(&mut parent, c2);
             }
             let slot = first_root.entry(root).or_insert_with(|| {
@@ -272,35 +278,23 @@ impl ConstraintSolver {
     /// Equation count of a single constraint (the stacked-row width the
     /// diagnosis uses to map rows back to mate ids).
     pub(crate) fn equation_count_of(c: &Constraint) -> usize {
-        match c.constraint_type {
-            ConstraintType::Fixed => 3 + if c.fixed_orientation.is_some() { 3 } else { 0 },
-            ConstraintType::Coincident => 3,
-            ConstraintType::Distance => 1,
-            ConstraintType::Parallel => 3,
-            ConstraintType::Angle => 1,
-            ConstraintType::Perpendicular => 1,
-            ConstraintType::Concentric => 6,
-            ConstraintType::PointOnPlane => 1,
-            ConstraintType::Lock => 6,
+        match c.kind {
+            ConstraintKind::Fixed { orientation, .. } => {
+                3 + if orientation.is_some() { 3 } else { 0 }
+            }
+            ConstraintKind::Coincident { .. } => 3,
+            ConstraintKind::Distance { .. } => 1,
+            ConstraintKind::Parallel { .. } => 3,
+            ConstraintKind::Angle { .. } => 1,
+            ConstraintKind::Perpendicular { .. } => 1,
+            ConstraintKind::Concentric { .. } => 6,
+            ConstraintKind::PointOnPlane { .. } => 1,
+            ConstraintKind::Lock { .. } => 6,
         }
     }
 
     pub(crate) fn equation_count(system: &ConstraintSystem) -> usize {
-        system
-            .constraints
-            .iter()
-            .map(|c| match c.constraint_type {
-                ConstraintType::Fixed => 3 + if c.fixed_orientation.is_some() { 3 } else { 0 },
-                ConstraintType::Coincident => 3,
-                ConstraintType::Distance => 1,
-                ConstraintType::Parallel => 3,
-                ConstraintType::Angle => 1,
-                ConstraintType::Perpendicular => 1,
-                ConstraintType::Concentric => 6,
-                ConstraintType::PointOnPlane => 1,
-                ConstraintType::Lock => 6,
-            })
-            .sum()
+        system.constraints.iter().map(Self::equation_count_of).sum()
     }
 
     #[cfg(test)]
@@ -339,17 +333,19 @@ impl ConstraintSolver {
 
         let mut row = 0usize;
         for constraint in &system.constraints {
-            match constraint.constraint_type {
-                ConstraintType::Fixed => {
-                    let c = constraint.component1;
+            match constraint.kind {
+                ConstraintKind::Fixed {
+                    body: c,
+                    position: t,
+                    orientation,
+                } => {
                     let p = positions[c];
-                    let t = constraint.point1;
                     for k in 0..3 {
                         rj.r[row + k] = [p.x - t.x, p.y - t.y, p.z - t.z][k];
                         rj.j[row + k][c * 6 + k] = 1.0;
                     }
                     row += 3;
-                    if let Some(q_tgt) = constraint.fixed_orientation {
+                    if let Some(q_tgt) = orientation {
                         let res = fixed_orientation_residual(rots[c], q_tgt);
                         rj.r[row] = res.x;
                         rj.r[row + 1] = res.y;
@@ -365,187 +361,252 @@ impl ConstraintSolver {
                         row += 3;
                     }
                 }
-                ConstraintType::Coincident => {
-                    if let (Some(c2), Some(pt2)) = (constraint.component2, constraint.point2) {
-                        let c1 = constraint.component1;
-                        let rw1 = rots[c1].mul_vec3(constraint.point1);
-                        let rw2 = rots[c2].mul_vec3(pt2);
-                        let w1 = positions[c1] + rw1;
-                        let w2 = positions[c2] + rw2;
-                        let diff = w1 - w2;
-                        rj.r[row] = diff.x;
-                        rj.r[row + 1] = diff.y;
-                        rj.r[row + 2] = diff.z;
-                        for k in 0..3 {
-                            // Translation
-                            for jt in 0..3 {
-                                rj.j[row + k][c1 * 6 + jt] = if jt == k { 1.0 } else { 0.0 };
-                                rj.j[row + k][c2 * 6 + jt] = if jt == k { -1.0 } else { 0.0 };
-                            }
-                            // Rotation columns: the solver's increment is a
-                            // BODY-frame omega (quaternion right-multiply),
-                            // so the perturbed world offset is
-                            // rw + delta*(R*e_j)xrw — the axis must be the
-                            // body axis carried to world, not the world
-                            // axis (the analytic-vs-FD gate catches this).
-                            for jw in 0..3 {
-                                let axis1 = rots[c1].mul_vec3(e_axis(jw));
-                                let axis2 = rots[c2].mul_vec3(e_axis(jw));
-                                let om1 = axis1.cross(rw1);
-                                let om2 = axis2.cross(rw2);
-                                rj.j[row + k][c1 * 6 + 3 + jw] = om1[k];
-                                rj.j[row + k][c2 * 6 + 3 + jw] = -om2[k];
-                            }
-                        }
-                        row += 3;
-                    }
-                }
-                ConstraintType::Distance => {
-                    if let (Some(c2), Some(pt2), Some(dist)) = (
-                        constraint.component2,
-                        constraint.point2,
-                        constraint.distance,
-                    ) {
-                        let c1 = constraint.component1;
-                        let rw1 = rots[c1].mul_vec3(constraint.point1);
-                        let rw2 = rots[c2].mul_vec3(pt2);
-                        let w1 = positions[c1] + rw1;
-                        let w2 = positions[c2] + rw2;
-                        let delta = w1 - w2;
-                        let len = delta.length();
-                        let u = if len > 1e-14 { delta / len } else { DVec3::X };
-                        rj.r[row] = len - dist;
+                ConstraintKind::Coincident {
+                    body1: c1,
+                    point1,
+                    body2: c2,
+                    point2,
+                } => {
+                    let rw1 = rots[c1].mul_vec3(point1);
+                    let rw2 = rots[c2].mul_vec3(point2);
+                    let w1 = positions[c1] + rw1;
+                    let w2 = positions[c2] + rw2;
+                    let diff = w1 - w2;
+                    rj.r[row] = diff.x;
+                    rj.r[row + 1] = diff.y;
+                    rj.r[row + 2] = diff.z;
+                    for k in 0..3 {
+                        // Translation
                         for jt in 0..3 {
-                            rj.j[row][c1 * 6 + jt] = u[jt];
-                            rj.j[row][c2 * 6 + jt] = -u[jt];
+                            rj.j[row + k][c1 * 6 + jt] = if jt == k { 1.0 } else { 0.0 };
+                            rj.j[row + k][c2 * 6 + jt] = if jt == k { -1.0 } else { 0.0 };
                         }
+                        // Rotation columns: the solver's increment is a
+                        // BODY-frame omega (quaternion right-multiply), so
+                        // the perturbed world offset is
+                        // rw + delta*(R*e_j)xrw — the axis must be the body
+                        // axis carried to world, not the world axis (the
+                        // analytic-vs-FD gate catches this).
                         for jw in 0..3 {
-                            // Body-frame axis carried to world (see the
-                            // Coincident rotation-column note).
                             let axis1 = rots[c1].mul_vec3(e_axis(jw));
                             let axis2 = rots[c2].mul_vec3(e_axis(jw));
                             let om1 = axis1.cross(rw1);
                             let om2 = axis2.cross(rw2);
-                            rj.j[row][c1 * 6 + 3 + jw] = u.dot(om1);
-                            rj.j[row][c2 * 6 + 3 + jw] = -u.dot(om2);
+                            rj.j[row + k][c1 * 6 + 3 + jw] = om1[k];
+                            rj.j[row + k][c2 * 6 + 3 + jw] = -om2[k];
                         }
-                        row += 1;
                     }
+                    row += 3;
                 }
-                ConstraintType::Parallel => {
-                    let res = parallel_residual_vec(constraint, rots);
+                ConstraintKind::Distance {
+                    body1: c1,
+                    point1,
+                    body2: c2,
+                    point2,
+                    distance,
+                } => {
+                    let rw1 = rots[c1].mul_vec3(point1);
+                    let rw2 = rots[c2].mul_vec3(point2);
+                    let w1 = positions[c1] + rw1;
+                    let w2 = positions[c2] + rw2;
+                    let delta = w1 - w2;
+                    let len = delta.length();
+                    let u = if len > 1e-14 { delta / len } else { DVec3::X };
+                    rj.r[row] = len - distance;
+                    for jt in 0..3 {
+                        rj.j[row][c1 * 6 + jt] = u[jt];
+                        rj.j[row][c2 * 6 + jt] = -u[jt];
+                    }
+                    for jw in 0..3 {
+                        // Body-frame axis carried to world (see the
+                        // Coincident rotation-column note).
+                        let axis1 = rots[c1].mul_vec3(e_axis(jw));
+                        let axis2 = rots[c2].mul_vec3(e_axis(jw));
+                        let om1 = axis1.cross(rw1);
+                        let om2 = axis2.cross(rw2);
+                        rj.j[row][c1 * 6 + 3 + jw] = u.dot(om1);
+                        rj.j[row][c2 * 6 + 3 + jw] = -u.dot(om2);
+                    }
+                    row += 1;
+                }
+                ConstraintKind::Parallel {
+                    body1: c1,
+                    dir1,
+                    body2: c2,
+                    dir2,
+                } => {
+                    let d1w = world_unit_dir(rots[c1], dir1);
+                    let d2w = world_unit_dir(rots[c2], dir2);
+                    let res = d1w.cross(d2w);
                     rj.r[row] = res.x;
                     rj.r[row + 1] = res.y;
                     rj.r[row + 2] = res.z;
-                    Self::fill_parallel_jacobian_analytic(constraint, rots, row, &mut rj.j);
+                    Self::fill_direction_cross_jacobian((c1, d1w), (c2, d2w), rots, row, &mut rj.j);
                     row += 3;
                 }
-                ConstraintType::Angle => {
-                    rj.r[row] = angle_residual_scalar(constraint, rots);
-                    Self::fill_angle_jacobian_analytic(constraint, rots, row, &mut rj.j);
+                ConstraintKind::Angle {
+                    body1: c1,
+                    dir1,
+                    body2: c2,
+                    dir2,
+                    angle,
+                } => {
+                    let d1w = world_unit_dir(rots[c1], dir1);
+                    let d2w = world_unit_dir(rots[c2], dir2);
+                    rj.r[row] = d1w.dot(d2w) - angle.cos();
+                    Self::fill_direction_dot_jacobian((c1, d1w), (c2, d2w), rots, row, &mut rj.j);
                     row += 1;
                 }
-                ConstraintType::Perpendicular => {
-                    rj.r[row] = perpendicular_residual_scalar(constraint, rots);
-                    Self::fill_perpendicular_jacobian_analytic(constraint, rots, row, &mut rj.j);
+                ConstraintKind::Perpendicular {
+                    body1: c1,
+                    dir1,
+                    body2: c2,
+                    dir2,
+                } => {
+                    let d1w = world_unit_dir(rots[c1], dir1);
+                    let d2w = world_unit_dir(rots[c2], dir2);
+                    rj.r[row] = d1w.dot(d2w);
+                    Self::fill_direction_dot_jacobian((c1, d1w), (c2, d2w), rots, row, &mut rj.j);
                     row += 1;
                 }
-                ConstraintType::Concentric => {
+                ConstraintKind::Concentric {
+                    body1: c1,
+                    point1,
+                    dir1,
+                    body2: c2,
+                    point2,
+                    dir2,
+                } => {
                     // Rows 0-2: axis direction cross d1w×d2w (rank 2).
                     // Rows 3-5: perpendicular offset of the two axis
                     // points, (p2w−p1w)×d1w (rank 2) — 6 rows, rank 4,
                     // the mate's 4 removed DOF.
-                    let res = concentric_dir_residual(constraint, rots);
+                    let d1w = world_unit_dir(rots[c1], dir1);
+                    let d2w = world_unit_dir(rots[c2], dir2);
+                    let res = d1w.cross(d2w);
                     rj.r[row] = res.x;
                     rj.r[row + 1] = res.y;
                     rj.r[row + 2] = res.z;
-                    let res_p = concentric_offset_residual(constraint, positions, rots);
+                    // Rotation columns differentiate rw = R·local (rotation
+                    // only — translation enters separately), NOT the
+                    // translated p_w.
+                    let rw1 = rots[c1].mul_vec3(point1);
+                    let rw2 = rots[c2].mul_vec3(point2);
+                    let p1w = positions[c1] + rw1;
+                    let p2w = positions[c2] + rw2;
+                    let off = p2w - p1w;
+                    let res_p = off.cross(d1w);
                     rj.r[row + 3] = res_p.x;
                     rj.r[row + 4] = res_p.y;
                     rj.r[row + 5] = res_p.z;
-                    Self::fill_concentric_jacobian_analytic(
-                        constraint, positions, rots, row, &mut rj.j,
-                    );
+                    Self::fill_direction_cross_jacobian((c1, d1w), (c2, d2w), rots, row, &mut rj.j);
+
+                    // Offset rows: r_p = off×d1w, so δr = δp2×d1w − δp1×d1w
+                    // + off×δd1, with δp_i the body-frame omega columns for
+                    // rotations and ±1 translations.
+                    let row3 = row + 3;
+                    for jw in 0..3 {
+                        // translations: ∂r_p/∂p1w = [d1w]× (via −δp1×d1w),
+                        // ∂/∂p2w = −[d1w]×
+                        let dpx = d1w.cross(e_axis(jw)); // [d1w]× e_j
+                        for k in 0..3 {
+                            rj.j[row3 + k][c1 * 6 + jw] = dpx[k];
+                            rj.j[row3 + k][c2 * 6 + jw] = -dpx[k];
+                        }
+                        // body-1 rotation: δp1 = a1p (on the rotated local
+                        // point), δd1 = a1d
+                        let axis1 = rots[c1].mul_vec3(e_axis(jw));
+                        let a1p = axis1.cross(rw1);
+                        let a1d = axis1.cross(d1w);
+                        let drp1 = d1w.cross(a1p) + off.cross(a1d); // (−a1p)×d1w + off×a1d
+                        for k in 0..3 {
+                            rj.j[row3 + k][c1 * 6 + 3 + jw] = drp1[k];
+                        }
+                        // body-2 rotation: δp2 = a2p, d1 fixed
+                        let axis2 = rots[c2].mul_vec3(e_axis(jw));
+                        let a2p = axis2.cross(rw2);
+                        let drp2 = a2p.cross(d1w);
+                        for k in 0..3 {
+                            rj.j[row3 + k][c2 * 6 + 3 + jw] = drp2[k];
+                        }
+                    }
                     row += 6;
                 }
-                ConstraintType::PointOnPlane => {
-                    // The plane rides body 1 (point1 + unit dir1); the
-                    // point is point2 on body 2. One row: the signed
-                    // perpendicular distance (w2 - w1) . n1w.
-                    if let (Some(c2), Some(pt2), Some(n1)) =
-                        (constraint.component2, constraint.point2, constraint.dir1)
-                    {
-                        let c1 = constraint.component1;
-                        let rw1 = rots[c1].mul_vec3(constraint.point1);
-                        let w1 = positions[c1] + rw1;
-                        let n1w = world_unit_dir(rots[c1], n1);
-                        let rw2 = rots[c2].mul_vec3(pt2);
-                        let w2 = positions[c2] + rw2;
-                        rj.r[row] = (w2 - w1).dot(n1w);
-                        for jt in 0..3 {
-                            rj.j[row][c1 * 6 + jt] = -n1w[jt];
-                            rj.j[row][c2 * 6 + jt] = n1w[jt];
-                        }
-                        // Rotation columns: dr = -dw1.n1w + diff.dn1w with
-                        // dw1 = axis1 x rw1, dn1w = axis1 x n1w, which
-                        // reduces to axis1 . (n1w x off), off = w2 - t1.
-                        let off = w2 - positions[c1];
-                        for jw in 0..3 {
-                            let axis1 = rots[c1].mul_vec3(e_axis(jw));
-                            rj.j[row][c1 * 6 + 3 + jw] = axis1.dot(n1w.cross(off));
-                            let axis2 = rots[c2].mul_vec3(e_axis(jw));
-                            rj.j[row][c2 * 6 + 3 + jw] = axis2.dot(rw2.cross(n1w));
-                        }
+                ConstraintKind::PointOnPlane {
+                    body1: c1,
+                    plane_point,
+                    plane_normal,
+                    body2: c2,
+                    point,
+                } => {
+                    // The plane rides body 1; the point is on body 2. One
+                    // row: the signed perpendicular distance (w2 - w1) . n1w.
+                    let rw1 = rots[c1].mul_vec3(plane_point);
+                    let w1 = positions[c1] + rw1;
+                    let n1w = world_unit_dir(rots[c1], plane_normal);
+                    let rw2 = rots[c2].mul_vec3(point);
+                    let w2 = positions[c2] + rw2;
+                    rj.r[row] = (w2 - w1).dot(n1w);
+                    for jt in 0..3 {
+                        rj.j[row][c1 * 6 + jt] = -n1w[jt];
+                        rj.j[row][c2 * 6 + jt] = n1w[jt];
+                    }
+                    // Rotation columns: dr = -dw1.n1w + diff.dn1w with
+                    // dw1 = axis1 x rw1, dn1w = axis1 x n1w, which reduces
+                    // to axis1 . (n1w x off), off = w2 - t1.
+                    let off = w2 - positions[c1];
+                    for jw in 0..3 {
+                        let axis1 = rots[c1].mul_vec3(e_axis(jw));
+                        rj.j[row][c1 * 6 + 3 + jw] = axis1.dot(n1w.cross(off));
+                        let axis2 = rots[c2].mul_vec3(e_axis(jw));
+                        rj.j[row][c2 * 6 + 3 + jw] = axis2.dot(rw2.cross(n1w));
                     }
                     row += 1;
                 }
-                ConstraintType::Lock => {
+                ConstraintKind::Lock {
+                    body1: c1,
+                    body2: c2,
+                    translation: rel_t,
+                    rotation: rel_q,
+                } => {
                     // Relative-pose lock. Translation rows are analytic;
                     // the rotation rows reuse the Fixed-orientation FD
                     // helper (the rotation-vector Jacobian is not worth an
                     // analytic form here).
-                    if let (Some(c2), Some(rel_t), Some(rel_q)) = (
-                        constraint.component2,
-                        constraint.lock_translation,
-                        constraint.lock_rotation,
-                    ) {
-                        let c1 = constraint.component1;
-                        let r1i = rots[c1].inverse();
-                        let t_rel = r1i.mul_vec3(positions[c2] - positions[c1]);
-                        rj.r[row] = t_rel.x - rel_t.x;
-                        rj.r[row + 1] = t_rel.y - rel_t.y;
-                        rj.r[row + 2] = t_rel.z - rel_t.z;
-                        let q_rel = r1i * rots[c2];
-                        let res = (q_rel * rel_q.inverse()).normalize().to_scaled_axis();
-                        rj.r[row + 3] = res.x;
-                        rj.r[row + 4] = res.y;
-                        rj.r[row + 5] = res.z;
-                        for k in 0..3 {
-                            for jt in 0..3 {
-                                let col = r1i.mul_vec3(e_axis(jt));
-                                rj.j[row + k][c1 * 6 + jt] = -col[k];
-                                rj.j[row + k][c2 * 6 + jt] = col[k];
-                            }
+                    let r1i = rots[c1].inverse();
+                    let t_rel = r1i.mul_vec3(positions[c2] - positions[c1]);
+                    rj.r[row] = t_rel.x - rel_t.x;
+                    rj.r[row + 1] = t_rel.y - rel_t.y;
+                    rj.r[row + 2] = t_rel.z - rel_t.z;
+                    let q_rel = r1i * rots[c2];
+                    let res = (q_rel * rel_q.inverse()).normalize().to_scaled_axis();
+                    rj.r[row + 3] = res.x;
+                    rj.r[row + 4] = res.y;
+                    rj.r[row + 5] = res.z;
+                    for k in 0..3 {
+                        for jt in 0..3 {
+                            let col = r1i.mul_vec3(e_axis(jt));
+                            rj.j[row + k][c1 * 6 + jt] = -col[k];
+                            rj.j[row + k][c2 * 6 + jt] = col[k];
                         }
-                        for jw in 0..3 {
-                            let col = t_rel.cross(e_axis(jw));
-                            for k in 0..3 {
-                                rj.j[row + k][c1 * 6 + 3 + jw] = col[k];
-                            }
-                        }
-                        Self::fill_vec3_residual_fd(
-                            |_, rp| {
-                                let q_err =
-                                    (rp[c1].inverse() * rp[c2] * rel_q.inverse()).normalize();
-                                q_err.to_scaled_axis()
-                            },
-                            positions,
-                            rots,
-                            row + 3,
-                            cols,
-                            &mut rj.j,
-                        );
                     }
+                    for jw in 0..3 {
+                        let col = t_rel.cross(e_axis(jw));
+                        for k in 0..3 {
+                            rj.j[row + k][c1 * 6 + 3 + jw] = col[k];
+                        }
+                    }
+                    Self::fill_vec3_residual_fd(
+                        |_, rp| {
+                            let q_err = (rp[c1].inverse() * rp[c2] * rel_q.inverse()).normalize();
+                            q_err.to_scaled_axis()
+                        },
+                        positions,
+                        rots,
+                        row + 3,
+                        cols,
+                        &mut rj.j,
+                    );
                     row += 6;
                 }
             }
@@ -587,26 +648,19 @@ impl ConstraintSolver {
         }
     }
 
-    /// Analytic Jacobian of the Parallel residual `r = d1×d2`.
+    /// Analytic Jacobian of the three rows `r = d1×d2` of two world
+    /// directions, each given with the body that carries it.
     /// δr = δd1×d2 + d1×δd2 with δd_i = (R_i·e_j)×d_iw for the body-frame
     /// omega column jw of body i; translation columns are zero (the
     /// residual depends only on orientations). The analytic-vs-FD gate
-    /// keeps this in lockstep with `parallel_residual_vec`.
-    fn fill_parallel_jacobian_analytic(
-        constraint: &Constraint,
+    /// keeps this in lockstep with the residual.
+    fn fill_direction_cross_jacobian(
+        (c1, d1w): (usize, DVec3),
+        (c2, d2w): (usize, DVec3),
         rots: &[DQuat],
         row: usize,
         j: &mut [Vec<f64>],
     ) {
-        let Some(c2) = constraint.component2 else {
-            return;
-        };
-        let (c1, local1) = (constraint.component1, constraint.point1);
-        let d1w = world_unit_dir(rots[c1], local1);
-        let Some(local2) = constraint.point2 else {
-            return;
-        };
-        let d2w = world_unit_dir(rots[c2], local2);
         for jw in 0..3 {
             let axis1 = rots[c1].mul_vec3(e_axis(jw));
             let a1 = axis1.cross(d1w);
@@ -623,23 +677,16 @@ impl ConstraintSolver {
         }
     }
 
-    /// Analytic Jacobian of the Angle residual `r = d1·d2 − cosθ`.
-    /// δr = δd1·d2 + d1·δd2.
-    fn fill_angle_jacobian_analytic(
-        constraint: &Constraint,
+    /// Analytic Jacobian of the row `r = d1·d2 (− const)` of two world
+    /// directions: δr = δd1·d2 + d1·δd2. Serves `Angle` and
+    /// `Perpendicular`.
+    fn fill_direction_dot_jacobian(
+        (c1, d1w): (usize, DVec3),
+        (c2, d2w): (usize, DVec3),
         rots: &[DQuat],
         row: usize,
         j: &mut [Vec<f64>],
     ) {
-        let Some(c2) = constraint.component2 else {
-            return;
-        };
-        let (c1, local1) = (constraint.component1, constraint.point1);
-        let d1w = world_unit_dir(rots[c1], local1);
-        let Some(local2) = constraint.point2 else {
-            return;
-        };
-        let d2w = world_unit_dir(rots[c2], local2);
         for jw in 0..3 {
             let axis1 = rots[c1].mul_vec3(e_axis(jw));
             let a1 = axis1.cross(d1w);
@@ -647,93 +694,6 @@ impl ConstraintSolver {
             let axis2 = rots[c2].mul_vec3(e_axis(jw));
             let a2 = axis2.cross(d2w);
             j[row][c2 * 6 + 3 + jw] = d1w.dot(a2);
-        }
-    }
-
-    /// Analytic Jacobian of the Perpendicular residual `r = d1·d2`.
-    /// Identical structure to [`Self::fill_angle_jacobian_analytic`].
-    fn fill_perpendicular_jacobian_analytic(
-        constraint: &Constraint,
-        rots: &[DQuat],
-        row: usize,
-        j: &mut [Vec<f64>],
-    ) {
-        Self::fill_angle_jacobian_analytic(constraint, rots, row, j);
-    }
-
-    /// Analytic Jacobian of the Concentric mate (6 rows).
-    ///
-    /// Direction rows (0-2): the Parallel cross structure — δr = δd1×d2 +
-    /// d1×δd2, translation columns zero. Offset rows (3-5): r_p =
-    /// (p2w−p1w)×d1w, so δr = δp2×d1w − δp1×d1w + (p2w−p1w)×δd1 with
-    /// δp_i = body-frame omega columns for rotations and ±1 translations.
-    fn fill_concentric_jacobian_analytic(
-        constraint: &Constraint,
-        positions: &[DVec3],
-        rots: &[DQuat],
-        row: usize,
-        j: &mut [Vec<f64>],
-    ) {
-        let Some(c2) = constraint.component2 else {
-            return;
-        };
-        let (c1, local1) = (constraint.component1, constraint.point1);
-        let Some(local_d1) = constraint.dir1 else {
-            return;
-        };
-        let Some(local_d2) = constraint.dir2 else {
-            return;
-        };
-        let d1w = world_unit_dir(rots[c1], local_d1);
-        let d2w = world_unit_dir(rots[c2], local_d2);
-        // Rotation columns differentiate rw = R·local (rotation only —
-        // translation enters separately), NOT the translated p_w.
-        let rw1 = rots[c1].mul_vec3(local1);
-        let rw2 = rots[c2].mul_vec3(constraint.point2.expect("concentric point2"));
-        let p1w = positions[c1] + rw1;
-        let p2w = positions[c2] + rw2;
-        let off = p2w - p1w;
-
-        for jw in 0..3 {
-            // Direction rows — identical structure to Parallel.
-            let axis1 = rots[c1].mul_vec3(e_axis(jw));
-            let a1 = axis1.cross(d1w);
-            let dr1 = a1.cross(d2w);
-            for k in 0..3 {
-                j[row + k][c1 * 6 + 3 + jw] = dr1[k];
-            }
-            let axis2 = rots[c2].mul_vec3(e_axis(jw));
-            let a2 = axis2.cross(d2w);
-            let dr2 = d1w.cross(a2);
-            for k in 0..3 {
-                j[row + k][c2 * 6 + 3 + jw] = dr2[k];
-            }
-
-            // Offset rows.
-            let row3 = row + 3;
-            // translations: ∂r_p/∂p1w = [d1w]× (via −δp1×d1w), ∂/∂p2w = −[d1w]×
-            let t1col = c1 * 6 + jw;
-            let t2col = c2 * 6 + jw;
-            let dpx = d1w.cross(e_axis(jw)); // [d1w]× e_j
-            for k in 0..3 {
-                j[row3 + k][t1col] = dpx[k];
-                j[row3 + k][t2col] = -dpx[k];
-            }
-            // body-1 rotation: δp1 = a1p (on the rotated local point),
-            // δd1 = a1d
-            let a1p = axis1.cross(rw1);
-            let a1d = axis1.cross(d1w);
-            let drp1 = d1w.cross(a1p) + off.cross(a1d); // (−a1p)×d1w + off×a1d
-            for k in 0..3 {
-                j[row3 + k][c1 * 6 + 3 + jw] = drp1[k];
-            }
-            // body-2 rotation: δp2 = a2p, d1 fixed
-            let axis2 = rots[c2].mul_vec3(e_axis(jw));
-            let a2p = axis2.cross(rw2);
-            let drp2 = a2p.cross(d1w);
-            for k in 0..3 {
-                j[row3 + k][c2 * 6 + 3 + jw] = drp2[k];
-            }
         }
     }
 }
@@ -790,52 +750,6 @@ fn world_unit_dir(rot: DQuat, local: DVec3) -> DVec3 {
     } else {
         v / len
     }
-}
-
-fn parallel_residual_vec(c: &Constraint, rots: &[DQuat]) -> DVec3 {
-    let (Some(c2), Some(local2)) = (c.component2, c.point2) else {
-        return DVec3::ZERO;
-    };
-    let d1 = world_unit_dir(rots[c.component1], c.point1);
-    let d2 = world_unit_dir(rots[c2], local2);
-    d1.cross(d2)
-}
-
-fn angle_residual_scalar(c: &Constraint, rots: &[DQuat]) -> f64 {
-    let (Some(c2), Some(local2), Some(target)) = (c.component2, c.point2, c.angle) else {
-        return 0.0;
-    };
-    let d1 = world_unit_dir(rots[c.component1], c.point1);
-    let d2 = world_unit_dir(rots[c2], local2);
-    d1.dot(d2) - target.cos()
-}
-
-fn perpendicular_residual_scalar(c: &Constraint, rots: &[DQuat]) -> f64 {
-    let (Some(c2), Some(local2)) = (c.component2, c.point2) else {
-        return 0.0;
-    };
-    let d1 = world_unit_dir(rots[c.component1], c.point1);
-    let d2 = world_unit_dir(rots[c2], local2);
-    d1.dot(d2)
-}
-
-fn concentric_dir_residual(c: &Constraint, rots: &[DQuat]) -> DVec3 {
-    let (Some(c2), Some(dir2)) = (c.component2, c.dir2) else {
-        return DVec3::ZERO;
-    };
-    let d1w = world_unit_dir(rots[c.component1], c.dir1.unwrap_or(DVec3::X));
-    let d2w = world_unit_dir(rots[c2], dir2);
-    d1w.cross(d2w)
-}
-
-fn concentric_offset_residual(c: &Constraint, positions: &[DVec3], rots: &[DQuat]) -> DVec3 {
-    let (Some(c2), Some(pt2)) = (c.component2, c.point2) else {
-        return DVec3::ZERO;
-    };
-    let d1w = world_unit_dir(rots[c.component1], c.dir1.unwrap_or(DVec3::X));
-    let p1w = positions[c.component1] + rots[c.component1].mul_vec3(c.point1);
-    let p2w = positions[c2] + rots[c2].mul_vec3(pt2);
-    (p2w - p1w).cross(d1w)
 }
 
 /// Rotation vector residual locking current orientation `q` to target `q_tgt`.

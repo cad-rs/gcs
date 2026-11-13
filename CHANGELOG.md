@@ -57,6 +57,17 @@ minor version.
   1.0e-13, and the nine configurations that flipped branch after a large
   perturbation no longer do. A translation-only `Fixed` is an ordinary
   equation as before.
+- **The rigid-pose `Constraint` is `{ id, kind }`**, where `kind` is the new
+  `ConstraintKind` enum and carries exactly the data its kind needs. The
+  struct of optional fields is gone (`constraint_type`, `component1`,
+  `point1`, `component2`, `point2`, `distance`, `angle`,
+  `fixed_orientation`, `dir1`, `dir2`, `lock_translation`,
+  `lock_rotation`), and with it the directions that were stored in fields
+  named `point`. The constructors (`Constraint::fixed`, `coincident`,
+  `parallel`, …) keep their signatures, so code that builds constraints
+  with them needs no change. Code that read the fields calls
+  `constraint_type()`, `component1()` or `component2()`, or matches on
+  `kind`. Results are the same to the last bit.
 - `solver::solve`, `solver::solve_components`, `space3d::solver::solve_space`,
   `space3d::solver::solve_components` and `numerics::newton_solve` take the
   parameters as `&mut [f64]` instead of `&mut Vec<f64>`.
@@ -116,6 +127,11 @@ minor version.
   - Angles are measured as principal values (`[0, π]` between two lines or
     two planes, `[0, π/2]` between a line and a plane), because that is all
     the angle equations themselves distinguish.
+- `serde` support for the rigid-pose model: `rigid3d::Constraint`,
+  `ConstraintKind`, `ConstraintType` and `ConstraintSystem`. They are also
+  `PartialEq` now, and `Constraint` is `Copy`.
+- `rigid3d::Constraint::new`, and on `ConstraintKind`: `constraint_type`,
+  `bodies`, `map_bodies`, `dof_removed`.
 - `Sketch::structural_dof_estimate` and `SpaceSketch::structural_dof_estimate`.
 - `rigid3d::AssemblyDiagnosis::rank` and `dependency_groups` (by mate id):
   the assembly diagnosis now reports what the 2D and 3D ones do.
@@ -146,6 +162,9 @@ minor version.
 
   All four spline constraints are now in the per-variant
   Jacobian-versus-finite-difference test and have solve tests.
+- glam's `serde` support was compiled in whether or not this crate's `serde`
+  feature was on. It now follows the feature, so a default build pulls in no
+  serde at all.
 - The corpus manifest tests failed on checkouts with CRLF line endings
   (Git for Windows' default); they now compare modulo line endings, and the
   repository pins LF.

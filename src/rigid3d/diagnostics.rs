@@ -140,7 +140,7 @@ impl SolverDiagnostics {
         let fixed_count = system
             .constraints
             .iter()
-            .filter(|c| c.constraint_type == crate::rigid3d::ConstraintType::Fixed)
+            .filter(|c| c.constraint_type() == crate::rigid3d::ConstraintType::Fixed)
             .count();
 
         self.stats = DiagnosticStats {
@@ -230,10 +230,10 @@ impl SolverDiagnostics {
 
         for constraint in &system.constraints {
             component_constraints
-                .entry(constraint.component1)
+                .entry(constraint.component1())
                 .or_default()
                 .push(constraint);
-            if let Some(comp2) = constraint.component2 {
+            if let Some(comp2) = constraint.component2() {
                 component_constraints
                     .entry(comp2)
                     .or_default()
@@ -245,13 +245,13 @@ impl SolverDiagnostics {
         for (&component, constraints) in &component_constraints {
             let fixed_count = constraints
                 .iter()
-                .filter(|c| c.constraint_type == crate::rigid3d::ConstraintType::Fixed)
+                .filter(|c| c.constraint_type() == crate::rigid3d::ConstraintType::Fixed)
                 .count();
 
             if fixed_count > 1 {
                 let ids: Vec<usize> = constraints
                     .iter()
-                    .filter(|c| c.constraint_type == crate::rigid3d::ConstraintType::Fixed)
+                    .filter(|c| c.constraint_type() == crate::rigid3d::ConstraintType::Fixed)
                     .map(|c| c.id)
                     .collect();
 
@@ -280,12 +280,12 @@ impl SolverDiagnostics {
         let mut coincident_pairs: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
 
         for constraint in &system.constraints {
-            if constraint.constraint_type == crate::rigid3d::ConstraintType::Coincident {
-                if let Some(comp2) = constraint.component2 {
-                    let key = if constraint.component1 < comp2 {
-                        (constraint.component1, comp2)
+            if constraint.constraint_type() == crate::rigid3d::ConstraintType::Coincident {
+                if let Some(comp2) = constraint.component2() {
+                    let key = if constraint.component1() < comp2 {
+                        (constraint.component1(), comp2)
                     } else {
-                        (comp2, constraint.component1)
+                        (comp2, constraint.component1())
                     };
                     coincident_pairs.entry(key).or_default().push(constraint.id);
                 }
@@ -326,7 +326,7 @@ impl SolverDiagnostics {
                         issue_type: DiagnosticType::Conflict,
                         severity: DiagnosticSeverity::Error,
                         constraint_ids: vec![c1.id, c2.id],
-                        component_ids: vec![c1.component1, c2.component1],
+                        component_ids: vec![c1.component1(), c2.component1()],
                         message: format!("Constraints {} and {} are conflicting", c1.id, c2.id),
                         recommendations: vec![DiagnosticRecommendation {
                             description: "Remove or modify one of the conflicting constraints"
@@ -346,10 +346,10 @@ impl SolverDiagnostics {
         let mut graph: HashMap<usize, HashSet<usize>> = HashMap::new();
 
         for constraint in &system.constraints {
-            if let Some(comp2) = constraint.component2 {
+            if let Some(comp2) = constraint.component2() {
                 // component1 depends on comp2 through this constraint
                 graph
-                    .entry(constraint.component1)
+                    .entry(constraint.component1())
                     .or_default()
                     .insert(comp2);
             }
@@ -442,8 +442,8 @@ impl SolverDiagnostics {
         };
 
         for constraint in &system.constraints {
-            if let Some(comp2) = constraint.component2 {
-                union(&mut parent, constraint.component1, comp2);
+            if let Some(comp2) = constraint.component2() {
+                union(&mut parent, constraint.component1(), comp2);
             }
         }
 
@@ -486,11 +486,21 @@ impl SolverDiagnostics {
     /// Check if two constraints are conflicting.
     fn are_conflicting(&self, c1: &Constraint, c2: &Constraint) -> bool {
         // Simple check: same component with different fixed positions
-        if c1.component1 == c2.component1
-            && c1.constraint_type == crate::rigid3d::ConstraintType::Fixed
-            && c2.constraint_type == crate::rigid3d::ConstraintType::Fixed
+        use crate::rigid3d::ConstraintKind::Fixed;
+        if let (
+            Fixed {
+                body: body1,
+                position: position1,
+                ..
+            },
+            Fixed {
+                body: body2,
+                position: position2,
+                ..
+            },
+        ) = (c1.kind, c2.kind)
         {
-            return (c1.point1 - c2.point1).length() > 0.001;
+            return body1 == body2 && (position1 - position2).length() > 0.001;
         }
         false
     }

@@ -11,7 +11,7 @@ use std::cell::RefCell;
 
 use glam::{DQuat, DVec3};
 
-use super::constraint::{ConstraintSystem, ConstraintType};
+use super::constraint::{Constraint, ConstraintKind, ConstraintSystem};
 use super::solver::{ConstraintSolver, ResidualJacobian};
 use crate::numerics::StepSpace;
 use crate::system::{Equations, SparseRow};
@@ -95,15 +95,13 @@ impl<'a> RigidEquations<'a> {
             .constraints
             .iter()
             .map(|constraint| {
-                let first = constraint.component1;
-                let (bodies, count) = match constraint.component2 {
+                let (first, second) = constraint.kind.bodies();
+                let (bodies, count) = match second {
                     Some(second) if second != first => ([first.min(second), first.max(second)], 2),
                     _ => ([first, first], 1),
                 };
                 let local_index = |body: usize| usize::from(count == 2 && body == bodies[1]);
-                let mut local = constraint.clone();
-                local.component1 = local_index(first);
-                local.component2 = constraint.component2.map(local_index);
+                let local = Constraint::new(constraint.id, constraint.kind.map_bodies(local_index));
                 Alone {
                     system: ConstraintSystem {
                         constraints: vec![local],
@@ -147,13 +145,16 @@ impl<'a> RigidEquations<'a> {
     pub(crate) fn grounded(system: &'a ConstraintSystem) -> Self {
         let mut equations = Self::new(system);
         for (index, constraint) in system.constraints.iter().enumerate() {
-            let body = constraint.component1;
-            if constraint.constraint_type == ConstraintType::Fixed
-                && constraint.fixed_orientation.is_some()
-                && !equations.held[body]
+            if let ConstraintKind::Fixed {
+                body,
+                orientation: Some(_),
+                ..
+            } = constraint.kind
             {
-                equations.held[body] = true;
-                equations.definition[index] = true;
+                if !equations.held[body] {
+                    equations.held[body] = true;
+                    equations.definition[index] = true;
+                }
             }
         }
         equations
@@ -166,12 +167,16 @@ impl<'a> RigidEquations<'a> {
             if !self.definition[index] {
                 continue;
             }
-            let constraint = &self.system.constraints[index];
-            let Some(orientation) = constraint.fixed_orientation else {
+            let ConstraintKind::Fixed {
+                body,
+                position: t,
+                orientation: Some(orientation),
+            } = self.system.constraints[index].kind
+            else {
                 continue;
             };
-            let (t, q) = (constraint.point1, orientation.normalize());
-            let base = constraint.component1 * STORED_PER_BODY;
+            let q = orientation.normalize();
+            let base = body * STORED_PER_BODY;
             params[base..base + STORED_PER_BODY]
                 .copy_from_slice(&[t.x, t.y, t.z, q.x, q.y, q.z, q.w]);
         }
