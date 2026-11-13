@@ -22,6 +22,7 @@ mod constraint;
 pub mod diagnosis;
 mod diagnostics;
 mod dof;
+mod equations;
 mod solver;
 
 pub use constraint::{ComponentId, Constraint, ConstraintSystem, ConstraintType};

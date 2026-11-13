@@ -67,6 +67,8 @@ minor version.
   `solver::solve_components_with`, `space3d::solver::solve_space_with`,
   `space3d::solver::solve_components_with` and `numerics::newton_solve_with`.
 - `Sketch::structural_dof_estimate` and `SpaceSketch::structural_dof_estimate`.
+- `rigid3d::AssemblyDiagnosis::rank` and `dependency_groups` (by mate id):
+  the assembly diagnosis now reports what the 2D and 3D ones do.
 - A criterion benchmark harness (`cargo bench`, `benches/solve.rs`) and the
   recorded numbers in `benches/BASELINE.md`.
 - `.gitattributes` pinning LF line endings.
@@ -97,6 +99,11 @@ minor version.
   (`src/system.rs`); each family is now an adapter that supplies residuals
   and Jacobian rows, plus the plane and cylinder gauge for 3D. Results are
   unchanged: the corpus reports are identical to the last digit.
+- The rigid-pose diagnosis is that same shared diagnosis, run over six
+  columns per body, instead of a third copy. The Newton core steps through
+  a `StepSpace`, so a pose (translation plus unit quaternion) can be
+  stepped by the same loop as plain parameters; the rigid solve itself has
+  not moved onto it yet.
 
 ### Performance
 

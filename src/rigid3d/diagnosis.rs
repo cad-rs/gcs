@@ -25,22 +25,12 @@
 //! where the contradiction is visible in the linearization. Same
 //! discipline as the 2D diagnosis.
 
-use crate::numerics::{householder_qr_column_pivoting, solve_normal_equations};
-use crate::rigid3d::solver::ConstraintSolver;
+use crate::rigid3d::equations::{pack, RigidEquations, COLUMNS_PER_BODY};
 use crate::rigid3d::{ConstraintSystem, Point3};
+use crate::system::{self, NoGauge};
 use glam::DQuat;
 
-/// Rank threshold, relative to the largest initial column norm of the
-/// row-equilibrated transpose Jacobian. All mate rows are analytic (or
-/// self-consistent FD for ground-orientation rows), so this sits well
-/// above roundoff.
-pub const RANK_REL_TOL: f64 = 1.0e-9;
-
-/// Dependent-row consistency threshold (relative to the residual scale).
-pub const CONSIST_TOL: f64 = 1.0e-9;
-
-/// Upper end of the gray band between redundant and conflicting.
-pub const PARTIAL_TOL: f64 = 1.0e-6;
+pub use crate::diagnosis::{CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL};
 
 /// Structured diagnosis of an assembly constraint system. The reported
 /// constraint identifiers are each `Constraint`'s `id` field.
@@ -49,119 +39,58 @@ pub const PARTIAL_TOL: f64 = 1.0e-6;
 pub struct AssemblyDiagnosis {
     /// True assembly DOF: 6·num_components − Σ cluster rank.
     pub dof: i64,
+    /// Rank of the constraint Jacobian over all clusters
+    /// (`6·num_components − dof`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub rank: usize,
     /// Mate ids that are dependent but consistent.
     pub redundant: Vec<usize>,
     /// Mate ids whose demands are inconsistent with the rest.
     pub conflicting: Vec<usize>,
     /// Dependent rows in the gray band. Informational.
     pub partially_redundant: Vec<usize>,
+    /// Mutually-dependent mate groups, by id: each group is every mate that
+    /// takes part in one linear dependency among the rows — the answer to
+    /// "which mates are redundant together" that does not depend on which
+    /// member the pivoting happened to single out.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub dependency_groups: Vec<Vec<usize>>,
 }
 
 /// Diagnose an assembly at the given pose (see the pose discipline in the
 /// module docs).
+///
+/// This is the shared diagnosis of the crate-internal `system` module run
+/// over the rigid-pose equations: six columns per body, nothing held.
 pub fn diagnose(
     system: &ConstraintSystem,
     positions: &[Point3],
     rots: &[DQuat],
 ) -> AssemblyDiagnosis {
-    let free_total = (system.num_components * 6) as i64;
-    let n_eq = ConstraintSolver::equation_count(system);
-    if n_eq == 0 {
-        return AssemblyDiagnosis {
-            dof: free_total,
-            ..Default::default()
-        };
+    let params = pack(positions, rots);
+    let fixed = vec![false; system.num_components * COLUMNS_PER_BODY];
+    let d = system::diagnose(&RigidEquations { system }, &params, &fixed, &NoGauge);
+
+    // Constraint indices → mate ids, keeping the order and dropping repeats
+    // (two constraints may carry the same id).
+    let ids = |indices: &[usize]| -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::with_capacity(indices.len());
+        for &i in indices {
+            let id = system.constraints[i].id;
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    };
+    AssemblyDiagnosis {
+        dof: d.dof,
+        rank: d.rank,
+        redundant: ids(&d.redundant),
+        conflicting: ids(&d.conflicting),
+        partially_redundant: ids(&d.partially_redundant),
+        dependency_groups: d.dependency_groups.iter().map(|g| ids(g)).collect(),
     }
-
-    let clusters = ConstraintSolver::components(system);
-    let mut d = AssemblyDiagnosis::default();
-    let mut total_rank = 0i64;
-
-    for group in &clusters {
-        // The cluster as its own system over only the bodies it references
-        // (sorted, so the column mapping is stable): residuals and Jacobian
-        // rows depend on no other body, and an untouched body would only
-        // add zero columns.
-        let sub_system = ConstraintSystem {
-            constraints: group
-                .iter()
-                .map(|&i| system.constraints[i].clone())
-                .collect(),
-            num_components: system.num_components,
-        };
-        let bodies = ConstraintSolver::referenced_bodies(&sub_system);
-        let compact = ConstraintSolver::compact_system(&sub_system, &bodies);
-        let cluster_positions: Vec<Point3> = bodies.iter().map(|&b| positions[b]).collect();
-        let cluster_rots: Vec<DQuat> = bodies.iter().map(|&b| rots[b]).collect();
-        let rj =
-            ConstraintSolver::build_residual_jacobian(&compact, &cluster_positions, &cluster_rots);
-
-        let n_eq_c = rj.r.len();
-        let n_free_c = bodies.len() * 6;
-        // Residuals and Jacobian in cluster row order.
-        let mut f_c = rj.r;
-        let mut j = rj.j;
-
-        // Row-equilibrate (J and f together) so a distance in mm and an
-        // angle in radians contribute comparable column norms.
-        for (row_j, fi) in j.iter_mut().zip(f_c.iter_mut()) {
-            let s = row_j.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-            if s > 0.0 {
-                for v in row_j.iter_mut() {
-                    *v /= s;
-                }
-                *fi /= s;
-            }
-        }
-
-        // A = Jᵀ: column i of A is cluster row i (equilibrated).
-        let mut a = vec![vec![0.0_f64; n_eq_c]; n_free_c];
-        for (i, row) in j.iter().enumerate() {
-            for (p, v) in row.iter().enumerate() {
-                a[p][i] = *v;
-            }
-        }
-        let (pivots, rank) = householder_qr_column_pivoting(&mut a, RANK_REL_TOL);
-        total_rank += rank as i64;
-
-        let independent = &pivots[..rank];
-        let dependent: Vec<usize> = (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
-        if dependent.is_empty() || rank == 0 {
-            continue;
-        }
-
-        // Least-squares step of the independent rows.
-        let j_sub: Vec<Vec<f64>> = independent.iter().map(|&i| j[i].clone()).collect();
-        let f_sub: Vec<f64> = independent.iter().map(|&i| f_c[i]).collect();
-        let z = solve_normal_equations(&j_sub, &f_sub, n_free_c);
-
-        let scale = f_c.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-        // Row → constraint id within this cluster.
-        let mut row_id: Vec<usize> = Vec::with_capacity(n_eq_c);
-        for &gi in group {
-            let eqs = ConstraintSolver::equation_count_of(&system.constraints[gi]);
-            for _ in 0..eqs {
-                row_id.push(system.constraints[gi].id);
-            }
-        }
-        for &r in &dependent {
-            let drive: f64 = j[r].iter().zip(z.iter()).map(|(ji, zi)| ji * zi).sum();
-            let e = (f_c[r] + drive).abs();
-            let global = row_id[r];
-            let bucket: &mut Vec<usize> = if e <= CONSIST_TOL * scale {
-                &mut d.redundant
-            } else if e <= PARTIAL_TOL * scale {
-                &mut d.partially_redundant
-            } else {
-                &mut d.conflicting
-            };
-            if !bucket.contains(&global) {
-                bucket.push(global);
-            }
-        }
-    }
-    d.dof = free_total - total_rank;
-    d
 }
 
 #[cfg(test)]

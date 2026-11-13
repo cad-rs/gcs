@@ -19,8 +19,8 @@ use std::collections::HashMap;
 
 use crate::diagnosis::{Diagnosis, CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL};
 use crate::numerics::{
-    self, gt, householder_qr_column_pivoting, le, solve_normal_equations, RowSpaceGram,
-    SolveOptions, SolveResult, SolveStatus, LAMBDA,
+    self, gt, householder_qr_column_pivoting, le, solve_normal_equations, AdditiveSpace,
+    RowSpaceGram, SolveOptions, SolveResult, SolveStatus, StepSpace, LAMBDA,
 };
 
 /// A sparse row or direction: `(parameter or column index, value)` pairs.
@@ -40,10 +40,31 @@ pub(crate) trait Equations {
     fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]);
 
     /// Jacobian rows of constraint `index` at `params`: `out[r]` receives
-    /// the `(parameter, derivative)` pairs of equation `r`. Every parameter
-    /// the constraint touches is listed, whatever the derivative value —
-    /// the decomposition reads the touched set from here.
+    /// the `(column, derivative)` pairs of equation `r`. Every column the
+    /// constraint touches is listed, whatever the derivative value — the
+    /// decomposition reads the touched set from here.
     fn jacobian(&self, index: usize, params: &[f64], out: &mut [SparseRow]);
+
+    /// Number of columns: the coordinates that Jacobian entries, the fixed
+    /// mask and the degrees of freedom are counted in. They are the stored
+    /// parameters themselves unless the family steps on a manifold, where a
+    /// rigid body has seven stored numbers and six columns.
+    fn column_count(&self, params: &[f64]) -> usize {
+        params.len()
+    }
+
+    /// The step space of the free columns `free` (sorted ascending): how a
+    /// step in those columns moves the stored parameters. Additive by
+    /// default — column `i` is parameter `i`.
+    fn step_space(&self, free: &[usize]) -> Box<dyn StepSpace + '_> {
+        Box::new(AdditiveSpace::new(free.to_vec()))
+    }
+
+    /// Whether a solve cross-checks the Jacobian against finite differences
+    /// in debug builds (two residual evaluations per free column).
+    fn debug_check_jacobian(&self) -> bool {
+        true
+    }
 }
 
 /// The indices of every constraint, in order.
@@ -131,8 +152,8 @@ pub(crate) fn touched_params<E: Equations + ?Sized>(
 /// indices, ordered by first appearance, so the partition is deterministic.
 /// A constraint that touches no parameter forms a group of its own.
 pub(crate) fn components<E: Equations + ?Sized>(eqs: &E, params: &[f64]) -> Vec<Vec<usize>> {
-    // Union-find over parameters.
-    let mut parent: Vec<usize> = (0..params.len()).collect();
+    // Union-find over columns.
+    let mut parent: Vec<usize> = (0..eqs.column_count(params)).collect();
     fn find(parent: &mut [usize], x: usize) -> usize {
         let mut root = x;
         while parent[root] != root {
@@ -273,15 +294,11 @@ fn solve_one<E: Equations + ?Sized>(
     options: &SolveOptions,
 ) -> (SolveResult, Vec<usize>) {
     let touched = touched_params(eqs, group, params);
-    // Component-local fixed mask: everything not touched by this component
-    // is held, so the Newton loop's free list is exactly this component's
-    // movable parameters.
-    let mut fixed_c: Vec<bool> = vec![true; params.len()];
+    // Only this component's own free columns move: the Newton loop's free
+    // list is exactly its movable coordinates.
     let free: Vec<usize> = touched.iter().copied().filter(|&p| !fixed[p]).collect();
-    for &p in &free {
-        fixed_c[p] = false;
-    }
     let col_of: HashMap<usize, usize> = free.iter().enumerate().map(|(c, &p)| (p, c)).collect();
+    let space = eqs.step_space(&free);
 
     let n_eq = equation_total(eqs, group);
     let mut build = |p: &[f64], out: &mut [Vec<f64>]| {
@@ -293,14 +310,14 @@ fn solve_one<E: Equations + ?Sized>(
     // exhaustive per-variant gates live with the constraint definitions;
     // this catches per-call assembly bugs (column mapping, mask filtering).
     #[cfg(debug_assertions)]
-    if n_eq > 0 && !free.is_empty() {
+    if n_eq > 0 && !free.is_empty() && eqs.debug_check_jacobian() {
         let mut eval = |p: &[f64], f: &mut [f64]| {
             f.copy_from_slice(&eval_residuals(eqs, group, p));
         };
         let mut j_analytic = vec![vec![0.0_f64; free.len()]; n_eq];
         build(params, &mut j_analytic);
         let mut j_fd = vec![vec![0.0_f64; free.len()]; n_eq];
-        numerics::numerical_jacobian_into(params, &free, n_eq, &mut eval, &mut j_fd);
+        numerics::numerical_jacobian_for(params, &*space, n_eq, &mut eval, &mut j_fd);
         for (ri, (ra, rf)) in j_analytic.iter().zip(j_fd.iter()).enumerate() {
             for (ci, (va, vf)) in ra.iter().zip(rf.iter()).enumerate() {
                 assert!(
@@ -311,9 +328,9 @@ fn solve_one<E: Equations + ?Sized>(
         }
     }
 
-    let result = numerics::newton_solve_with_jacobian(
+    let result = numerics::newton_solve_in(
         params,
-        &fixed_c,
+        &*space,
         n_eq,
         |p, f| {
             f.copy_from_slice(&eval_residuals(eqs, group, p));
@@ -376,7 +393,8 @@ where
     E: Equations + ?Sized,
     G: Gauge + ?Sized,
 {
-    let free_total = params.iter().zip(fixed).filter(|(_, &f)| !f).count();
+    // Free columns: the fixed mask is indexed by column.
+    let free_total = fixed.iter().filter(|held| !**held).count();
     let all = all_indices(eqs);
     let n_eq = equation_total(eqs, &all);
 

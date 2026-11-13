@@ -221,10 +221,106 @@ pub(crate) enum Jacobian<'a> {
     Analytic(&'a mut JacobianBuilder<'a>),
 }
 
-/// The damped Newton loop with an explicit Jacobian source.
+/// How a step in the free coordinates is applied to the stored parameters.
+///
+/// The Newton loop works in free coordinates: one per Jacobian column. For
+/// most parameters a coordinate *is* a stored parameter and a step is an
+/// addition ([`AdditiveSpace`]). A parameter that lives on a manifold — the
+/// orientation quaternion of a rigid body — has fewer coordinates than
+/// stored numbers and is stepped by a retraction instead (rotate, then
+/// renormalise). The loop only ever asks for "the saved state moved by this
+/// step", so it does not need to know which kind it is driving.
+pub(crate) trait StepSpace {
+    /// Number of free coordinates (Jacobian columns).
+    fn dim(&self) -> usize;
+
+    /// The stored parameters a step may change, each listed once.
+    fn storage(&self) -> &[usize];
+
+    /// Write `saved ⊕ step` into the stored parameters: `saved` holds the
+    /// values of [`StepSpace::storage`] the step starts from, `step` has
+    /// [`StepSpace::dim`] entries.
+    fn apply(&self, params: &mut [f64], saved: &[f64], step: &[f64]);
+
+    /// The free parameters themselves, when every coordinate is a stored
+    /// parameter and steps are additions.
+    fn additive_params(&self) -> Option<&[usize]> {
+        None
+    }
+}
+
+/// The step space of plain parameters: coordinate `k` is the stored
+/// parameter `free[k]`, and a step adds to it.
+pub(crate) struct AdditiveSpace {
+    free: Vec<usize>,
+}
+
+impl AdditiveSpace {
+    /// `free` lists the parameters that may move.
+    pub(crate) fn new(free: Vec<usize>) -> Self {
+        Self { free }
+    }
+
+    /// Every parameter not held by the `fixed` mask.
+    pub(crate) fn from_mask(fixed: &[bool]) -> Self {
+        Self::new((0..fixed.len()).filter(|&i| !fixed[i]).collect())
+    }
+}
+
+impl StepSpace for AdditiveSpace {
+    fn dim(&self) -> usize {
+        self.free.len()
+    }
+
+    fn storage(&self) -> &[usize] {
+        &self.free
+    }
+
+    fn apply(&self, params: &mut [f64], saved: &[f64], step: &[f64]) {
+        for (k, &i) in self.free.iter().enumerate() {
+            params[i] = saved[k] + step[k];
+        }
+    }
+
+    fn additive_params(&self) -> Option<&[usize]> {
+        Some(&self.free)
+    }
+}
+
+/// The values of the stored parameters `storage` in `params`.
+fn save(params: &[f64], storage: &[usize]) -> Vec<f64> {
+    storage.iter().map(|&i| params[i]).collect()
+}
+
+/// Put `saved` back into the stored parameters `storage`.
+fn restore(params: &mut [f64], storage: &[usize], saved: &[f64]) {
+    for (&i, &v) in storage.iter().zip(saved) {
+        params[i] = v;
+    }
+}
+
+/// The damped Newton loop over the parameters not held by `fixed`, each
+/// stepped additively.
 pub(crate) fn newton_solve_with_jacobian<F>(
     params: &mut [f64],
     fixed: &[bool],
+    n_eq: usize,
+    eval_residuals: F,
+    jacobian: Jacobian<'_>,
+    options: &SolveOptions,
+) -> SolveResult
+where
+    F: FnMut(&[f64], &mut [f64]),
+{
+    let space = AdditiveSpace::from_mask(&fixed[..params.len()]);
+    newton_solve_in(params, &space, n_eq, eval_residuals, jacobian, options)
+}
+
+/// The damped Newton loop over the free coordinates of `space`, with an
+/// explicit Jacobian source.
+pub(crate) fn newton_solve_in<F>(
+    params: &mut [f64],
+    space: &dyn StepSpace,
     n_eq: usize,
     mut eval_residuals: F,
     jacobian: Jacobian<'_>,
@@ -233,8 +329,8 @@ pub(crate) fn newton_solve_with_jacobian<F>(
 where
     F: FnMut(&[f64], &mut [f64]),
 {
-    let free_params: Vec<usize> = (0..params.len()).filter(|&i| !fixed[i]).collect();
-    let n_free = free_params.len();
+    let n_free = space.dim();
+    let storage = space.storage();
 
     let tolerance = options.tolerance;
 
@@ -266,7 +362,7 @@ where
     }
 
     // The state a failed solve is rolled back to.
-    let initial: Vec<f64> = free_params.iter().map(|&gi| params[gi]).collect();
+    let initial = save(params, storage);
     // Why the loop stopped short of convergence. Only reported when the
     // final residual is not under the tolerance.
     let mut failure = SolveStatus::MaxIterations;
@@ -301,7 +397,7 @@ where
             }
             build(params, &mut j);
         } else {
-            numerical_jacobian_into(params, &free_params, n_eq, &mut eval_residuals, &mut j);
+            numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
         }
 
         // Solve (J^T J + λI) Δx = J^T (−F)  →  Δx, with the base λ first.
@@ -311,7 +407,8 @@ where
         // steepest descent, which does reduce the residual for a short
         // enough step unless the iterate is stationary. A step that fails
         // the acceptance test is never kept.
-        let old_params: Vec<f64> = free_params.iter().map(|&gi| params[gi]).collect();
+        let saved = save(params, storage);
+        let mut step = vec![0.0_f64; n_free];
         let diag_scale = max_normal_diagonal(&j, n_free);
         let mut accepted = false;
         let mut solved_any = false;
@@ -338,9 +435,10 @@ where
             // Damped update: halve the step while the residual grows.
             let mut alpha = 1.0_f64;
             for _ in 0..LINE_SEARCH_STEPS {
-                for (k, &gi) in free_params.iter().enumerate() {
-                    params[gi] = old_params[k] + alpha * delta[k];
+                for (s, d) in step.iter_mut().zip(&delta) {
+                    *s = alpha * d;
                 }
+                space.apply(params, &saved, &step);
                 let f_new = eval_vec(&mut eval_residuals, params, n_eq);
                 if rms(&f_new) < residual * (1.0 + LINE_SEARCH_RELAX) {
                     accepted = true;
@@ -355,9 +453,7 @@ where
         if !accepted {
             // No step at any regularisation helped: put the iterate back
             // and stop — the next iteration would recompute the same steps.
-            for (k, &gi) in free_params.iter().enumerate() {
-                params[gi] = old_params[k];
-            }
+            restore(params, storage, &saved);
             failure = if non_finite {
                 SolveStatus::Diverged
             } else if solved_any {
@@ -397,14 +493,12 @@ where
             }
             build(params, &mut j);
         } else {
-            numerical_jacobian_into(params, &free_params, n_eq, &mut eval_residuals, &mut j);
+            numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
         }
         // Unregularised step: see the block comment above.
         let delta = solve_normal_equations_with_lambda(&j, &f_final, n_free, 0.0);
-        let old_params: Vec<f64> = free_params.iter().map(|&gi| params[gi]).collect();
-        for (k, &gi) in free_params.iter().enumerate() {
-            params[gi] = old_params[k] + delta[k];
-        }
+        let saved = save(params, storage);
+        space.apply(params, &saved, &delta);
         let f_polish = eval_vec(&mut eval_residuals, params, n_eq);
         let residual_polish = rms(&f_polish);
         if residual_polish < residual {
@@ -414,9 +508,7 @@ where
         } else {
             // Worsened (or NaN, or no strict gain) — reject the polish
             // step, restore, and stop.
-            for (k, &gi) in free_params.iter().enumerate() {
-                params[gi] = old_params[k];
-            }
+            restore(params, storage, &saved);
             break;
         }
     }
@@ -430,9 +522,7 @@ where
         failure
     };
     if !converged && options.on_failure == FailurePolicy::Restore {
-        for (k, &gi) in free_params.iter().enumerate() {
-            params[gi] = initial[k];
-        }
+        restore(params, storage, &initial);
         residual = rms(&eval_vec(&mut eval_residuals, params, n_eq));
     }
 
@@ -451,6 +541,43 @@ where
     let mut f = vec![0.0_f64; n_eq];
     eval(params, &mut f);
     f
+}
+
+/// Jacobian by central finite differences over the free coordinates of
+/// `space`, written into the caller's buffer. `params` is perturbed in place
+/// and put back.
+pub(crate) fn numerical_jacobian_for<F>(
+    params: &mut [f64],
+    space: &dyn StepSpace,
+    n_eq: usize,
+    eval_residuals: &mut F,
+    out: &mut [Vec<f64>],
+) where
+    F: FnMut(&[f64], &mut [f64]),
+{
+    if let Some(free) = space.additive_params() {
+        numerical_jacobian_into(params, free, n_eq, eval_residuals, out);
+        return;
+    }
+
+    let storage = space.storage();
+    let saved = save(params, storage);
+    let mut step = vec![0.0_f64; space.dim()];
+    for col in 0..space.dim() {
+        step[col] = FD_H;
+        space.apply(params, &saved, &step);
+        let f_plus = eval_vec(eval_residuals, params, n_eq);
+
+        step[col] = -FD_H;
+        space.apply(params, &saved, &step);
+        let f_minus = eval_vec(eval_residuals, params, n_eq);
+
+        step[col] = 0.0;
+        for (row, o) in out.iter_mut().enumerate() {
+            o[col] = (f_plus[row] - f_minus[row]) / (2.0 * FD_H);
+        }
+    }
+    restore(params, storage, &saved);
 }
 
 /// Jacobian `j[row][col] = ∂F_row / ∂x_col` by central finite differences,

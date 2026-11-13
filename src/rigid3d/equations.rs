@@ -1,0 +1,291 @@
+//! The rigid-pose family as the shared pipeline's [`Equations`].
+//!
+//! A body is stored as seven numbers — translation `(x, y, z)` and
+//! orientation quaternion `(x, y, z, w)` — and has six columns: translation
+//! and a body-frame rotation vector. A step in those columns is applied by
+//! [`PoseSpace`]: the translation adds, the orientation is rotated by the
+//! step and renormalised. Counting in columns is what makes the degrees of
+//! freedom come out right without any gauge bookkeeping.
+
+use glam::{DQuat, DVec3};
+
+use super::constraint::ConstraintSystem;
+use super::solver::{ConstraintSolver, ResidualJacobian};
+use crate::numerics::StepSpace;
+use crate::system::{Equations, SparseRow};
+
+/// Stored numbers per body: translation (3) + quaternion `(x, y, z, w)` (4).
+pub(crate) const STORED_PER_BODY: usize = 7;
+/// Columns per body: translation (3) + body-frame rotation vector (3).
+pub(crate) const COLUMNS_PER_BODY: usize = 6;
+
+/// Flatten poses into the pipeline's parameter vector.
+pub(crate) fn pack(positions: &[DVec3], rots: &[DQuat]) -> Vec<f64> {
+    let mut params = Vec::with_capacity(positions.len() * STORED_PER_BODY);
+    for (t, q) in positions.iter().zip(rots) {
+        params.extend_from_slice(&[t.x, t.y, t.z, q.x, q.y, q.z, q.w]);
+    }
+    params
+}
+
+/// The poses held in a parameter vector written by [`pack`].
+#[cfg(test)]
+pub(crate) fn unpack(params: &[f64]) -> (Vec<DVec3>, Vec<DQuat>) {
+    let bodies = params.len() / STORED_PER_BODY;
+    (
+        (0..bodies).map(|b| position(params, b)).collect(),
+        (0..bodies).map(|b| rotation(params, b)).collect(),
+    )
+}
+
+fn position(params: &[f64], body: usize) -> DVec3 {
+    let s = &params[body * STORED_PER_BODY..];
+    DVec3::new(s[0], s[1], s[2])
+}
+
+fn rotation(params: &[f64], body: usize) -> DQuat {
+    let s = &params[body * STORED_PER_BODY..];
+    DQuat::from_xyzw(s[3], s[4], s[5], s[6])
+}
+
+/// An assembly's constraints as the pipeline's [`Equations`].
+pub(crate) struct RigidEquations<'a> {
+    pub(crate) system: &'a ConstraintSystem,
+}
+
+impl RigidEquations<'_> {
+    /// Residuals and Jacobian of constraint `index` over the columns of its
+    /// own bodies only. Returns them with those bodies (ascending) and how
+    /// many there are (one or two).
+    ///
+    /// The numbers come from the same builder the whole-system assembly
+    /// uses, run on the constraint alone: a constraint's rows depend on no
+    /// other body.
+    fn local(&self, index: usize, params: &[f64]) -> (ResidualJacobian, [usize; 2], usize) {
+        let constraint = &self.system.constraints[index];
+        let first = constraint.component1;
+        let (bodies, count) = match constraint.component2 {
+            Some(second) if second != first => ([first.min(second), first.max(second)], 2),
+            _ => ([first, first], 1),
+        };
+        let local_index = |body: usize| usize::from(count == 2 && body == bodies[1]);
+
+        let mut local = constraint.clone();
+        local.component1 = local_index(first);
+        local.component2 = constraint.component2.map(local_index);
+        let alone = ConstraintSystem {
+            constraints: vec![local],
+            num_components: count,
+        };
+        let positions: Vec<DVec3> = bodies[..count]
+            .iter()
+            .map(|&b| position(params, b))
+            .collect();
+        let rots: Vec<DQuat> = bodies[..count]
+            .iter()
+            .map(|&b| rotation(params, b))
+            .collect();
+        (
+            ConstraintSolver::build_residual_jacobian(&alone, &positions, &rots),
+            bodies,
+            count,
+        )
+    }
+}
+
+impl Equations for RigidEquations<'_> {
+    fn constraint_count(&self) -> usize {
+        self.system.constraints.len()
+    }
+
+    fn equation_count(&self, index: usize) -> usize {
+        ConstraintSolver::equation_count_of(&self.system.constraints[index])
+    }
+
+    fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]) {
+        let (rj, _, _) = self.local(index, params);
+        out.copy_from_slice(&rj.r);
+    }
+
+    fn jacobian(&self, index: usize, params: &[f64], out: &mut [SparseRow]) {
+        let (rj, bodies, count) = self.local(index, params);
+        for (row, entries) in rj.j.iter().zip(out.iter_mut()) {
+            for (k, &body) in bodies[..count].iter().enumerate() {
+                for d in 0..COLUMNS_PER_BODY {
+                    entries.push((body * COLUMNS_PER_BODY + d, row[k * COLUMNS_PER_BODY + d]));
+                }
+            }
+        }
+    }
+
+    fn column_count(&self, _params: &[f64]) -> usize {
+        self.system.num_components * COLUMNS_PER_BODY
+    }
+
+    fn step_space(&self, free: &[usize]) -> Box<dyn StepSpace + '_> {
+        Box::new(PoseSpace::new(free))
+    }
+
+    /// The family has its own analytic-vs-finite-difference gate test, and
+    /// the per-solve check would cost two whole-cluster residual
+    /// evaluations per column here.
+    fn debug_check_jacobian(&self) -> bool {
+        false
+    }
+}
+
+/// The step space of rigid poses: translations add, orientations rotate.
+pub(crate) struct PoseSpace {
+    /// Bodies with at least one free column, ascending.
+    bodies: Vec<usize>,
+    /// For each of those bodies, where each of its six columns sits in the
+    /// step vector (`None`: the column is held).
+    slots: Vec<[Option<usize>; COLUMNS_PER_BODY]>,
+    /// The stored parameters of those bodies.
+    storage: Vec<usize>,
+    dim: usize,
+}
+
+impl PoseSpace {
+    /// `free` lists the free columns in ascending order.
+    pub(crate) fn new(free: &[usize]) -> Self {
+        let mut bodies: Vec<usize> = Vec::new();
+        let mut slots: Vec<[Option<usize>; COLUMNS_PER_BODY]> = Vec::new();
+        for (k, &col) in free.iter().enumerate() {
+            let body = col / COLUMNS_PER_BODY;
+            if bodies.last() != Some(&body) {
+                bodies.push(body);
+                slots.push([None; COLUMNS_PER_BODY]);
+            }
+            if let Some(last) = slots.last_mut() {
+                last[col % COLUMNS_PER_BODY] = Some(k);
+            }
+        }
+        let storage = bodies
+            .iter()
+            .flat_map(|&b| b * STORED_PER_BODY..(b + 1) * STORED_PER_BODY)
+            .collect();
+        Self {
+            bodies,
+            slots,
+            storage,
+            dim: free.len(),
+        }
+    }
+}
+
+impl StepSpace for PoseSpace {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn storage(&self) -> &[usize] {
+        &self.storage
+    }
+
+    fn apply(&self, params: &mut [f64], saved: &[f64], step: &[f64]) {
+        for (n, (&body, slots)) in self.bodies.iter().zip(&self.slots).enumerate() {
+            let from = &saved[n * STORED_PER_BODY..(n + 1) * STORED_PER_BODY];
+            let base = body * STORED_PER_BODY;
+
+            // Translation: add. A held column keeps its value exactly.
+            for d in 0..3 {
+                params[base + d] = match slots[d] {
+                    Some(k) => from[d] + step[k],
+                    None => from[d],
+                };
+            }
+
+            // Orientation: rotate by the body-frame rotation vector and
+            // renormalise. No rotation leaves the quaternion bit for bit.
+            let at = |d: usize| slots[d].map_or(0.0, |k| step[k]);
+            let turn = DVec3::new(at(3), at(4), at(5));
+            let start = DQuat::from_xyzw(from[3], from[4], from[5], from[6]);
+            let q = if turn == DVec3::ZERO {
+                start
+            } else {
+                (start * DQuat::from_scaled_axis(turn)).normalize()
+            };
+            params[base + 3] = q.x;
+            params[base + 4] = q.y;
+            params[base + 5] = q.z;
+            params[base + 6] = q.w;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pack_and_unpack_round_trip_bitwise() {
+        let positions = vec![DVec3::new(1.0, -2.5, 0.125), DVec3::new(0.0, 7.0, -3.0)];
+        let rots = vec![
+            DQuat::from_axis_angle(DVec3::new(1.0, 2.0, 3.0).normalize(), 0.7),
+            DQuat::IDENTITY,
+        ];
+        let (p, r) = unpack(&pack(&positions, &rots));
+        assert_eq!(p, positions);
+        assert_eq!(r, rots);
+    }
+
+    #[test]
+    fn a_step_translates_and_rotates_one_body() {
+        let positions = vec![DVec3::ZERO, DVec3::new(1.0, 2.0, 3.0)];
+        let rots = vec![DQuat::IDENTITY, DQuat::IDENTITY];
+        let mut params = pack(&positions, &rots);
+
+        // Body 1 only: all six of its columns free.
+        let free: Vec<usize> = (6..12).collect();
+        let space = PoseSpace::new(&free);
+        assert_eq!(space.dim(), 6);
+        assert_eq!(space.storage(), (7..14).collect::<Vec<_>>().as_slice());
+
+        let saved: Vec<f64> = space.storage().iter().map(|&i| params[i]).collect();
+        let quarter_turn = std::f64::consts::FRAC_PI_2;
+        space.apply(
+            &mut params,
+            &saved,
+            &[0.5, 0.0, -1.0, 0.0, 0.0, quarter_turn],
+        );
+
+        let (p, r) = unpack(&params);
+        assert_eq!(p[0], DVec3::ZERO, "body 0 is not part of the space");
+        assert_eq!(r[0], DQuat::IDENTITY);
+        assert_eq!(p[1], DVec3::new(1.5, 2.0, 2.0));
+        let x_axis = r[1].mul_vec3(DVec3::X);
+        assert!(
+            (x_axis - DVec3::Y).length() < 1e-12,
+            "a quarter turn about z"
+        );
+        assert!((r[1].length() - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn a_zero_step_leaves_the_pose_bit_for_bit() {
+        // A quaternion that is unit only to rounding: renormalising it
+        // would move the last bits.
+        let q = DQuat::from_xyzw(0.1, 0.2, 0.3, 0.927_361_849_549_570_4);
+        let mut params = pack(&[DVec3::new(-0.0, 1.0, 2.0)], &[q]);
+        let before = params.clone();
+        let space = PoseSpace::new(&[0, 1, 2, 3, 4, 5]);
+        let saved: Vec<f64> = space.storage().iter().map(|&i| params[i]).collect();
+
+        // Held columns and a zero rotation: only the y translation moves.
+        let space_y = PoseSpace::new(&[1]);
+        let saved_y: Vec<f64> = space_y.storage().iter().map(|&i| params[i]).collect();
+        space_y.apply(&mut params, &saved_y, &[0.0]);
+        assert_eq!(
+            params.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            before.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        // And the full space reproduces the saved state when asked to.
+        space.apply(&mut params, &saved, &[1.0, 1.0, 1.0, 0.3, 0.0, 0.0]);
+        for (&i, &v) in space.storage().iter().zip(&saved) {
+            params[i] = v;
+        }
+        assert_eq!(params, before);
+    }
+}
