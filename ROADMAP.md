@@ -6,7 +6,9 @@ today, so the gap is explicit.
 
 The survey of other solvers behind this list, the gap analysis and the phased
 plan (P0–P8) are in [docs/CATCHUP_PLAN.md](docs/CATCHUP_PLAN.md) (in Chinese).
-Phase P0 (baseline fixes) is done; see the changelog.
+Phases P0 (baseline fixes) and P1 (one pipeline for the three families, an
+editable model) are done; see the changelog and, for what a host has to
+change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
 
 ## 1. Numerical core
 

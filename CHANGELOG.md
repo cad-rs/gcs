@@ -7,9 +7,11 @@ are allowed with an entry here).
 
 ## 0.2.0 — unreleased
 
-Baseline fixes: phase P0 of [docs/CATCHUP_PLAN.md](docs/CATCHUP_PLAN.md).
-Several entries under "Changed" alter behaviour or signatures, hence the
-minor version.
+Phases P0 (baseline fixes) and P1 (one pipeline for the three families, an
+editable model) of [docs/CATCHUP_PLAN.md](docs/CATCHUP_PLAN.md). Several
+entries under "Changed" alter behaviour or signatures, hence the minor
+version; [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese) goes
+through them from a host's side.
 
 ### Changed
 
