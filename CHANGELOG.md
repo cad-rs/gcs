@@ -377,6 +377,23 @@ through them from a host's side.
 
 ### Performance
 
+- **The convergence polish factors once.** After the tolerance is met,
+  up to four unregularised Gauss–Newton steps nail the result to rounding;
+  each built a Jacobian and factored the normal equations afresh. On an
+  easy solve that was two thirds of all factorisations — the reason a warm
+  re-solve cost as much as a cold one: on the rectangle chain both take
+  two iterations, then four polish steps. Now the first polish step
+  factors the normal matrix and keeps it, and later steps reuse the
+  Jacobian and the factors (a chord iteration: the iterate has converged,
+  so the Jacobian barely moves). 2D solves and re-solves of one component
+  take 38–49% less time, 20 independent rectangles 31% less, a 3D truss of
+  240 parameters 36% less and of 780 14% less. The assembly fixtures,
+  whose polish takes one step, are level to within 3%, except the
+  smallest chain (+14%, 0.133 → 0.151 ms) and the smallest truss (+8%):
+  those execute the same polish steps as before, and a variant that took
+  the first step by the old code path was as slow, so it is how the
+  function compiles, not the work it does. Every corpus metric is
+  unchanged.
 - The LU factorisation that the diagnosis solves its Gram system with
   (and that is kept for several right-hand sides) took two to three times
   as long as the plain elimination for the same arithmetic: 3.5 ms against

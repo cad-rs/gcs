@@ -220,6 +220,52 @@ The last two spread by 10–15% between rounds of one build (792: 906 to
 percent. (These were measured with the next commit's convergence polish
 in place as well; the diagnosis does not run the polish.)
 
+### After the convergence polish began reusing its factorisation (P2.2)
+
+Same machine, all benchmarks, the previous commit (`dfe53b0`) and this
+change alternately, three rounds each (criterion medians, 6 s of
+measurement per run; rounds of one build agreed to a few percent):
+
+| Benchmark | before | after | change |
+|---|---:|---:|---:|
+| `sketch/solve_chain/54` | 0.415 ms | 0.256 ms | −38% |
+| `sketch/solve_chain/198` | 8.25 ms | 4.40 ms | −47% |
+| `sketch/solve_chain/792` | 456 ms | 231 ms | −49% |
+| `sketch/resolve_chain/54` | 0.419 ms | 0.258 ms | −38% |
+| `sketch/resolve_chain/198` | 8.24 ms | 4.36 ms | −47% |
+| `sketch/resolve_chain/792` | 444 ms | 226 ms | −49% |
+| `sketch/solve_field/360` | 1.49 ms | 1.03 ms | −31% |
+| `sketch/solve_field/3600` | 9.98 ms | 9.26 ms | −7% |
+| `space/solve_truss/60` | 0.391 ms | 0.423 ms | +8% |
+| `space/solve_truss/240` | 16.8 ms | 10.7 ms | −36% |
+| `space/solve_truss/780` | 472 ms | 407 ms | −14% |
+| `assembly/solve_chain/5` | 0.133 ms | 0.151 ms | +14% |
+| `assembly/solve_chain/20` | 1.14 ms | 1.17 ms | +2.6% |
+| `assembly/solve_chain/40` | 5.33 ms | 5.31 ms | −0.4% |
+| `assembly/solve_star/5`, `/20`, `/40` | | | +1.6%, +2.1%, +2.4% |
+
+Counted on the 198-parameter chain (temporary counters, not committed): a
+cold solve from 0.05 off and a warm one from 1e-4 off both take two
+iterations, and both then ran four polish steps, each with a new Jacobian
+and a factorisation — four of the six factorisations of the solve. That
+is why the warm re-solve was no cheaper; it still is not, since Newton
+needs two iterations from either start, but both now cost three
+factorisations' worth instead of six.
+
+The two small regressions are not the polish. Counted the same way, the
+assembly corpus (12 592 solves) and both small fixtures take exactly as
+many iterations and polish steps before as after, and on the assembly
+every polish is a single step. A variant whose first polish step was the
+old code path verbatim (elimination, no stored factors) was as slow on
+those two fixtures (+17%, +9%) and gained less elsewhere (−28% to −35% on
+the 2D chains, as a second step then needs its own factorisation), so it
+was not kept. What remains is how the larger function compiles, as with
+the 3% noted for P2.4 above.
+
+The first version of this change factored with `LuFactors` as it then
+was, two to three times slower than the elimination: it made the assembly
+chains 65–101% slower and led to the previous section.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.
@@ -242,11 +288,11 @@ Wall time of the metric gates in `tests/`, same machine.
   practical ceiling until the factorisation is sparse.
 - **Independent components scale about linearly.** Ten times the rectangles
   (360 → 3600 parameters) costs about 7×.
-- **A warm re-solve costs as much as a cold solve.** Starting 1e-4 from the
-  solution saves almost nothing. The likely reason, not profiled: the
-  convergence polish runs up to four more full factorisations after the
-  tolerance is met, which swamps the iterations saved. Worth settling before
-  drag performance matters.
+- **A warm re-solve costs as much as a cold solve.** On the rectangle chain
+  Newton needs two iterations from 1e-4 off as from 0.05 off, so there is
+  nothing to save. What made both expensive was the convergence polish,
+  four factorisations after the tolerance was met; it now factors once,
+  and both take about half the time (P2.2 above).
 - **Diagnosis is now the slow half.** Diagnosing the 792-parameter component
   (767 ms) takes twice as long as solving it, and with 255 redundant rows
   the 780-parameter truss takes 2.4 s. The dense column-pivoted QR was not

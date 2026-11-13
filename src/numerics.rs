@@ -846,34 +846,91 @@ where
     // the bounded strictly-improving run. Singular systems
     // (rank-deficient or under-constrained components) yield a zero step
     // and the polish declines to act.
+    //
+    // The Jacobian is built and the normal equations factored once, at the
+    // first polish step; later steps reuse them (a chord iteration). The
+    // iterate has already converged, so the Jacobian barely moves between
+    // polish steps, and each further step costs a back-substitution
+    // instead of a Jacobian and a factorisation: the polish used to be two
+    // thirds of the factorisations of an easy solve.
     let mut polish_steps = 0usize;
+    let mut chord: Option<Chord> = None;
     while residual > 0.0 && residual < tolerance && polish_steps < options.polish_steps {
-        if let Some(build) = analytic.as_mut() {
-            for row in j.iter_mut() {
-                row.fill(0.0);
+        if chord.is_none() {
+            if let Some(build) = analytic.as_mut() {
+                for row in j.iter_mut() {
+                    row.fill(0.0);
+                }
+                build(params, &mut j);
+            } else {
+                numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
             }
-            build(params, &mut j);
-        } else {
-            numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
-        }
-        let scales = weighted.then(|| column_scales(&j, &weights, n_free));
-        if let Some(scales) = &scales {
-            weigh_rows(&mut j, &weights);
-            scale_columns(&mut j, scales);
-        }
-        // Unregularised step: see the block comment above. A singular
-        // system has none; a family that asks for it gets the regularised
-        // step there instead, so an under-constrained component is polished
-        // too (toward its minimum-norm correction).
-        let delta = match try_solve_normal_equations(&j, &f_final, n_free, 0.0) {
-            Some(delta) => delta,
-            None if options.polish_singular => {
-                try_solve_normal_equations(&j, &f_final, n_free, options.lambda)
-                    .unwrap_or_else(|| vec![0.0_f64; n_free])
+            let scales = weighted.then(|| column_scales(&j, &weights, n_free));
+            if let Some(scales) = &scales {
+                weigh_rows(&mut j, &weights);
+                scale_columns(&mut j, scales);
             }
-            None => vec![0.0_f64; n_free],
+            // Unregularised step: see the block comment above. A singular
+            // system has none; a family that asks for it gets the
+            // regularised step there instead, so an under-constrained
+            // component is polished too (toward its minimum-norm
+            // correction). Otherwise there is no polish.
+            let (normal, b) = normal_equations(&j, &f_final, n_free);
+            // The matrix is copied only where a regularised retry may
+            // need it.
+            let factors = if options.polish_singular {
+                LuFactors::factor(normal.clone()).or_else(|| {
+                    let mut normal = normal;
+                    for (i, row) in normal.iter_mut().enumerate() {
+                        row[i] += options.lambda;
+                    }
+                    LuFactors::factor(normal)
+                })
+            } else {
+                LuFactors::factor(normal)
+            };
+            let Some(factors) = factors else {
+                break;
+            };
+            chord = Some(Chord {
+                factors,
+                rows: None,
+                scales,
+                first: Some(b),
+            });
+        }
+        let Some(Chord {
+            factors,
+            rows,
+            scales,
+            first,
+        }) = &mut chord
+        else {
+            break;
         };
-        let delta = match &scales {
+        // b = Jᵀ(−f). The first step has it from `normal_equations`; a
+        // later one forms it over the non-zero entries of the same
+        // Jacobian (still in `j`), in the order `normal_equations` sums
+        // them. Most polishes take one step, so the rows are only gathered
+        // for a second.
+        let mut b = match first.take() {
+            Some(b) => b,
+            None => {
+                let rows = rows.get_or_insert_with(|| sparse_rows(&j));
+                let mut b = vec![0.0_f64; n_free];
+                for (row, fi) in rows.iter().zip(&f_final) {
+                    for &(col, v) in row {
+                        b[col] -= v * fi;
+                    }
+                }
+                b
+            }
+        };
+        let delta = factors.solve(&mut b);
+        if delta.iter().any(|d| !d.is_finite()) {
+            break;
+        }
+        let delta = match scales {
             None => delta,
             Some(scales) => unscaled(&delta, scales),
         };
@@ -934,6 +991,19 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 
 fn norm(v: &[f64]) -> f64 {
     dot(v, v).sqrt()
+}
+
+/// What the convergence polish keeps from its first step.
+struct Chord {
+    /// The factored normal matrix.
+    factors: LuFactors,
+    /// The non-zero entries of the Jacobian it came from, once a second
+    /// step needs them.
+    rows: Option<Vec<Vec<(usize, f64)>>>,
+    /// The column scales, when the equations are weighted.
+    scales: Option<Vec<f64>>,
+    /// The right-hand side of the first step, until it is taken.
+    first: Option<Vec<f64>>,
 }
 
 /// The linear model `f + J·h` of the residuals around one iterate, with the
