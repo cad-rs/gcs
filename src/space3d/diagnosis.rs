@@ -26,13 +26,25 @@
 //! gauge dimension per fully free plane. Without this, every free plane
 //! would contribute a phantom DOF and a fully constrained plane could show a
 //! spurious dependency.
+//!
+//! # Cylinder gauge
+//!
+//! A cylinder is stored as an axis point, an axis direction and a radius:
+//! seven parameters for five physical freedoms (a line in space has four,
+//! plus the radius). Sliding the axis point along the axis and rescaling the
+//! direction change the storage but not the cylinder. Unlike the plane
+//! gauge these directions cannot simply be dropped, because `Concentric3D`
+//! reads the axis point as a centre and thereby pins the slide. They are
+//! tested against the Jacobian instead: every gauge direction that no row
+//! pins is subtracted from the DOF count. The rank and the redundant /
+//! conflicting classification are unaffected (they live in row space).
 
 use crate::numerics::{
-    gaussian_elimination, householder_qr_column_pivoting, solve_normal_equations, LAMBDA,
+    gt, householder_qr_column_pivoting, le, solve_normal_equations, RowSpaceGram, LAMBDA,
 };
 use crate::space3d::constraint::SpaceConstraint;
 use crate::space3d::entity::{SpaceEntity, SpaceEntityKind};
-use crate::space3d::solver::{analytic_jacobian, eval_residuals, SOLVER_NORM_TOL};
+use crate::space3d::solver::{analytic_jacobian, eval_residuals, touched_params, SOLVER_NORM_TOL};
 use std::collections::HashMap;
 
 /// Column-pivot rank threshold, relative to the largest initial column
@@ -98,9 +110,15 @@ pub fn diagnose(
         })
         .count();
 
+    // Cylinder gauge directions; how many of them stay unpinned is settled
+    // per component below.
+    let cylinder_gauges = cylinder_gauge_vectors(params, fixed, entities);
+    let mut gauge_seen = vec![false; cylinder_gauges.len()];
+    let mut cylinder_gauge_free = 0usize;
+
     if n_eq == 0 {
         return SpaceDiagnosis {
-            dof: free_total as i64 - gauge_reduction as i64,
+            dof: free_total as i64 - gauge_reduction as i64 - cylinder_gauges.len() as i64,
             ..Default::default()
         };
     }
@@ -130,23 +148,8 @@ pub fn diagnose(
         }
 
         // Touched free parameters of this component.
-        let mut touched: Vec<usize> = Vec::new();
-        {
-            let mut scratch: Vec<Vec<(usize, f64)>> = Vec::new();
-            for c in &sub {
-                scratch.clear();
-                scratch.resize_with(c.equation_count(), Vec::new);
-                c.jacobian(params, entities, &mut scratch);
-                for row in &scratch {
-                    for &(p, _) in row {
-                        if !fixed[p] && !touched.contains(&p) {
-                            touched.push(p);
-                        }
-                    }
-                }
-            }
-            touched.sort_unstable();
-        }
+        let mut touched = touched_params(params, entities, &sub);
+        touched.retain(|&p| !fixed[p]);
 
         // Map component-local rows back to global constraint indices.
         let mut row_constraint: Vec<usize> = Vec::with_capacity(n_eq_c);
@@ -173,6 +176,10 @@ pub fn diagnose(
             touched.iter().enumerate().map(|(c, &p)| (p, c)).collect();
         let mut j_raw = vec![vec![0.0_f64; touched.len()]; n_eq_c];
         analytic_jacobian(params, &col_of, entities, &sub, &mut j_raw);
+
+        // Cylinder gauge directions this component touches but does not pin.
+        cylinder_gauge_free +=
+            unpinned_gauge_dims(&j_raw, &col_of, &cylinder_gauges, &mut gauge_seen);
 
         // Effective free directions: plane gauge is removed here.
         let columns = effective_columns(params, fixed, entities, &touched);
@@ -239,22 +246,12 @@ pub fn diagnose(
             .map(|&col| (0..n_eff).map(|rr| a_original[rr][col]).collect())
             .collect();
         let r = rows.len();
+        // One Gram matrix serves every dependent row: build and factor it
+        // once instead of once per row.
+        let gram = RowSpaceGram::new(&rows, n_eff, LAMBDA);
         for &dep in &dependent {
             let dep_row: Vec<f64> = (0..n_eff).map(|rr| a_original[rr][dep]).collect();
-            let mut gram = vec![vec![0.0_f64; r]; r];
-            let mut rhs = vec![0.0_f64; r];
-            for (i, ri) in rows.iter().enumerate() {
-                rhs[i] = ri
-                    .iter()
-                    .zip(dep_row.iter())
-                    .map(|(a, b)| a * b)
-                    .sum::<f64>();
-                for (j, rj) in rows.iter().enumerate() {
-                    gram[i][j] = ri.iter().zip(rj.iter()).map(|(a, b)| a * b).sum::<f64>();
-                }
-                gram[i][i] += LAMBDA;
-            }
-            let y = gaussian_elimination(&mut gram, &mut rhs).unwrap_or_else(|| vec![0.0_f64; r]);
+            let y = gram.coefficients(&dep_row);
             let max_c = y.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
             let support: Vec<usize> = (0..r).filter(|&jj| y[jj].abs() > 1.0e-6 * max_c).collect();
             // Self-verification: the reported group must be a REAL relation —
@@ -267,7 +264,7 @@ pub fn diagnose(
                 })
                 .fold(0.0_f64, f64::max);
             let scale = dep_row.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            if !(residual <= 1.0e-9 * scale) {
+            if !le(residual, 1.0e-9 * scale) {
                 continue;
             }
             let mut group: Vec<usize> = support
@@ -305,9 +302,103 @@ pub fn diagnose(
             }
         }
     }
+    // Gauge directions no component touches are unpinned by definition.
+    cylinder_gauge_free += gauge_seen.iter().filter(|seen| !**seen).count();
     d.rank = total_rank as usize;
-    d.dof = free_total as i64 - gauge_reduction as i64 - total_rank;
+    d.dof = free_total as i64 - gauge_reduction as i64 - cylinder_gauge_free as i64 - total_rank;
     d
+}
+
+/// A sparse direction in parameter space: `(parameter index, coefficient)`.
+type SparseDir = Vec<(usize, f64)>;
+
+/// Representation-gauge directions of the cylinders.
+///
+/// A cylinder is stored as an axis point `p`, an axis direction `a` and a
+/// radius. Moving `p` along the axis and rescaling `a` both describe the
+/// same cylinder, so of the six axis parameters only four are physical. Each
+/// returned direction is one such move (unit length, in global parameter
+/// indices); a direction is only produced when the three parameters it moves
+/// are all free and the axis direction is usable.
+///
+/// Unlike the plane gauge these are not removed up front: `Concentric3D`
+/// reads the axis point as a centre, which pins the slide. Whether a
+/// direction is still free is decided against the Jacobian
+/// ([`unpinned_gauge_dims`]).
+fn cylinder_gauge_vectors(
+    params: &[f64],
+    fixed: &[bool],
+    entities: &[SpaceEntity],
+) -> Vec<SparseDir> {
+    let mut out = Vec::new();
+    for e in entities {
+        if e.kind != SpaceEntityKind::Cylinder {
+            continue;
+        }
+        let point = [e.param(0), e.param(1), e.param(2)];
+        let axis = [e.param(3), e.param(4), e.param(5)];
+        let (ax, ay, az) = (params[axis[0]], params[axis[1]], params[axis[2]]);
+        let len = (ax * ax + ay * ay + az * az).sqrt();
+        if !gt(len, SOLVER_NORM_TOL) {
+            continue;
+        }
+        let unit = [ax / len, ay / len, az / len];
+        for moved in [point, axis] {
+            if moved.iter().all(|&i| !fixed[i]) {
+                out.push(moved.iter().copied().zip(unit).collect());
+            }
+        }
+    }
+    out
+}
+
+/// Number of gauge directions that this component touches and that no row of
+/// its Jacobian pins — freedom of the representation, not of the geometry.
+///
+/// `j_raw` is the component Jacobian over its touched columns (`col_of` maps
+/// global parameter index to local column). `seen` is flagged for every
+/// direction the component touches, so the caller can count the directions
+/// no component touches at all. The count is `k − rank(J·G)` for the `k`
+/// touched directions `G`: the dimension of their span inside the null space.
+fn unpinned_gauge_dims(
+    j_raw: &[Vec<f64>],
+    col_of: &HashMap<usize, usize>,
+    gauges: &[SparseDir],
+    seen: &mut [bool],
+) -> usize {
+    let mut local: Vec<SparseDir> = Vec::new();
+    for (gauge, flag) in gauges.iter().zip(seen.iter_mut()) {
+        let cols: SparseDir = gauge
+            .iter()
+            .filter_map(|&(p, coeff)| col_of.get(&p).map(|&lc| (lc, coeff)))
+            .collect();
+        if !cols.is_empty() {
+            *flag = true;
+            local.push(cols);
+        }
+    }
+    if local.is_empty() {
+        return 0;
+    }
+
+    // M = J·G, rows scaled to a unit largest Jacobian entry like the rank
+    // analysis. Against such a row a unit gauge direction is O(1) when the
+    // row pins it and roundoff when it does not.
+    let mut m = vec![vec![0.0_f64; local.len()]; j_raw.len()];
+    for (m_row, j_row) in m.iter_mut().zip(j_raw) {
+        let scale = j_row.iter().fold(0.0_f64, |mx, v| mx.max(v.abs()));
+        if !gt(scale, 0.0) {
+            continue;
+        }
+        for (entry, cols) in m_row.iter_mut().zip(&local) {
+            let v = cols.iter().map(|&(lc, c)| j_row[lc] * c).sum::<f64>() / scale;
+            if v.abs() > RANK_REL_TOL {
+                *entry = v;
+            }
+        }
+    }
+    let (_, rank) = householder_qr_column_pivoting(&mut m, RANK_REL_TOL);
+    local.len() - rank
 }
 
 /// Effective free directions over the component-local `touched` columns.
@@ -374,12 +465,15 @@ fn effective_columns(
     columns
 }
 
+/// A 3D vector as a plain tuple.
+type Vec3 = (f64, f64, f64);
+
 /// Two unit vectors spanning the tangent plane of `n = (nx, ny, nz)`.
 /// Deterministic: the helper axis is the coordinate axis least aligned with
 /// the normal, so the basis does not jitter between equivalent normals.
-fn plane_tangents(nx: f64, ny: f64, nz: f64) -> Option<((f64, f64, f64), (f64, f64, f64))> {
+fn plane_tangents(nx: f64, ny: f64, nz: f64) -> Option<(Vec3, Vec3)> {
     let len = (nx * nx + ny * ny + nz * nz).sqrt();
-    if !(len > SOLVER_NORM_TOL) {
+    if !gt(len, SOLVER_NORM_TOL) {
         return None;
     }
     let u = (nx / len, ny / len, nz / len);
@@ -395,7 +489,7 @@ fn plane_tangents(nx: f64, ny: f64, nz: f64) -> Option<((f64, f64, f64), (f64, f
     };
     let c1 = cross(u, helper);
     let l1 = (c1.0 * c1.0 + c1.1 * c1.1 + c1.2 * c1.2).sqrt();
-    if !(l1 > 0.0) {
+    if !gt(l1, 0.0) {
         return None;
     }
     let t1 = (c1.0 / l1, c1.1 / l1, c1.2 / l1);

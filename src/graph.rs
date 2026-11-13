@@ -15,8 +15,6 @@
 
 use crate::constraint::Constraint;
 use crate::entity::Entity;
-use crate::entity::PointRef;
-use crate::sketch::Sketch;
 use std::collections::HashMap;
 
 /// Connected components of the constraint graph.
@@ -32,7 +30,7 @@ pub fn constraint_components(
     let n_params = params.len();
     // Union-find over parameters.
     let mut parent: Vec<usize> = (0..n_params).collect();
-    fn find(parent: &mut Vec<usize>, x: usize) -> usize {
+    fn find(parent: &mut [usize], x: usize) -> usize {
         let mut root = x;
         while parent[root] != root {
             root = parent[root];
@@ -45,7 +43,7 @@ pub fn constraint_components(
         }
         root
     }
-    fn union(parent: &mut Vec<usize>, a: usize, b: usize) {
+    fn union(parent: &mut [usize], a: usize, b: usize) {
         let ra = find(parent, a);
         let rb = find(parent, b);
         if ra != rb {
@@ -159,37 +157,37 @@ mod tests {
         let comps = constraint_components(&params, &entities, &constraints);
         assert_eq!(comps.len(), 1, "shared point merges: {comps:?}");
     }
-}
 
-/// Regression (M6.1, found by the assembly port): a constraint that merges
-/// two established groups must pull EARLIER constraints of both groups
-/// into one component — grouping by the root at insertion time split
-/// connected systems when the merge happened after the first group formed.
-#[test]
-fn late_merge_pulls_earlier_constraints_together() {
-    let mut sk = Sketch::new();
-    let p0 = sk.add_point(0.0, 0.0);
-    let p1 = sk.add_point(1.0, 1.0);
-    let p2 = sk.add_point(2.0, 2.0);
-    let p3 = sk.add_point(3.0, 3.0);
-    sk.add_constraint(Constraint::fix_point(PointRef::Point(p0), 0.0, 0.0)); // c0: p0
-    sk.add_constraint(Constraint::coincident(
-        PointRef::Point(p1),
-        PointRef::Point(p2),
-    )); // c1: p1,p2
-    sk.add_constraint(Constraint::coincident(
-        PointRef::Point(p0),
-        PointRef::Point(p1),
-    )); // c2: merges
-    sk.add_constraint(Constraint::coincident(
-        PointRef::Point(p2),
-        PointRef::Point(p3),
-    )); // c3: p3 joins
-    let comps = crate::graph::constraint_components(&sk.params, &sk.entities, &sk.constraints);
-    assert_eq!(
-        comps.len(),
-        1,
-        "all four constraints share one component: {comps:?}"
-    );
-    assert_eq!(comps[0], vec![0, 1, 2, 3]);
+    /// Regression (M6.1, found by the assembly port): a constraint that merges
+    /// two established groups must pull EARLIER constraints of both groups
+    /// into one component — grouping by the root at insertion time split
+    /// connected systems when the merge happened after the first group formed.
+    #[test]
+    fn late_merge_pulls_earlier_constraints_together() {
+        let mut sk = Sketch::new();
+        let p0 = sk.add_point(0.0, 0.0);
+        let p1 = sk.add_point(1.0, 1.0);
+        let p2 = sk.add_point(2.0, 2.0);
+        let p3 = sk.add_point(3.0, 3.0);
+        sk.add_constraint(Constraint::fix_point(PointRef::Point(p0), 0.0, 0.0)); // c0: p0
+        sk.add_constraint(Constraint::coincident(
+            PointRef::Point(p1),
+            PointRef::Point(p2),
+        )); // c1: p1,p2
+        sk.add_constraint(Constraint::coincident(
+            PointRef::Point(p0),
+            PointRef::Point(p1),
+        )); // c2: merges
+        sk.add_constraint(Constraint::coincident(
+            PointRef::Point(p2),
+            PointRef::Point(p3),
+        )); // c3: p3 joins
+        let comps = crate::graph::constraint_components(&sk.params, &sk.entities, &sk.constraints);
+        assert_eq!(
+            comps.len(),
+            1,
+            "all four constraints share one component: {comps:?}"
+        );
+        assert_eq!(comps[0], vec![0, 1, 2, 3]);
+    }
 }

@@ -917,6 +917,15 @@ fn accumulate_point_jacobian(
     }
 }
 
+/// Reflexive AsRef so the solver's residual/Jacobian helpers accept both
+/// `&[Constraint]` (full sketches) and `&[&Constraint]` (component
+/// subsets) through one generic bound.
+impl AsRef<Constraint> for Constraint {
+    fn as_ref(&self) -> &Constraint {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1158,14 +1167,5 @@ mod tests {
                 }
             }
         }
-    }
-}
-
-/// Reflexive AsRef so the solver's residual/Jacobian helpers accept both
-/// `&[Constraint]` (full sketches) and `&[&Constraint]` (component
-/// subsets) through one generic bound.
-impl AsRef<Constraint> for Constraint {
-    fn as_ref(&self) -> &Constraint {
-        self
     }
 }

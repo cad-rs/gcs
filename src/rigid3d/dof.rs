@@ -48,17 +48,18 @@ pub struct DOFResult {
     pub free_dofs: Vec<Vec<DegreeOfFreedom>>,
 }
 
-/// DOF analyzer.
+/// DOF analyzer (count-based; see [`crate::rigid3d::diagnose_assembly`] for
+/// the rank-based account).
 #[derive(Debug, Clone)]
 pub struct DOFAnalyzer {
-    /// Tolerance for redundancy detection
-    tolerance: f64,
+    // Keeps the type constructible only through `new` / `default`.
+    _private: (),
 }
 
 impl DOFAnalyzer {
     /// Create a new analyzer.
     pub fn new() -> Self {
-        Self { tolerance: 1e-6 }
+        Self { _private: () }
     }
 
     /// Analyze DOF of a constraint system.
@@ -141,7 +142,7 @@ impl ConstraintTypeExt for crate::rigid3d::ConstraintType {
 mod tests {
     use super::*;
     use crate::rigid3d::Point3;
-    use crate::rigid3d::{Constraint, ConstraintSystem, ConstraintType};
+    use crate::rigid3d::{Constraint, ConstraintSystem};
 
     #[test]
     fn test_dof_all() {

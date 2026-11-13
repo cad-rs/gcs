@@ -4,9 +4,13 @@
 //! quaternion integration (`q ← normalize(q · dq)`). Mate offsets `point1` /
 //! `point2` are in component space; world points use `t + R·local`. Direction
 //! mates (`Parallel`, `Angle`, `Perpendicular`) use unit vectors
-//! `normalize(R·local_dir)`. Jacobian rows for the direction-type constraints
-//! use central finite differences for robustness; point-type constraints fill
-//! analytic columns (translation ±I, rotation via the `ω × r` linearization).
+//! `normalize(R·local_dir)`. Jacobian rows are analytic (translation ±I,
+//! rotation via the `ω × r` linearization, direction rows via `δd = ω × d`)
+//! except the orientation rows of `Fixed` and `Lock`, which use central
+//! finite differences.
+//!
+//! Only the bodies a system's constraints reference become unknowns; the
+//! normal equations are accumulated over the non-zero Jacobian entries.
 //!
 //! The linear algebra is plain `Vec` containers on the crate's shared
 //! Gaussian-elimination core — no external linalg dependency.
@@ -14,7 +18,7 @@
 use glam::{DQuat, DVec3, EulerRot};
 
 use super::constraint::{Constraint, ConstraintSystem, ConstraintType};
-use crate::numerics::gaussian_elimination;
+use crate::numerics::{gaussian_elimination, normal_equations};
 
 /// Finite-difference step for direction-mate Jacobian rows.
 const FD_EPS: f64 = 1e-7;
@@ -32,7 +36,7 @@ pub struct PoseSolveResult {
     pub positions: Vec<DVec3>,
     /// Solved orientations as normalized quaternions (same order as [`Self::positions`])
     pub rotations: Vec<DQuat>,
-    /// Solved orientations per component (Euler XYZ [rad], from internal quaternion)
+    /// Solved orientations per component (Euler XYZ in radians, from the internal quaternion)
     pub orientations: Vec<DVec3>,
 }
 
@@ -116,7 +120,7 @@ impl ConstraintSolver {
     pub fn components(system: &ConstraintSystem) -> Vec<Vec<usize>> {
         let n = system.num_components;
         let mut parent: Vec<usize> = (0..n).collect();
-        fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
             while parent[x] != x {
                 x = parent[x];
             }
@@ -214,7 +218,81 @@ impl ConstraintSolver {
 
     /// Solve from an explicit warm start (poses are NOT re-seeded) — the
     /// M4-style round-trip and drift-probe entry point.
+    ///
+    /// Only the bodies the constraints reference become unknowns: a body no
+    /// constraint touches would contribute six all-zero Jacobian columns,
+    /// which cost cubic time in the linear solve and change nothing. Its
+    /// pose is passed through untouched.
     pub fn solve_from(
+        &self,
+        system: &ConstraintSystem,
+        positions: Vec<DVec3>,
+        rots: Vec<DQuat>,
+    ) -> PoseSolveResult {
+        let active = Self::referenced_bodies(system);
+        if active.len() == system.num_components {
+            return self.solve_all_bodies(system, positions, rots);
+        }
+
+        let compact = Self::compact_system(system, &active);
+        let compact_positions: Vec<DVec3> = active.iter().map(|&b| positions[b]).collect();
+        let compact_rots: Vec<DQuat> = active.iter().map(|&b| rots[b]).collect();
+        let solved = self.solve_all_bodies(&compact, compact_positions, compact_rots);
+
+        let mut positions = positions;
+        let mut rots = rots;
+        for (k, &body) in active.iter().enumerate() {
+            positions[body] = solved.positions[k];
+            rots[body] = solved.rotations[k];
+        }
+        PoseSolveResult {
+            success: solved.success,
+            error: solved.error,
+            iterations: solved.iterations,
+            orientations: quats_to_euler_xyz(&rots),
+            positions,
+            rotations: rots,
+        }
+    }
+
+    /// Sorted indices of the bodies at least one constraint references.
+    pub(crate) fn referenced_bodies(system: &ConstraintSystem) -> Vec<usize> {
+        let mut used = vec![false; system.num_components];
+        for c in &system.constraints {
+            used[c.component1] = true;
+            if let Some(c2) = c.component2 {
+                used[c2] = true;
+            }
+        }
+        (0..system.num_components).filter(|&b| used[b]).collect()
+    }
+
+    /// The same constraints over only the `active` bodies (sorted), with
+    /// component indices renumbered to positions in `active`. Ascending
+    /// order is kept, so the surviving Jacobian columns keep their order.
+    pub(crate) fn compact_system(system: &ConstraintSystem, active: &[usize]) -> ConstraintSystem {
+        let mut index_of = vec![usize::MAX; system.num_components];
+        for (k, &body) in active.iter().enumerate() {
+            index_of[body] = k;
+        }
+        let constraints = system
+            .constraints
+            .iter()
+            .map(|c| {
+                let mut c = c.clone();
+                c.component1 = index_of[c.component1];
+                c.component2 = c.component2.map(|b| index_of[b]);
+                c
+            })
+            .collect();
+        ConstraintSystem {
+            constraints,
+            num_components: active.len(),
+        }
+    }
+
+    /// The Gauss–Newton loop with every body of `system` as an unknown.
+    fn solve_all_bodies(
         &self,
         system: &ConstraintSystem,
         positions: Vec<DVec3>,
@@ -591,23 +669,29 @@ impl ConstraintSolver {
         rots: &[DQuat],
         row: usize,
         cols: usize,
-        j: &mut Vec<Vec<f64>>,
+        j: &mut [Vec<f64>],
     ) where
         F: Fn(&[DVec3], &[DQuat]) -> DVec3 + Copy,
     {
+        // One working copy, perturbed and restored a single body at a time
+        // (each column moves exactly one body).
+        let mut pp = positions.to_vec();
+        let mut rp = rots.to_vec();
         for col in 0..cols {
+            let body = col / 6;
+
+            apply_parameter_delta(&mut pp, &mut rp, col, FD_EPS);
+            let vp = residual_fn(&pp, &rp);
+            pp[body] = positions[body];
+            rp[body] = rots[body];
+
+            apply_parameter_delta(&mut pp, &mut rp, col, -FD_EPS);
+            let vm = residual_fn(&pp, &rp);
+            pp[body] = positions[body];
+            rp[body] = rots[body];
+
             for k in 0..3 {
-                let mut pp = positions.to_vec();
-                let mut rp = rots.to_vec();
-                apply_parameter_delta(&mut pp, &mut rp, col, FD_EPS);
-                let vp = residual_fn(&pp, &rp)[k];
-
-                let mut pm = positions.to_vec();
-                let mut rm = rots.to_vec();
-                apply_parameter_delta(&mut pm, &mut rm, col, -FD_EPS);
-                let vm = residual_fn(&pm, &rm)[k];
-
-                j[row + k][col] = (vp - vm) / (2.0 * FD_EPS);
+                j[row + k][col] = (vp[k] - vm[k]) / (2.0 * FD_EPS);
             }
         }
     }
@@ -621,7 +705,7 @@ impl ConstraintSolver {
         constraint: &Constraint,
         rots: &[DQuat],
         row: usize,
-        j: &mut Vec<Vec<f64>>,
+        j: &mut [Vec<f64>],
     ) {
         let Some(c2) = constraint.component2 else {
             return;
@@ -654,7 +738,7 @@ impl ConstraintSolver {
         constraint: &Constraint,
         rots: &[DQuat],
         row: usize,
-        j: &mut Vec<Vec<f64>>,
+        j: &mut [Vec<f64>],
     ) {
         let Some(c2) = constraint.component2 else {
             return;
@@ -681,7 +765,7 @@ impl ConstraintSolver {
         constraint: &Constraint,
         rots: &[DQuat],
         row: usize,
-        j: &mut Vec<Vec<f64>>,
+        j: &mut [Vec<f64>],
     ) {
         Self::fill_angle_jacobian_analytic(constraint, rots, row, j);
     }
@@ -697,7 +781,7 @@ impl ConstraintSolver {
         positions: &[DVec3],
         rots: &[DQuat],
         row: usize,
-        j: &mut Vec<Vec<f64>>,
+        j: &mut [Vec<f64>],
     ) {
         let Some(c2) = constraint.component2 else {
             return;
@@ -769,19 +853,8 @@ impl ConstraintSolver {
         base_lambda: f64,
         cols: usize,
     ) -> Option<Vec<f64>> {
-        let m = j.len();
-
         // A = JᵀJ, b = −Jᵀr
-        let mut a = vec![vec![0.0_f64; cols]; cols];
-        let mut b = vec![0.0_f64; cols];
-        for i in 0..m {
-            for col in 0..cols {
-                b[col] -= j[i][col] * r[i];
-                for k in 0..cols {
-                    a[col][k] += j[i][col] * j[i][k];
-                }
-            }
-        }
+        let (a, b) = normal_equations(j, r, cols);
 
         let mut lambda = base_lambda.max(1e-16);
 
@@ -1484,7 +1557,7 @@ mod assembly_acceptance {
         let comps = ConstraintSolver::components(&system);
         assert_eq!(comps.len(), 2, "main cluster + lone body: {comps:?}");
 
-        let mut all = system.clone();
+        let all = system.clone();
         let r_all = solver.solve(&all);
         assert!(r_all.success);
 

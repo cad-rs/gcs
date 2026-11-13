@@ -1,17 +1,17 @@
 //! 3D geometric entity types and their parameter layout.
 //!
-//! All entity parameters are stored in a flat `Vec<f64>` owned by [`SpaceSketch`].
+//! All entity parameters are stored in a flat `Vec<f64>` owned by [`crate::space3d::SpaceSketch`].
 //! Each entity records its `param_start` offset into that vector.
 //!
 //! | Kind        | Params (relative offsets)                              |
 //! |-------------|--------------------------------------------------------|
-//! | SpacePoint  | [0]=x, [1]=y, [2]=z                                    |
-//! | SpaceLine   | [0]=x1, [1]=y1, [2]=z1, [3]=x2, [4]=y2, [5]=z2       |
-//! | Plane       | [0]=nx, [1]=ny, [2]=nz, [3]=d (distance from origin)  |
-//! | Sphere      | [0]=cx, [1]=cy, [2]=cz, [3]=r                          |
-//! | Cylinder    | [0..3]=axis point, [3..6]=axis direction, [6]=radius  |
-//! | SpaceCircle | [0]=cx, [1]=cy, [2]=cz, [3]=r, plus a fixed frame      |
-//! | SpaceArc    | [0]=cx, [1]=cy, [2]=cz, [3]=r, plus a fixed frame      |
+//! | SpacePoint  | `[0]`=x, `[1]`=y, `[2]`=z                                    |
+//! | SpaceLine   | `[0]`=x1, `[1]`=y1, `[2]`=z1, `[3]`=x2, `[4]`=y2, `[5]`=z2       |
+//! | Plane       | `[0]`=nx, `[1]`=ny, `[2]`=nz, `[3]`=d (distance from origin)  |
+//! | Sphere      | `[0]`=cx, `[1]`=cy, `[2]`=cz, `[3]`=r                          |
+//! | Cylinder    | `[0..3]`=axis point, `[3..6]`=axis direction, `[6]`=radius  |
+//! | SpaceCircle | `[0]`=cx, `[1]`=cy, `[2]`=cz, `[3]`=r, plus a fixed frame      |
+//! | SpaceArc    | `[0]`=cx, `[1]`=cy, `[2]`=cz, `[3]`=r, plus a fixed frame      |
 //!
 //! Circles and arcs carry their plane orientation as *frame metadata*
 //! ([`SpaceFrame3`]), not as parameters: a 3D-3 curve always lies on a
@@ -22,7 +22,7 @@
 
 use glam::DVec3;
 
-/// Index into the entity list of a [`SpaceSketch`].
+/// Index into the entity list of a [`crate::space3d::SpaceSketch`].
 pub type SpaceEntityId = usize;
 
 /// The geometric kind of a 3D entity.
@@ -224,7 +224,7 @@ impl SpaceFrame3 {
     }
 }
 
-/// Metadata for a single 3D entity stored in a [`SpaceSketch`].
+/// Metadata for a single 3D entity stored in a [`crate::space3d::SpaceSketch`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct SpaceEntity {
@@ -303,15 +303,15 @@ impl SpaceEntity {
 pub enum SpacePointRef {
     /// A `SpacePoint` entity — the entity itself is the point.
     Point(SpaceEntityId),
-    /// The start endpoint of a `SpaceLine` entity (params [0,1,2]).
+    /// The start endpoint of a `SpaceLine` entity (params `[0,1,2]`).
     LineStart(SpaceEntityId),
-    /// The end endpoint of a `SpaceLine` entity (params [3,4,5]).
+    /// The end endpoint of a `SpaceLine` entity (params `[3,4,5]`).
     LineEnd(SpaceEntityId),
-    /// The center of a `Sphere` entity (params [0,1,2]).
+    /// The center of a `Sphere` entity (params `[0,1,2]`).
     SphereCenter(SpaceEntityId),
-    /// The center of a `SpaceCircle` entity (params [0,1,2]).
+    /// The center of a `SpaceCircle` entity (params `[0,1,2]`).
     CircleCenter(SpaceEntityId),
-    /// The center of a `SpaceArc` entity (params [0,1,2]).
+    /// The center of a `SpaceArc` entity (params `[0,1,2]`).
     ArcCenter(SpaceEntityId),
 }
 

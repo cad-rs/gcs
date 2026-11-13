@@ -94,7 +94,6 @@ impl Expect {
             Expect::Under => "under",
             Expect::Conflict => "conflict",
             Expect::Redundant => "redundant",
-            Expect::Singular => "singular",
         }
     }
 }
@@ -818,6 +817,9 @@ fn corpus_manifest_matches_generated() {
     );
     let committed = std::fs::read_to_string(manifest_path())
         .expect("tests/corpus/manifest.json missing — run the ignored write_corpus_manifest test");
+    // Compare modulo line endings: a checkout that predates `.gitattributes`
+    // (or overrides it) can carry CRLF.
+    let committed = committed.replace("\r\n", "\n");
     let expected = serde_json::to_string_pretty(&manifest_json(&cases)).expect("json") + "\n";
     assert_eq!(committed, expected, "manifest drifted from the generator");
 }
@@ -1167,8 +1169,9 @@ fn corpus_metrics_within_thresholds() {
         "slowest_case": slowest_ms.1,
         "total_seconds": t_start.elapsed().as_secs_f64(),
     });
-    if let Ok(dir) = std::env::var("CARGO_TARGET_TMPDIR") {
-        let path = std::path::Path::new(&dir).join("gcs_corpus_report.json");
+    // Cargo sets this for integration tests at compile time only.
+    if let Some(dir) = option_env!("CARGO_TARGET_TMPDIR") {
+        let path = std::path::Path::new(dir).join("gcs_corpus_report.json");
         let _ = std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap());
         println!("report: {:?}", path);
     }

@@ -6,15 +6,25 @@
 //! - **2D sketch** ([`Sketch`]): points, lines, circles, arcs — the sketcher
 //!   workhorse (coincidence, tangency, dimensions, anchoring, ...).
 //! - **3D geometric** ([`space3d::SpaceSketch`]): points, lines, planes,
-//!   spheres, cylinders in space.
+//!   spheres, cylinders, circles, arcs and Bezier splines in space.
 //! - **3D rigid pose** ([`rigid3d`]): per-body 6-DoF position + orientation
 //!   (quaternion manifold) — the assembly/mate solving kernel.
 //!
 //! The core treats a constraint system as `F(x) = 0` over a flat parameter
-//! vector: the Jacobian is approximated by central finite differences, the
-//! step comes from the Tikhonov-regularised normal equations
+//! vector. Every constraint supplies its residuals and its analytic Jacobian
+//! rows (the rigid-pose family still finite-differences two orientation
+//! row types); the step comes from the Tikhonov-regularised normal equations
 //! `(JᵀJ + λI) Δx = Jᵀ(−F)` (minimum-norm steps for under-constrained
-//! systems), and each update is line-search damped. See [`numerics`].
+//! systems), and each update is line-search damped. Systems are split into
+//! the connected components of the constraint graph and solved one
+//! component at a time. See [`numerics`].
+//!
+//! A solve that does not converge leaves the geometry as it found it (per
+//! component) and says why in [`SolveResult::status`]; [`SolveOptions`]
+//! selects the tolerance, the iteration limit and that failure policy.
+//!
+//! [`Sketch::diagnose`] reports the true (rank-based) degrees of freedom and
+//! the redundant / conflicting constraints; see [`diagnosis`].
 //!
 //! The crate depends only on `glam`; serialization of the constraint data
 //! model is available behind the optional `serde` feature.
@@ -52,7 +62,7 @@ pub mod space3d;
 pub use constraint::Constraint;
 pub use diagnosis::Diagnosis;
 pub use entity::{Entity, EntityId, EntityKind, PointRef};
-pub use numerics::SolveResult;
+pub use numerics::{FailurePolicy, SolveOptions, SolveResult, SolveStatus};
 pub use sketch::{DofReport, Sketch};
 pub use space3d::SpaceSketch;
 
@@ -61,7 +71,9 @@ pub mod prelude {
     pub use crate::constraint::Constraint;
     pub use crate::diagnosis::Diagnosis;
     pub use crate::entity::{Entity, EntityId, EntityKind, PointRef};
-    pub use crate::numerics::{SolveResult, RESIDUAL_TOL};
+    pub use crate::numerics::{
+        FailurePolicy, SolveOptions, SolveResult, SolveStatus, RESIDUAL_TOL,
+    };
     pub use crate::sketch::Sketch;
     pub use crate::solver;
     pub use crate::space3d;

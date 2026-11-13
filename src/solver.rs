@@ -14,7 +14,8 @@ use crate::entity::Entity;
 
 use crate::numerics;
 pub use crate::numerics::{
-    SolveResult, FD_H, LAMBDA, MAX_ITER, PIVOT_TOL, RESIDUAL_TOL, SOLVER_NORM_TOL,
+    SolveOptions, SolveResult, SolveStatus, FD_H, LAMBDA, MAX_ITER, PIVOT_TOL, RESIDUAL_TOL,
+    SOLVER_NORM_TOL,
 };
 
 /// Evaluate the stacked residual vector of `constraints` at `params`.
@@ -73,14 +74,43 @@ pub(crate) fn analytic_jacobian<C: AsRef<Constraint>>(
 /// - `fixed`: mask — `fixed[i] == true` means `params[i]` is held constant.
 /// - `entities`: entity metadata (for constraint evaluation).
 /// - `constraints`: list of constraints.
+///
+/// Uses the default [`SolveOptions`]: a component that does not converge
+/// gets its starting parameters back (see
+/// [`FailurePolicy`][crate::numerics::FailurePolicy]).
 pub fn solve(
-    params: &mut Vec<f64>,
+    params: &mut [f64],
     fixed: &[bool],
     entities: &[Entity],
     constraints: &[Constraint],
 ) -> SolveResult {
+    solve_with(
+        params,
+        fixed,
+        entities,
+        constraints,
+        &SolveOptions::default(),
+    )
+}
+
+/// [`solve`] with explicit [`SolveOptions`].
+pub fn solve_with(
+    params: &mut [f64],
+    fixed: &[bool],
+    entities: &[Entity],
+    constraints: &[Constraint],
+    options: &SolveOptions,
+) -> SolveResult {
     let components = crate::graph::constraint_components(params, entities, constraints);
-    solve_components(params, fixed, entities, constraints, &components, None)
+    solve_components_with(
+        params,
+        fixed,
+        entities,
+        constraints,
+        &components,
+        None,
+        options,
+    )
 }
 
 /// Solve only the selected connected components (`only` holds ordinals
@@ -88,16 +118,41 @@ pub fn solve(
 /// iterated and their parameters are not touched — the localized-solving
 /// entry point behind the sketcher's incremental rebuild (M3.2).
 pub fn solve_components(
-    params: &mut Vec<f64>,
+    params: &mut [f64],
     fixed: &[bool],
     entities: &[Entity],
     constraints: &[Constraint],
     components: &[Vec<usize>],
     only: Option<&[usize]>,
 ) -> SolveResult {
+    solve_components_with(
+        params,
+        fixed,
+        entities,
+        constraints,
+        components,
+        only,
+        &SolveOptions::default(),
+    )
+}
+
+/// [`solve_components`] with explicit [`SolveOptions`].
+///
+/// The reported status is the most severe one among the solved components;
+/// the failure policy applies to each component separately.
+pub fn solve_components_with(
+    params: &mut [f64],
+    fixed: &[bool],
+    entities: &[Entity],
+    constraints: &[Constraint],
+    components: &[Vec<usize>],
+    only: Option<&[usize]>,
+    options: &SolveOptions,
+) -> SolveResult {
     let n_eq_total: usize = constraints.iter().map(|c| c.equation_count()).sum();
     let mut iterations = 0usize;
     let mut converged = true;
+    let mut status = SolveStatus::Converged;
 
     for (ordinal, group) in components.iter().enumerate() {
         if let Some(sel) = only {
@@ -106,51 +161,56 @@ pub fn solve_components(
             }
         }
         let sub: Vec<&Constraint> = group.iter().map(|&i| &constraints[i]).collect();
-        let result = solve_one(params, fixed, entities, &sub);
+        let result = solve_one(params, fixed, entities, &sub, options);
         iterations += result.iterations;
         converged &= result.converged;
+        status = status.max(result.status);
     }
 
     let f = eval_residuals(params, entities, constraints, n_eq_total);
-    let residual = if n_eq_total == 0 {
-        0.0
-    } else {
-        (f.iter().map(|x| x * x).sum::<f64>() / f.len() as f64).sqrt()
-    };
     SolveResult {
         converged,
-        residual,
+        residual: numerics::rms(&f),
         iterations,
+        status,
     }
+}
+
+/// Sorted, de-duplicated set of the parameters `constraints` touch.
+///
+/// Read from the Jacobian rows, which list every touched parameter
+/// regardless of the derivative value there.
+pub(crate) fn touched_params<C: AsRef<Constraint>>(
+    params: &[f64],
+    entities: &[Entity],
+    constraints: &[C],
+) -> Vec<usize> {
+    let mut touched: Vec<usize> = Vec::new();
+    let mut scratch: Vec<Vec<(usize, f64)>> = Vec::new();
+    for c in constraints {
+        let c = c.as_ref();
+        scratch.clear();
+        scratch.resize_with(c.equation_count(), Vec::new);
+        c.jacobian(params, entities, &mut scratch);
+        for row in &scratch {
+            touched.extend(row.iter().map(|&(p, _)| p));
+        }
+    }
+    touched.sort_unstable();
+    touched.dedup();
+    touched
 }
 
 /// Solve one connected subsystem: `sub` are the constraints (already
 /// component-local), and only the free parameters they touch may move.
 fn solve_one(
-    params: &mut Vec<f64>,
+    params: &mut [f64],
     fixed: &[bool],
     entities: &[Entity],
     sub: &[&Constraint],
+    options: &SolveOptions,
 ) -> SolveResult {
-    // Touched parameter set from the Jacobian rows (the complete touched
-    // set — entries are pushed regardless of derivative values).
-    let mut touched: Vec<usize> = Vec::new();
-    {
-        let mut scratch: Vec<Vec<(usize, f64)>> = Vec::new();
-        for c in sub {
-            scratch.clear();
-            scratch.resize_with(c.equation_count(), Vec::new);
-            c.jacobian(params, entities, &mut scratch);
-            for row in &scratch {
-                for &(p, _) in row {
-                    if !touched.contains(&p) {
-                        touched.push(p);
-                    }
-                }
-            }
-        }
-        touched.sort_unstable();
-    }
+    let touched = touched_params(params, entities, sub);
     // Component-local fixed mask: everything not touched by this component
     // is held, so the Newton loop's free list is exactly this component's
     // movable parameters.
@@ -199,6 +259,7 @@ fn solve_one(
             f.copy_from_slice(&v);
         },
         numerics::Jacobian::Analytic(&mut build),
+        options,
     )
 }
 
@@ -375,12 +436,15 @@ mod tests {
     }
 
     #[test]
-    fn large_system_makes_progress() {
-        // A 4x4 grid of points with distance constraints in both directions.
-        // This creates a system with ~32 DOF and ~24 constraints.
-        // The numerical Jacobian solver may not fully converge at this scale
-        // (known limitation — tracked as a Medium priority item), but it should
-        // make measurable progress and not panic.
+    fn grid_system_converges() {
+        // A 4x4 grid of points with distance constraints in both directions:
+        // 32 parameters, 24 distance rows plus three anchored points.
+        //
+        // This test used to be `large_system_makes_progress` and only asked
+        // for a residual below 0.5. It never converged because the entities
+        // were laid out with `param_start = i` instead of `2 * i`, so
+        // neighbouring points shared a coordinate and the system was
+        // inconsistent. With the layout fixed it converges outright.
         use crate::constraint::Constraint;
         use crate::entity::{Entity, EntityKind, PointRef};
 
@@ -389,7 +453,7 @@ mod tests {
         let n_points = n * n;
 
         let entities: Vec<Entity> = (0..n_points)
-            .map(|i| Entity::new(EntityKind::Point, i))
+            .map(|i| Entity::new(EntityKind::Point, 2 * i))
             .collect();
 
         let mut constraints = Vec::new();
@@ -454,14 +518,17 @@ mod tests {
         let fixed = vec![false; n_points * 2];
 
         let result = solve(&mut params, &fixed, &entities, &constraints);
-        // The solver should make measurable progress (residual < initial perturbation).
-        // Full convergence at this scale is not guaranteed with numerical Jacobian.
         assert!(
-            result.residual < 0.5,
-            "solver should make progress: residual={}, iterations={}",
-            result.residual,
-            result.iterations
+            result.converged,
+            "grid should converge: status={:?}, residual={}, iterations={}",
+            result.status, result.residual, result.iterations
         );
+        assert_eq!(result.status, SolveStatus::Converged);
+        // The three anchors landed where they were pinned.
+        for (point, x, y) in [(0, 0.0, 0.0), (n, 0.0, spacing), (1, spacing, 0.0)] {
+            assert!((params[2 * point] - x).abs() < 1e-7, "point {point} x");
+            assert!((params[2 * point + 1] - y).abs() < 1e-7, "point {point} y");
+        }
     }
 
     #[test]

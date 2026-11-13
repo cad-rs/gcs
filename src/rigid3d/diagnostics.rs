@@ -486,12 +486,11 @@ impl SolverDiagnostics {
     /// Check if two constraints are conflicting.
     fn are_conflicting(&self, c1: &Constraint, c2: &Constraint) -> bool {
         // Simple check: same component with different fixed positions
-        if c1.component1 == c2.component1 {
-            if c1.constraint_type == crate::rigid3d::ConstraintType::Fixed
-                && c2.constraint_type == crate::rigid3d::ConstraintType::Fixed
-            {
-                return (c1.point1 - c2.point1).length() > 0.001;
-            }
+        if c1.component1 == c2.component1
+            && c1.constraint_type == crate::rigid3d::ConstraintType::Fixed
+            && c2.constraint_type == crate::rigid3d::ConstraintType::Fixed
+        {
+            return (c1.point1 - c2.point1).length() > 0.001;
         }
         false
     }
@@ -590,7 +589,7 @@ impl DiagnosticIssue {
 mod tests {
     use super::*;
     use crate::rigid3d::Point3;
-    use crate::rigid3d::{Constraint, ConstraintSystem, ConstraintType};
+    use crate::rigid3d::{Constraint, ConstraintSystem};
 
     #[test]
     fn test_detect_over_constrained() {

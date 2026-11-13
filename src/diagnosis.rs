@@ -26,9 +26,9 @@
 use crate::constraint::Constraint;
 use crate::entity::Entity;
 use crate::numerics::{
-    gaussian_elimination, householder_qr_column_pivoting, solve_normal_equations, LAMBDA,
+    householder_qr_column_pivoting, le, solve_normal_equations, RowSpaceGram, LAMBDA,
 };
-use crate::solver::{analytic_jacobian, eval_residuals};
+use crate::solver::{analytic_jacobian, eval_residuals, touched_params};
 use std::collections::HashMap;
 
 /// Column-pivot rank threshold, relative to the largest initial column
@@ -128,23 +128,8 @@ pub fn diagnose(
         }
 
         // Touched free parameters of this component.
-        let mut touched: Vec<usize> = Vec::new();
-        {
-            let mut scratch: Vec<Vec<(usize, f64)>> = Vec::new();
-            for c in &sub {
-                scratch.clear();
-                scratch.resize_with(c.equation_count(), Vec::new);
-                c.jacobian(params, entities, &mut scratch);
-                for row in &scratch {
-                    for &(p, _) in row {
-                        if !fixed[p] && !touched.contains(&p) {
-                            touched.push(p);
-                        }
-                    }
-                }
-            }
-            touched.sort_unstable();
-        }
+        let mut touched = touched_params(params, entities, &sub);
+        touched.retain(|&p| !fixed[p]);
         let n_free_c = touched.len();
 
         // Map component-local rows back to global constraint indices.
@@ -209,29 +194,18 @@ pub fn diagnose(
         // SUM y_j*row_j = dep_row via the row-space Gram system
         // (G + lambda*I) y = -(rows*dep), G[i][j] = row_i.row_j. The
         // coefficient support is the whole mutually-dependent row group,
-        // invariant to pivot tie-breaking. The Gram solve reuses the
-        // shared gaussian_elimination (the r x r system is tiny).
+        // invariant to pivot tie-breaking.
         let rows: Vec<Vec<f64>> = independent
             .iter()
             .map(|&col| (0..n_free_c).map(|rr| a_original[rr][col]).collect())
             .collect();
         let r = rows.len();
+        // One Gram matrix serves every dependent row: build and factor it
+        // once instead of once per row.
+        let gram = RowSpaceGram::new(&rows, n_free_c, LAMBDA);
         for &dep in &dependent {
             let dep_row: Vec<f64> = (0..n_free_c).map(|rr| a_original[rr][dep]).collect();
-            let mut gram = vec![vec![0.0_f64; r]; r];
-            let mut rhs = vec![0.0_f64; r];
-            for (i, ri) in rows.iter().enumerate() {
-                rhs[i] = ri
-                    .iter()
-                    .zip(dep_row.iter())
-                    .map(|(a, b)| a * b)
-                    .sum::<f64>();
-                for (j, rj) in rows.iter().enumerate() {
-                    gram[i][j] = ri.iter().zip(rj.iter()).map(|(a, b)| a * b).sum::<f64>();
-                }
-                gram[i][i] += LAMBDA;
-            }
-            let y = gaussian_elimination(&mut gram, &mut rhs).unwrap_or_else(|| vec![0.0_f64; r]);
+            let y = gram.coefficients(&dep_row);
             let max_c = y.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
             let support: Vec<usize> = (0..r).filter(|&jj| y[jj].abs() > 1.0e-6 * max_c).collect();
             // Self-verification: the reported group must be a REAL
@@ -246,7 +220,7 @@ pub fn diagnose(
                 })
                 .fold(0.0_f64, f64::max);
             let scale = dep_row.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            if !(residual <= 1.0e-9 * scale) {
+            if !le(residual, 1.0e-9 * scale) {
                 continue;
             }
             let mut group: Vec<usize> = support

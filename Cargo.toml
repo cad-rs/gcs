@@ -1,6 +1,6 @@
 [package]
 name = "rcad-gcs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Standalone geometric constraint solver (GCS): 2D sketch, 3D geometric, and 3D rigid-pose constraint systems over one Newton-Raphson least-squares core"
@@ -14,6 +14,7 @@ categories = ["mathematics", "science"]
 include = [
     "src/**/*",
     "tests/**/*",
+    "benches/**/*",
     "README.md",
     "ROADMAP.md",
     "CHANGELOG.md",
@@ -35,6 +36,18 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 [dev-dependencies]
 approx = "0.5"
 serde_json = "1.0"
+# Benchmarks only. Plotting and rayon are left out to keep the dev build small.
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "solve"
+harness = false
+
+[lints.clippy]
+# The dense kernels index several matrices with the same loop variable
+# (`a[i][k] -= a[col][k] * factor`); iterator rewrites of those loops are
+# harder to check against the textbook form, not easier.
+needless_range_loop = "allow"
 
 # This crate is the workspace root: the empty table keeps `cargo` from
 # walking up into a parent workspace when it is vendored or checked out

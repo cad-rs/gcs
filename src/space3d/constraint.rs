@@ -1428,7 +1428,6 @@ impl SpaceConstraint {
             SpaceConstraint::PlaneNormal { plane, nx, ny, nz } => {
                 let e = &entities[*plane];
                 let len = (nx * nx + ny * ny + nz * nz).sqrt().max(SOLVER_NORM_TOL);
-                let u = plane_normal(params, e);
                 let v = (nx / len, ny / len, nz / len);
                 let (i0, i1) = cross_pair(dominant_axis(*nx, *ny, *nz));
                 for (row_idx, i) in [(0usize, i0), (1usize, i1)] {

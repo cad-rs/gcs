@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use crate::numerics::{self, SolveResult};
+use crate::numerics::{self, SolveOptions, SolveResult, SolveStatus};
 use crate::space3d::constraint::SpaceConstraint;
 use crate::space3d::entity::{SpaceEntity, SpaceEntityKind};
 
@@ -101,12 +101,18 @@ pub fn normalize_planes_touched(
     fixed: &[bool],
     touched: &[usize],
 ) {
+    let mut is_touched = vec![false; params.len()];
+    for &p in touched {
+        if let Some(flag) = is_touched.get_mut(p) {
+            *flag = true;
+        }
+    }
     for e in entities {
         if e.kind != SpaceEntityKind::Plane {
             continue;
         }
         let idx = [e.param(0), e.param(1), e.param(2), e.param(3)];
-        if !idx.iter().any(|i| touched.contains(i)) {
+        if !idx.iter().any(|&i| is_touched[i]) {
             continue;
         }
         if idx.iter().any(|&i| fixed.get(i).copied().unwrap_or(true)) {
@@ -143,17 +149,48 @@ fn normalize_plane_at(params: &mut [f64], idx: [usize; 4]) {
 /// - `fixed`: mask — `fixed[i] == true` means `params[i]` is held constant.
 /// - `entities`: entity metadata (for constraint evaluation).
 /// - `constraints`: list of 3D constraints.
+///
+/// Uses the default [`SolveOptions`]: a component that does not converge
+/// gets its starting parameters back (see
+/// [`FailurePolicy`][crate::numerics::FailurePolicy]). Planes are still
+/// left in their normalized `(unit normal, offset)` representation, which
+/// describes the same plane.
 pub fn solve_space(
-    params: &mut Vec<f64>,
+    params: &mut [f64],
     fixed: &[bool],
     entities: &[SpaceEntity],
     constraints: &[SpaceConstraint],
+) -> SolveResult {
+    solve_space_with(
+        params,
+        fixed,
+        entities,
+        constraints,
+        &SolveOptions::default(),
+    )
+}
+
+/// [`solve_space`] with explicit [`SolveOptions`].
+pub fn solve_space_with(
+    params: &mut [f64],
+    fixed: &[bool],
+    entities: &[SpaceEntity],
+    constraints: &[SpaceConstraint],
+    options: &SolveOptions,
 ) -> SolveResult {
     // Gauge fix before iterating: the solver's variable space is the
     // (unit normal, offset) representation.
     normalize_planes(params, entities, fixed);
     let components = crate::space3d::graph::constraint_components(params, entities, constraints);
-    solve_components(params, fixed, entities, constraints, &components, None)
+    solve_components_with(
+        params,
+        fixed,
+        entities,
+        constraints,
+        &components,
+        None,
+        options,
+    )
 }
 
 /// Solve only the selected connected components (`only` holds ordinals
@@ -161,16 +198,41 @@ pub fn solve_space(
 /// iterated and their parameters are not touched — the localized-solving
 /// entry point behind incremental re-solve (3D-0).
 pub fn solve_components(
-    params: &mut Vec<f64>,
+    params: &mut [f64],
     fixed: &[bool],
     entities: &[SpaceEntity],
     constraints: &[SpaceConstraint],
     components: &[Vec<usize>],
     only: Option<&[usize]>,
 ) -> SolveResult {
+    solve_components_with(
+        params,
+        fixed,
+        entities,
+        constraints,
+        components,
+        only,
+        &SolveOptions::default(),
+    )
+}
+
+/// [`solve_components`] with explicit [`SolveOptions`].
+///
+/// The reported status is the most severe one among the solved components;
+/// the failure policy applies to each component separately.
+pub fn solve_components_with(
+    params: &mut [f64],
+    fixed: &[bool],
+    entities: &[SpaceEntity],
+    constraints: &[SpaceConstraint],
+    components: &[Vec<usize>],
+    only: Option<&[usize]>,
+    options: &SolveOptions,
+) -> SolveResult {
     let n_eq_total: usize = constraints.iter().map(|c| c.equation_count()).sum();
     let mut iterations = 0usize;
     let mut converged = true;
+    let mut status = SolveStatus::Converged;
     let mut solved_touched: Vec<usize> = Vec::new();
 
     for (ordinal, group) in components.iter().enumerate() {
@@ -180,53 +242,78 @@ pub fn solve_components(
             }
         }
         let sub: Vec<&SpaceConstraint> = group.iter().map(|&i| &constraints[i]).collect();
-        let (result, touched) = solve_one(params, fixed, entities, &sub);
+        let (result, touched) = solve_one(params, fixed, entities, &sub, options);
         iterations += result.iterations;
         converged &= result.converged;
-        for p in touched {
-            if !solved_touched.contains(&p) {
-                solved_touched.push(p);
-            }
-        }
+        status = status.max(result.status);
+        // Components share no parameters, so the union stays duplicate-free.
+        solved_touched.extend(touched);
     }
+    solved_touched.sort_unstable();
 
     // Plane representation is pinned only for the planes the solved
     // components touched (bitwise guarantee for untouched components).
     normalize_planes_touched(params, entities, fixed, &solved_touched);
 
     let f = eval_residuals(params, entities, constraints, n_eq_total);
-    let residual = if n_eq_total == 0 {
-        0.0
-    } else {
-        (f.iter().map(|x| x * x).sum::<f64>() / f.len() as f64).sqrt()
-    };
     SolveResult {
         converged,
-        residual,
+        residual: numerics::rms(&f),
         iterations,
+        status,
     }
 }
 
 /// Residual report for the current parameters without iterating — the
 /// return value of an incremental solve that selected no component (a warm
 /// start already at a fixed point, or an edit that touches no constraint).
+/// With nothing iterated, an unsatisfied state reports
+/// [`SolveStatus::MaxIterations`] (a budget of zero iterations).
 pub(crate) fn residual_report(
     params: &[f64],
     entities: &[SpaceEntity],
     constraints: &[SpaceConstraint],
+    tolerance: f64,
 ) -> SolveResult {
     let n_eq: usize = constraints.iter().map(|c| c.equation_count()).sum();
     let f = eval_residuals(params, entities, constraints, n_eq);
-    let residual = if n_eq == 0 {
-        0.0
-    } else {
-        (f.iter().map(|x| x * x).sum::<f64>() / f.len() as f64).sqrt()
-    };
+    let residual = numerics::rms(&f);
+    let converged = residual < tolerance;
     SolveResult {
-        converged: residual < RESIDUAL_TOL,
+        converged,
         residual,
         iterations: 0,
+        status: if converged {
+            SolveStatus::Converged
+        } else {
+            SolveStatus::MaxIterations
+        },
     }
+}
+
+/// Sorted, de-duplicated set of the parameters `constraints` touch.
+///
+/// Read from the Jacobian rows, which list every touched parameter
+/// regardless of the derivative value there.
+pub(crate) fn touched_params<C: AsRef<SpaceConstraint>>(
+    params: &[f64],
+    entities: &[SpaceEntity],
+    constraints: &[C],
+) -> Vec<usize> {
+    let mut touched: Vec<usize> = Vec::new();
+    let mut scratch: Vec<Vec<(usize, f64)>> = Vec::new();
+    for c in constraints {
+        let c = c.as_ref();
+        scratch.clear();
+        scratch.resize_with(c.equation_count(), Vec::new);
+        c.jacobian(params, entities, &mut scratch);
+        for row in &scratch {
+            touched.extend(row.iter().map(|&(p, _)| p));
+        }
+    }
+    touched.sort_unstable();
+    touched.dedup();
+    touched
 }
 
 /// Solve one connected subsystem: `sub` are the constraints (already
@@ -234,30 +321,13 @@ pub(crate) fn residual_report(
 /// Returns the result and the component's touched parameter set (used by
 /// the caller for the plane gauge fix).
 fn solve_one(
-    params: &mut Vec<f64>,
+    params: &mut [f64],
     fixed: &[bool],
     entities: &[SpaceEntity],
     sub: &[&SpaceConstraint],
+    options: &SolveOptions,
 ) -> (SolveResult, Vec<usize>) {
-    // Touched parameter set from the Jacobian rows (the complete touched
-    // set — entries are pushed regardless of derivative values).
-    let mut touched: Vec<usize> = Vec::new();
-    {
-        let mut scratch: Vec<Vec<(usize, f64)>> = Vec::new();
-        for c in sub {
-            scratch.clear();
-            scratch.resize_with(c.equation_count(), Vec::new);
-            c.jacobian(params, entities, &mut scratch);
-            for row in &scratch {
-                for &(p, _) in row {
-                    if !touched.contains(&p) {
-                        touched.push(p);
-                    }
-                }
-            }
-        }
-        touched.sort_unstable();
-    }
+    let touched = touched_params(params, entities, sub);
     // Component-local fixed mask: everything not touched by this component
     // is held, so the Newton loop's free list is exactly this component's
     // movable parameters.
@@ -306,6 +376,7 @@ fn solve_one(
             f.copy_from_slice(&v);
         },
         numerics::Jacobian::Analytic(&mut build),
+        options,
     );
     (result, touched)
 }
@@ -483,8 +554,13 @@ mod tests {
         let fixed = vec![true, true, true, true, true, true, true, true];
 
         let result = solve_space(&mut params, &fixed, &entities, &constraints);
-        // All params fixed → nothing to solve, but should not panic
-        assert!(result.converged);
+        // All params fixed → nothing to solve, and it must not panic. The
+        // spheres sit 5 apart with radii 2 and 1, so the tangency does not
+        // hold; 0.1.0 reported this as converged, now it says what it is.
+        assert!(!result.converged);
+        assert_eq!(result.status, SolveStatus::Stalled);
+        assert_eq!(result.iterations, 0);
+        assert_eq!(params, vec![0.0, 0.0, 0.0, 2.0, 5.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

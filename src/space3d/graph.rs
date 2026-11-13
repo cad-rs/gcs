@@ -29,7 +29,7 @@ pub fn constraint_components(
     let n_params = params.len();
     // Union-find over parameters.
     let mut parent: Vec<usize> = (0..n_params).collect();
-    fn find(parent: &mut Vec<usize>, x: usize) -> usize {
+    fn find(parent: &mut [usize], x: usize) -> usize {
         let mut root = x;
         while parent[root] != root {
             root = parent[root];
@@ -42,7 +42,7 @@ pub fn constraint_components(
         }
         root
     }
-    fn union(parent: &mut Vec<usize>, a: usize, b: usize) {
+    fn union(parent: &mut [usize], a: usize, b: usize) {
         let ra = find(parent, a);
         let rb = find(parent, b);
         if ra != rb {

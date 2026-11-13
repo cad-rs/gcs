@@ -1,16 +1,16 @@
 //! Geometric entity types and their parameter layout.
 //!
-//! All entity parameters are stored in a flat `Vec<f64>` owned by [`Sketch`].
+//! All entity parameters are stored in a flat `Vec<f64>` owned by [`crate::Sketch`].
 //! Each entity records its `param_start` offset into that vector.
 //!
 //! | Kind   | Params (relative offsets)                          |
 //! |--------|----------------------------------------------------|
-//! | Point  | [0]=x, [1]=y                                       |
-//! | Line   | [0]=x1, [1]=y1, [2]=x2, [3]=y2                    |
-//! | Circle | [0]=cx, [1]=cy, [2]=r                              |
-//! | Arc    | [0]=cx, [1]=cy, [2]=r, [3]=start_angle, [4]=end_angle |
+//! | Point  | `[0]`=x, `[1]`=y                                       |
+//! | Line   | `[0]`=x1, `[1]`=y1, `[2]`=x2, `[3]`=y2                    |
+//! | Circle | `[0]`=cx, `[1]`=cy, `[2]`=r                              |
+//! | Arc    | `[0]`=cx, `[1]`=cy, `[2]`=r, `[3]`=start_angle, `[4]`=end_angle |
 
-/// Index into the entity list of a [`Sketch`].
+/// Index into the entity list of a [`crate::Sketch`].
 pub type EntityId = usize;
 
 /// The geometric kind of an entity.
@@ -35,7 +35,7 @@ impl EntityKind {
     }
 }
 
-/// Metadata for a single entity stored in a [`Sketch`].
+/// Metadata for a single entity stored in a [`crate::Sketch`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Entity {
@@ -64,11 +64,11 @@ impl Entity {
 pub enum PointRef {
     /// A `Point` entity — the entity itself is the point.
     Point(EntityId),
-    /// The start endpoint of a `Line` entity (params [0,1]).
+    /// The start endpoint of a `Line` entity (params `[0,1]`).
     LineStart(EntityId),
-    /// The end endpoint of a `Line` entity (params [2,3]).
+    /// The end endpoint of a `Line` entity (params `[2,3]`).
     LineEnd(EntityId),
-    /// The center of a `Circle` or `Arc` entity (params [0,1]).
+    /// The center of a `Circle` or `Arc` entity (params `[0,1]`).
     Center(EntityId),
     /// The start endpoint of an `Arc` entity (derived from center + radius + start_angle).
     ArcStart(EntityId),

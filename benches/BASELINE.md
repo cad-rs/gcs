@@ -1,0 +1,113 @@
+# Benchmark baseline
+
+Numbers from `cargo bench` (`benches/solve.rs`, criterion, 10 samples each,
+median reported). They are a reference for spotting regressions on the same
+machine, not a portable claim: re-measure before comparing.
+
+- Machine: Windows 11 Pro, x86_64, `rustc 1.99.1`, bench profile (optimised).
+- Date: 2026-11-13.
+- "0.1.0" is commit `8094753`; "P0" is that commit plus the baseline fixes
+  recorded under *Unreleased* in the changelog. The 0.1.0 column was measured
+  by running this same bench file against that commit.
+
+## 2D sketch
+
+Fixtures are rectangles of 18 parameters and 18 equations each. The size in
+the benchmark name is the number of parameters.
+
+| Benchmark | What it measures | 0.1.0 | P0 | Speed-up |
+|---|---|---:|---:|---:|
+| `sketch/solve_chain/54` | cold solve, one connected component | 1.60 ms | 0.364 ms | 4.4× |
+| `sketch/solve_chain/198` | | 68.9 ms | 7.54 ms | 9.1× |
+| `sketch/solve_chain/792` | | 4.35 s | 357 ms | 12× |
+| `sketch/resolve_chain/54` | warm re-solve, 1e-4 off the solution | 1.57 ms | 0.372 ms | 4.2× |
+| `sketch/resolve_chain/198` | | 68.2 ms | 7.16 ms | 9.5× |
+| `sketch/resolve_chain/792` | | 4.31 s | 362 ms | 12× |
+| `sketch/solve_field/360` | cold solve, 20 independent rectangles | 2.11 ms | 1.27 ms | 1.7× |
+| `sketch/solve_field/3600` | cold solve, 200 independent rectangles | 13.7 ms | 8.66 ms | 1.6× |
+| `sketch/diagnose_chain/54` | rank-revealing diagnosis, one component | 220 µs | 226 µs | — |
+| `sketch/diagnose_chain/198` | | 8.31 ms | 8.20 ms | — |
+| `sketch/diagnose_chain/792` | | 737 ms | 767 ms | — |
+
+## 3D geometric
+
+A braced truss of points tied together by distances, one connected
+component. The size in the benchmark name is the number of parameters. Each
+point carries one redundant brace, so the diagnosis has dependencies to
+resolve (75 redundant rows at 240 parameters, 255 at 780).
+
+This fixture was added after the 0.1.0 comparison run, so the solve has no
+0.1.0 number. The diagnosis "before" column is the same tree without the
+change described below, which is the 0.1.0 code path for that function.
+
+| Benchmark | What it measures | before | P0 | Speed-up |
+|---|---|---:|---:|---:|
+| `space/solve_truss/60` | cold solve, one connected component | — | 321 µs | — |
+| `space/solve_truss/240` | | — | 14.3 ms | — |
+| `space/solve_truss/780` | | — | 396 ms | — |
+| `space/diagnose_truss/60` | diagnosis with redundant rows | 1.38 ms | 435 µs | 3.2× |
+| `space/diagnose_truss/240` | | 779 ms | 35.4 ms | 22× |
+| `space/diagnose_truss/780` | | about 113 s (criterion's estimate, not run to the end) | 2.43 s | about 47× |
+
+The diagnosis speed-up is one change: the Gram matrix of the independent
+rows used to be rebuilt and eliminated afresh for every dependent row; it is
+now built and factored once and solved per row.
+
+## Assembly (rigid pose)
+
+A grounded body plus N rigid bodies in one connected cluster. The size in
+the benchmark name is N.
+
+| Benchmark | What it measures | 0.1.0 | P0 | Speed-up |
+|---|---|---:|---:|---:|
+| `assembly/solve_chain/5` | cold solve, each body mated to the previous | 287 µs | 66 µs | 4.3× |
+| `assembly/solve_chain/20` | | 7.05 ms | 0.817 ms | 8.6× |
+| `assembly/solve_chain/40` | | 47.6 ms | 4.22 ms | 11× |
+| `assembly/solve_star/5` | cold solve, each body pinned to the ground | 316 µs | 75 µs | 4.2× |
+| `assembly/solve_star/20` | | 8.58 ms | 0.884 ms | 9.7× |
+| `assembly/solve_star/40` | | 61.1 ms | 4.28 ms | 14× |
+| `assembly/diagnose_star/5` | rank-revealing diagnosis | 275 µs | 131 µs | 2.1× |
+| `assembly/diagnose_star/20` | | 7.36 ms | 4.06 ms | 1.8× |
+| `assembly/diagnose_star/40` | | 53.4 ms | 31.8 ms | 1.7× |
+
+## Corpus gates
+
+Wall time of the metric gates in `tests/`, same machine.
+
+| Gate | 0.1.0 | P0 |
+|---|---:|---:|
+| `corpus_metrics_within_thresholds` (2D, 320 cases), unoptimised | 6.2 s | 2.4 s |
+| `assembly_metrics_within_thresholds` (333 cases), unoptimised | 411 s | 69 s |
+| `assembly_metrics_within_thresholds`, optimised | 21.0 s | 1.7 s |
+
+## Reading the numbers
+
+- **Where the P0 speed-up came from.** Almost all of it is one change: the
+  normal equations `JᵀJ` are accumulated over the non-zero Jacobian entries
+  instead of over every pair of columns. The results are bitwise the same.
+- **The single-component solve is still cubic.** A roughly four-fold
+  increase in parameters costs about 20× (54 → 198) and about 47×
+  (198 → 792): the dense Gaussian elimination now dominates. One connected
+  component of roughly 800 parameters takes a third of a second; that is the
+  practical ceiling until the factorisation is sparse.
+- **Independent components scale about linearly.** Ten times the rectangles
+  (360 → 3600 parameters) costs about 7×.
+- **A warm re-solve costs as much as a cold solve.** Starting 1e-4 from the
+  solution saves almost nothing. The likely reason, not profiled: the
+  convergence polish runs up to four more full factorisations after the
+  tolerance is met, which swamps the iterations saved. Worth settling before
+  drag performance matters.
+- **Diagnosis is now the slow half.** Diagnosing the 792-parameter component
+  (767 ms) takes twice as long as solving it, and with 255 redundant rows
+  the 780-parameter truss takes 2.4 s. The dense column-pivoted QR was not
+  touched in P0.
+- **A hard case that is deliberately not a fixture.** Without its braces the
+  truss is a serial chain where every point hangs off the three before it.
+  From a 0.05 perturbation the solver needs 5 iterations at 20 points, 9 at
+  80, 17 at 120, and does not converge within 100 at 160 or at 260 points
+  (it does at 200, in 35). It is a conditioning problem for a future
+  trust-region step to win, and a good corpus case for it.
+
+## Not covered yet
+
+- No automatic regression gate: nothing fails when these numbers get worse.

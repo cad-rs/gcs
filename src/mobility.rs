@@ -24,7 +24,7 @@ use crate::constraint::Constraint;
 use crate::diagnosis::RANK_REL_TOL;
 use crate::entity::Entity;
 use crate::graph::constraint_components;
-use crate::solver::analytic_jacobian;
+use crate::solver::{analytic_jacobian, touched_params};
 use std::collections::HashMap;
 
 /// Marks every parameter that can move at the current configuration.
@@ -57,21 +57,8 @@ pub fn mobility(
 
         // Touched free parameters of this component, in ascending index
         // order (the Jacobian touch set includes structural zeros).
-        let mut touched: Vec<usize> = Vec::new();
-        let mut scratch: Vec<Vec<(usize, f64)>> = Vec::new();
-        for c in &sub {
-            scratch.clear();
-            scratch.resize_with(c.equation_count(), Vec::new);
-            c.jacobian(params, entities, &mut scratch);
-            for row in &scratch {
-                for &(param, _) in row {
-                    if !fixed[param] && !touched.contains(&param) {
-                        touched.push(param);
-                    }
-                }
-            }
-        }
-        touched.sort_unstable();
+        let mut touched = touched_params(params, entities, &sub);
+        touched.retain(|&param| !fixed[param]);
         if touched.is_empty() {
             continue;
         }
@@ -206,7 +193,7 @@ fn null_space_support_sparse(j: &[Vec<(usize, f64)>], n_cols: usize, rel_tol: f6
                             new_row.push(r[i][j_idx]);
                             j_idx += 1;
                         }
-                        (Some(jc), Some(pc)) => {
+                        (Some(_), Some(pc)) => {
                             let v = -factor * r[pivot_row][p_idx].1;
                             if v != 0.0 {
                                 new_row.push((pc, v));
@@ -262,7 +249,7 @@ mod tests {
     fn fully_constrained_point_is_locked_and_free_point_is_movable() {
         let mut sk = Sketch::new();
         let anchor = sk.add_point(0.0, 0.0);
-        let free = sk.add_point(5.0, 7.0);
+        let _free = sk.add_point(5.0, 7.0);
         sk.add_constraint(Constraint::fix_point(PointRef::Point(anchor), 0.0, 0.0));
 
         let m = mobility(&sk.params, &sk.fixed, &sk.entities, &sk.constraints);

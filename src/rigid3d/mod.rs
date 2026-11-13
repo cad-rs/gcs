@@ -2,12 +2,16 @@
 //!
 //! Unknowns per body: translation `(tx, ty, tz)` plus incremental orientation
 //! via quaternion manifold integration (`q ← normalize(q · dq)`) — 6 columns
-//! per component. Residual/Jacobian rows mix analytic forms (point-type
-//! constraints: translation columns ±I, rotation columns via the `ω × r`
-//! linearization) with central finite differences (direction-type
-//! constraints). The step solves `(JᵀJ + λI) Δ = −Jᵀr` with an adaptive λ
-//! ladder for near-singular systems (Levenberg–Marquardt-style), on the
-//! shared Gaussian-elimination core of [`crate::numerics`].
+//! per component. Jacobian rows are analytic (translation columns ±I,
+//! rotation columns via the `ω × r` linearization, direction rows via
+//! `δd = ω × d`), except the orientation rows of `Fixed` and `Lock`, which
+//! use central finite differences. The step solves `(JᵀJ + λI) Δ = −Jᵀr`
+//! with an adaptive λ ladder for near-singular systems
+//! (Levenberg–Marquardt-style), on the shared Gaussian-elimination core of
+//! [`crate::numerics`].
+//!
+//! Constraint set: Fixed (± orientation), Coincident, Distance, Angle,
+//! Parallel, Perpendicular, Concentric, PointOnPlane, Lock.
 //!
 //! This family is deliberately at the *constraint-system* level: a host
 //! (e.g. an assembly layer) resolves geometric references to body-local

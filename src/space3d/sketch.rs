@@ -1,12 +1,13 @@
 //! 3D parametric sketch — container for space entities and constraints.
 //!
-//! Analogous to the 2D [`crate::Sketch`] but operates in 3D space with
-//! [`SpacePoint`], [`SpaceLine`], [`Plane`], and [`Sphere`] entities.
+//! Analogous to the 2D [`crate::Sketch`] but operates in 3D space with the
+//! entity kinds of [`SpaceEntityKind`]: points, lines, planes, spheres,
+//! cylinders, circles, arcs and Bezier splines.
 
-use crate::numerics::SolveResult;
+use crate::numerics::{SolveOptions, SolveResult};
 use crate::space3d::constraint::SpaceConstraint;
 use crate::space3d::entity::{SpaceEntity, SpaceEntityId, SpaceEntityKind, SpaceFrame3};
-use crate::space3d::solver::solve_space;
+use crate::space3d::solver::solve_space_with;
 
 /// Detailed DOF analysis result for 3D sketches.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -16,8 +17,16 @@ pub struct SpaceDofReport {
     pub free_params: usize,
     /// Total number of constraint equations.
     pub equations: usize,
-    /// Net degrees of freedom = free_params - equations.
+    /// Rank of the constraint Jacobian over the free parameters at the
+    /// current configuration.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub rank: usize,
+    /// True degrees of freedom = effective free parameters − rank (the
+    /// representation gauge of planes and cylinders is discounted).
     pub dof: i64,
+    /// Count-based estimate = `free_params − equations`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub structural_dof: i64,
     /// Indices of free parameters in the sketch's parameter vector.
     pub free_param_indices: Vec<usize>,
 }
@@ -127,6 +136,7 @@ impl SpaceSketch {
     }
 
     /// Add a cylinder entity with axis point (cx,cy,cz), axis direction (ax,ay,az), and radius r.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_cylinder(
         &mut self,
         cx: f64,
@@ -425,12 +435,23 @@ impl SpaceSketch {
 
     /// Run the Newton-Raphson solver on this sketch (per connected
     /// component; the current parameters are the warm start).
+    ///
+    /// A component that does not converge gets its starting parameters
+    /// back; use [`SpaceSketch::solve_with`] to keep the last iterate
+    /// instead.
     pub fn solve(&mut self) -> SolveResult {
-        solve_space(
+        self.solve_with(&SolveOptions::default())
+    }
+
+    /// [`SpaceSketch::solve`] with explicit [`SolveOptions`] (tolerance,
+    /// iteration limit, what a failed solve leaves behind).
+    pub fn solve_with(&mut self, options: &SolveOptions) -> SolveResult {
+        solve_space_with(
             &mut self.params,
             &self.fixed,
             &self.entities,
             &self.constraints,
+            options,
         )
     }
 
@@ -439,14 +460,24 @@ impl SpaceSketch {
     /// Unselected components are not iterated and their parameters stay
     /// untouched.
     pub fn solve_selected(&mut self, only: Option<&[usize]>) -> SolveResult {
+        self.solve_selected_with(only, &SolveOptions::default())
+    }
+
+    /// [`SpaceSketch::solve_selected`] with explicit [`SolveOptions`].
+    pub fn solve_selected_with(
+        &mut self,
+        only: Option<&[usize]>,
+        options: &SolveOptions,
+    ) -> SolveResult {
         let components = self.components();
-        crate::space3d::solver::solve_components(
+        crate::space3d::solver::solve_components_with(
             &mut self.params,
             &self.fixed,
             &self.entities,
             &self.constraints,
             &components,
             only,
+            options,
         )
     }
 
@@ -457,6 +488,15 @@ impl SpaceSketch {
     /// residual state instead — the warm start is the parameter vector as it
     /// stands.
     pub fn solve_incremental(&mut self, changed_constraints: &[usize]) -> SolveResult {
+        self.solve_incremental_with(changed_constraints, &SolveOptions::default())
+    }
+
+    /// [`SpaceSketch::solve_incremental`] with explicit [`SolveOptions`].
+    pub fn solve_incremental_with(
+        &mut self,
+        changed_constraints: &[usize],
+        options: &SolveOptions,
+    ) -> SolveResult {
         let components = self.components();
         let selected: Vec<usize> = components
             .iter()
@@ -469,20 +509,39 @@ impl SpaceSketch {
                 &self.params,
                 &self.entities,
                 &self.constraints,
+                options.tolerance,
             );
         }
-        crate::space3d::solver::solve_components(
+        crate::space3d::solver::solve_components_with(
             &mut self.params,
             &self.fixed,
             &self.entities,
             &self.constraints,
             &components,
             Some(&selected),
+            options,
         )
     }
 
-    /// Degrees of freedom = (free parameters) − (constraint equations).
+    /// True degrees of freedom: effective free parameters − rank of the
+    /// constraint Jacobian at the current parameters (the same account as
+    /// [`SpaceSketch::diagnose`], which discounts the representation gauge
+    /// of planes and cylinders).
+    ///
+    /// Redundant equations consume no freedom, so the value does not signal
+    /// over-constraint by itself: read the redundant / conflicting sets
+    /// from [`SpaceSketch::diagnose`] for that.
+    /// [`SpaceSketch::structural_dof_estimate`] is the cheap count.
     pub fn dof(&self) -> i64 {
+        self.diagnose().dof
+    }
+
+    /// Count-based estimate: (free parameters) − (constraint equations).
+    ///
+    /// No factorisation, but only an estimate: it counts raw storage
+    /// parameters (a plane has four for three physical freedoms, a cylinder
+    /// seven for five) and treats every equation as independent.
+    pub fn structural_dof_estimate(&self) -> i64 {
         let free = self.fixed.iter().filter(|&&f| !f).count() as i64;
         let eqs: i64 = self
             .constraints
@@ -492,20 +551,20 @@ impl SpaceSketch {
         free - eqs
     }
 
-    /// Detailed DOF analysis.
+    /// Detailed DOF analysis: free parameters, equations, Jacobian rank,
+    /// the true DOF, the count-based estimate, and the free parameter
+    /// indices.
     pub fn dof_analysis(&self) -> SpaceDofReport {
         let free_param_indices: Vec<usize> =
             (0..self.params.len()).filter(|&i| !self.fixed[i]).collect();
-        let free = free_param_indices.len() as i64;
-        let eqs: i64 = self
-            .constraints
-            .iter()
-            .map(|c| c.equation_count() as i64)
-            .sum();
+        let equations: usize = self.constraints.iter().map(|c| c.equation_count()).sum();
+        let diagnosis = self.diagnose();
         SpaceDofReport {
             free_params: free_param_indices.len(),
-            equations: eqs as usize,
-            dof: free - eqs,
+            equations,
+            rank: diagnosis.rank,
+            dof: diagnosis.dof,
+            structural_dof: free_param_indices.len() as i64 - equations as i64,
             free_param_indices,
         }
     }

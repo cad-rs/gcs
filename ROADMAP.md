@@ -4,40 +4,55 @@ Possible improvements, not commitments. Roughly ordered by leverage (numerical
 core first: everything else inherits its ceiling). Each item lists what exists
 today, so the gap is explicit.
 
+The survey of other solvers behind this list, the gap analysis and the phased
+plan (P0–P8) are in [docs/CATCHUP_PLAN.md](docs/CATCHUP_PLAN.md) (in Chinese).
+Phase P0 (baseline fixes) is done; see the changelog.
+
 ## 1. Numerical core
 
-- **Analytic Jacobians for every family.** Today only the rigid-pose
-  point-type rows are analytic; the 2D and 3D-geometric families (and the
-  rigid-pose direction rows) use central finite differences (`FD_H = 1e-7`).
-  Analytic rows are faster and free of truncation error — the rigid-pose
-  family already proves the pattern (see its analytic-vs-FD gate test).
-- **Sparse / iterative linear algebra.** `numerics.rs` solves
-  `(JᵀJ + λI)Δ = Jᵀ(−F)` with dense Gaussian elimination on `Vec`, i.e.
-  O(n³) in the parameter count. A sparse Cholesky / CG-SMG ladder would lift
-  the practical size ceiling (today: "tens of free parameters converge but
-  are not guaranteed to").
-- **Better step control.** The core uses Tikhonov λ + Armijo-style halving.
-  A Levenberg–Marquardt trust region, automatic scaling/equilibration of the
-  normal equations, and a homotopy/continuation path for hard starts would
-  raise the convergence rate on badly conditioned systems.
+- **Finish the analytic Jacobians.** The 2D and 3D-geometric families are
+  fully analytic, and so are the rigid-pose rows except the orientation rows
+  of `Fixed` and `Lock`, which still use central finite differences
+  (`FD_EPS = 1e-7`). Those two need the Jacobian of the rotation-vector
+  (log) map.
+- **Sparse linear algebra.** `numerics.rs` accumulates `JᵀJ` over the
+  non-zero Jacobian entries, but stores it densely and solves
+  `(JᵀJ + λI)Δ = Jᵀ(−F)` by dense Gaussian elimination, i.e. O(n³) in the
+  free parameters of one connected component. A sparse Cholesky / QR with a
+  fill-reducing ordering would lift the practical size ceiling (see
+  `benches/BASELINE.md` for where it sits today). Going through the normal
+  equations also squares the condition number; a QR-based minimum-norm step
+  would not.
+- **Better step control.** The core uses a fixed Tikhonov λ with step
+  halving, and escalates λ only when the halving fails. A proper
+  Levenberg–Marquardt / dogleg trust region, automatic
+  scaling/equilibration, scale-aware tolerances, and a homotopy/continuation
+  path for hard starts would raise the convergence rate on badly conditioned
+  systems. The rigid-pose family has its own loop without a line search.
 - **Parallel residual / Jacobian evaluation.** The residual closure is pure;
   `rayon` could parallelise the FD column sweep and the per-constraint
   residuals behind an opt-in feature.
 
 ## 2. Diagnostics and degrees of freedom
 
-- **Unify the two DOF accounts.** `Sketch::dof_analysis` is count-based
-  (free parameters − equations) while `diagnosis` already reports the true
-  rank-based DOF (free parameters − Jacobian rank). One public account, with
-  the rank analysis as the authority.
-- **Expose the redundancy analysis.** `diagnosis.rs` classifies
-  redundant / conflicting / partially-redundant rows and
-  `dependency_groups` names every member of a dependency; this is currently
-  internal to the solve path. A public `diagnose(&system)` returning
-  typed, name-mapped results is the highest-leverage diagnostic upgrade.
-- **Conflict localization.** Report *which* constraints conflict (ids/names),
-  not just that the system is inconsistent — the assembly side already maps
-  rows back to mate names and can be the model.
+- **Unify the DOF accounts in the rigid-pose family.** `Sketch::dof` and
+  `SpaceSketch::dof` now report the rank-based count that `diagnose` does
+  (the count-based number survives as `structural_dof_estimate`). `rigid3d`
+  still carries three analyzers side by side: the rank-based
+  `diagnose_assembly` and the older count-based `DOFAnalyzer` and
+  pattern-based `SolverDiagnostics`.
+- **Diagnosis per entity.** `diagnose()` is public and reports
+  redundant / conflicting / partially-redundant constraints,
+  `dependency_groups` and (2D) per-parameter mobility. What a UI needs on
+  top: a status per entity (well / under / over-defined) and a geometric
+  description of the remaining freedom (translate along, rotate about).
+- **Conflict localization.** Dependency groups name the constraints that
+  take part in a dependency; a minimal conflicting set and a "remove this
+  one" suggestion are not computed yet.
+- **Diagnosis away from the current point.** The analysis linearizes at the
+  current parameters, so a configuration that is singular only where it
+  stands (exact tangency) reads as redundant. Evaluating at a perturbed
+  witness configuration would tell the two apart.
 
 ## 3. Constraint vocabulary
 
@@ -54,11 +69,17 @@ today, so the gap is explicit.
 
 ## 4. API and engineering
 
+- **An editable model.** `Sketch` can only add: there are no stable ids, no
+  removal of entities or constraints, and no way to change a dimension value
+  without rebuilding the sketch.
 - **Warm start as a first-class API** across all three families (rigid-pose
-  already has `solve_from`; 2D/3D geometric do not).
-- **A builder API** for constraints and a typed error enum (today callers get
-  `SolveResult` + diagnostics; a structured `SolveError` would carry the
-  failing constraint ids).
+  already has `solve_from`; 2D/3D geometric solve from the current
+  parameters).
+- **One options/result type.** The 2D and 3D-geometric families share
+  `SolveOptions` / `SolveResult` (with a `SolveStatus`); the rigid-pose
+  family has its own `SolveOptions` / `PoseSolveResult`.
+- **A builder API** for constraints and failing constraint ids in the
+  result (today `SolveStatus` says why a solve failed, not where).
 - **Serde coverage audit** under the `serde` feature: every public data type
   should round-trip (the corpus tests cover part of this).
 - **Target support:** validate `wasm32-unknown-unknown` (the parent project
@@ -67,9 +88,11 @@ today, so the gap is explicit.
 
 ## 5. Performance
 
-- **A criterion benchmark harness** with a baseline corpus and a regression
-  gate; the existing corpora (2D convergence, 3D geometric, assembly) are the
-  natural fixtures.
+- **A benchmark regression gate.** `cargo bench` runs a criterion harness
+  (`benches/solve.rs`) and `benches/BASELINE.md` records the numbers, but
+  nothing fails a change that makes them worse yet. Wall-clock gates on
+  shared CI runners are noisy; a base-vs-head comparison in one job is the
+  usual answer.
 - **Reuse across re-solves:** cache the Jacobian sparsity pattern and the
   symbolic factorization between solves of the same system (parametric
   re-solve is the common host pattern).

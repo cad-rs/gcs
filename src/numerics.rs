@@ -1,25 +1,126 @@
 //! The shared Newton-Raphson least-squares core.
 //!
-//! Every solver family (2D sketch, 3D geometric, 3D rigid pose) reduces to
-//! the same loop over a flat parameter vector: evaluate residuals, build the
-//! Jacobian by central finite differences, solve the regularised normal
-//! equations `(JᵀJ + λI) Δx = Jᵀ(−F)`, and take a damped step. Only the
-//! residual evaluation differs per family, so it is injected as a closure.
+//! The 2D-sketch and 3D-geometric families run the same loop over a flat
+//! parameter vector: evaluate residuals, build the Jacobian (analytic rows
+//! supplied by the family; central finite differences for callers of
+//! [`newton_solve`] that have none), solve the regularised normal equations
+//! `(JᵀJ + λI) Δx = Jᵀ(−F)`, and take a damped step. The residual and
+//! Jacobian evaluation differ per family, so they are injected as closures.
+//! The rigid-pose family has its own loop on the same linear-algebra
+//! helpers.
 //!
 //! The Moore-Penrose pseudo-inverse J⁺ is realised through the normal
 //! equations with Tikhonov regularisation λ: under-constrained systems get
 //! the minimum-norm step instead of diverging.
+//!
+//! Step control: each step is halved until it passes the acceptance test
+//! (the residual may not grow by more than [`LINE_SEARCH_RELAX`],
+//! relatively). If no halving passes, the step is recomputed with a stronger
+//! λ ([`LAMBDA_ESCALATION`]) before the iteration gives up; a step that
+//! failed the test is never kept. A solve that ends without converging
+//! reports why ([`SolveStatus`]) and, by default, puts the starting
+//! parameters back ([`FailurePolicy`]).
+
+use std::cmp::Ordering;
 
 /// Result returned by every [`solve`][`crate::solver::solve`] entry point.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct SolveResult {
-    /// `true` if all constraint residuals are below [`RESIDUAL_TOL`].
+    /// `true` if the RMS constraint residual of every solved component is
+    /// below the tolerance ([`SolveOptions::tolerance`], [`RESIDUAL_TOL`]
+    /// by default). A component with no free parameter is judged on the
+    /// residual it has.
     pub converged: bool,
-    /// RMS residual at termination.
+    /// RMS residual of the parameters the solve left behind. After a failed
+    /// solve under [`FailurePolicy::Restore`] this is the residual of the
+    /// restored starting state.
     pub residual: f64,
     /// Number of Newton iterations performed.
     pub iterations: usize,
+    /// Why the solve ended. [`SolveStatus::Converged`] exactly when
+    /// `converged` is `true`.
+    pub status: SolveStatus,
+}
+
+/// Why a solve ended.
+///
+/// When several connected components are solved, the reported status is the
+/// most severe one among them (the variants are declared in increasing
+/// severity).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SolveStatus {
+    /// The residual is below the tolerance.
+    Converged,
+    /// The iteration limit was reached while the residual was still above
+    /// the tolerance. This is also how a conflicting system usually ends:
+    /// it settles toward its least-squares compromise without ever meeting
+    /// the tolerance.
+    MaxIterations,
+    /// The iteration cannot move from here: no step passed the line search
+    /// at any regularisation (a stationary point of the residual norm that
+    /// is not a solution), or the unsatisfied equations have no free
+    /// parameter at all.
+    Stalled,
+    /// The regularised normal equations were numerically singular; no step
+    /// could be computed.
+    Singular,
+    /// A residual or a step became NaN or infinite.
+    Diverged,
+}
+
+/// What a failed solve leaves in the parameter vector.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FailurePolicy {
+    /// Put back the parameters the solve started from, so a failed solve
+    /// leaves the geometry untouched. Applies per connected component: a
+    /// component that converged keeps its solution.
+    #[default]
+    Restore,
+    /// Keep the last iterate (what 0.1.0 always did) — useful to inspect
+    /// how far a failed solve got.
+    KeepLast,
+}
+
+/// Options for the 2D-sketch and 3D-geometric solver families.
+///
+/// The rigid-pose family has its own [`crate::rigid3d::SolveOptions`]; the
+/// two are due to be merged when the families share one pipeline.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolveOptions {
+    /// Convergence tolerance on the RMS constraint residual.
+    pub tolerance: f64,
+    /// Maximum Newton iterations per connected component.
+    pub max_iterations: usize,
+    /// What a failed solve leaves in the parameter vector.
+    pub on_failure: FailurePolicy,
+}
+
+impl Default for SolveOptions {
+    fn default() -> Self {
+        Self {
+            tolerance: RESIDUAL_TOL,
+            max_iterations: MAX_ITER,
+            on_failure: FailurePolicy::default(),
+        }
+    }
+}
+
+/// `a > b`, and `false` when either side is NaN. Spelled through
+/// `partial_cmp` so a guard written as `!gt(a, b)` visibly takes the NaN
+/// case too.
+#[inline]
+pub(crate) fn gt(a: f64, b: f64) -> bool {
+    a.partial_cmp(&b) == Some(Ordering::Greater)
+}
+
+/// `a <= b`, and `false` when either side is NaN (see [`gt`]).
+#[inline]
+pub(crate) fn le(a: f64, b: f64) -> bool {
+    matches!(a.partial_cmp(&b), Some(Ordering::Less | Ordering::Equal))
 }
 
 /// Convergence tolerance on the RMS constraint residual.
@@ -39,6 +140,11 @@ pub const SOLVER_NORM_TOL: f64 = 1e-10;
 pub const LINE_SEARCH_RELAX: f64 = 1e-4;
 /// Halving attempts of the damped line search.
 pub const LINE_SEARCH_STEPS: usize = 8;
+/// Regularisation strengths tried, in order, after a step at the base
+/// [`LAMBDA`] fails its line search — as multiples of the largest diagonal
+/// entry of `JᵀJ`, so they are relative to the scale of the system. The
+/// last one makes the step essentially a short steepest-descent move.
+pub const LAMBDA_ESCALATION: [f64; 5] = [1e-6, 1e-4, 1e-2, 1.0, 1e2];
 /// Bounded strictly-improving convergence-polish steps after convergence
 /// (unregularised, accepted only on strict residual improvement). Each
 /// unregularised refinement lands within linear-solve rounding (~1e-16
@@ -60,11 +166,34 @@ pub const POLISH_STEPS: usize = 4;
 /// - `eval_residuals`: writes the `n_eq` residual components for a given
 ///   parameter vector into the output buffer (called with the buffer sized
 ///   `n_eq`).
+///
+/// Uses the default [`SolveOptions`]; a solve that does not converge puts
+/// the starting parameters back (see [`FailurePolicy`]).
 pub fn newton_solve<F>(
-    params: &mut Vec<f64>,
+    params: &mut [f64],
     fixed: &[bool],
     n_eq: usize,
-    mut eval_residuals: F,
+    eval_residuals: F,
+) -> SolveResult
+where
+    F: FnMut(&[f64], &mut [f64]),
+{
+    newton_solve_with(
+        params,
+        fixed,
+        n_eq,
+        eval_residuals,
+        &SolveOptions::default(),
+    )
+}
+
+/// [`newton_solve`] with explicit [`SolveOptions`].
+pub fn newton_solve_with<F>(
+    params: &mut [f64],
+    fixed: &[bool],
+    n_eq: usize,
+    eval_residuals: F,
+    options: &SolveOptions,
 ) -> SolveResult
 where
     F: FnMut(&[f64], &mut [f64]),
@@ -73,29 +202,33 @@ where
         params,
         fixed,
         n_eq,
-        &mut eval_residuals,
+        eval_residuals,
         Jacobian::FiniteDifference,
+        options,
     )
 }
 
+/// Analytic Jacobian assembly callback: writes the m × n_free dense matrix
+/// (pre-zeroed by the loop) at the given parameters.
+pub(crate) type JacobianBuilder<'a> = dyn FnMut(&[f64], &mut [Vec<f64>]) + 'a;
+
 /// Where the Newton loop sources its Jacobian each iteration.
 pub(crate) enum Jacobian<'a> {
-    /// Central finite differences over the residual closure (the fallback
-    /// for solver families without analytic derivatives yet).
+    /// Central finite differences over the residual closure (for callers
+    /// without analytic derivatives).
     FiniteDifference,
-    /// Analytic assembly (solver roadmap M2): the closure writes the
-    /// m × n_free dense matrix, pre-zeroed by the loop, at the given
-    /// parameters.
-    Analytic(&'a mut dyn FnMut(&[f64], &mut [Vec<f64>])),
+    /// Analytic assembly (solver roadmap M2), see [`JacobianBuilder`].
+    Analytic(&'a mut JacobianBuilder<'a>),
 }
 
-/// [`newton_solve`] with an explicit Jacobian source.
-pub fn newton_solve_with_jacobian<F>(
-    params: &mut Vec<f64>,
+/// The damped Newton loop with an explicit Jacobian source.
+pub(crate) fn newton_solve_with_jacobian<F>(
+    params: &mut [f64],
     fixed: &[bool],
     n_eq: usize,
     mut eval_residuals: F,
     jacobian: Jacobian<'_>,
+    options: &SolveOptions,
 ) -> SolveResult
 where
     F: FnMut(&[f64], &mut [f64]),
@@ -103,13 +236,40 @@ where
     let free_params: Vec<usize> = (0..params.len()).filter(|&i| !fixed[i]).collect();
     let n_free = free_params.len();
 
-    if n_eq == 0 || n_free == 0 {
+    let tolerance = options.tolerance;
+
+    if n_eq == 0 {
         return SolveResult {
             converged: true,
             residual: 0.0,
             iterations: 0,
+            status: SolveStatus::Converged,
         };
     }
+    if n_free == 0 {
+        // Equations but nothing that may move: the state is what it is,
+        // satisfied or not. Report which (0.1.0 called both converged).
+        let residual = rms(&eval_vec(&mut eval_residuals, params, n_eq));
+        let converged = residual < tolerance;
+        return SolveResult {
+            converged,
+            residual,
+            iterations: 0,
+            status: if converged {
+                SolveStatus::Converged
+            } else if residual.is_finite() {
+                SolveStatus::Stalled
+            } else {
+                SolveStatus::Diverged
+            },
+        };
+    }
+
+    // The state a failed solve is rolled back to.
+    let initial: Vec<f64> = free_params.iter().map(|&gi| params[gi]).collect();
+    // Why the loop stopped short of convergence. Only reported when the
+    // final residual is not under the tolerance.
+    let mut failure = SolveStatus::MaxIterations;
 
     let mut residual;
     let mut iters = 0;
@@ -118,15 +278,19 @@ where
     let mut j = vec![vec![0.0_f64; n_free]; n_eq];
     // The Jacobian source is matched once (it is consumed by value); the
     // per-iteration branch checks the option.
-    let mut analytic: Option<&mut dyn FnMut(&[f64], &mut [Vec<f64>])> = match jacobian {
+    let mut analytic: Option<&mut JacobianBuilder<'_>> = match jacobian {
         Jacobian::FiniteDifference => None,
         Jacobian::Analytic(build) => Some(build),
     };
 
-    for _ in 0..MAX_ITER {
+    for _ in 0..options.max_iterations {
         let f = eval_vec(&mut eval_residuals, params, n_eq);
         residual = rms(&f);
-        if residual < RESIDUAL_TOL {
+        if residual < tolerance {
+            break;
+        }
+        if !residual.is_finite() {
+            failure = SolveStatus::Diverged;
             break;
         }
 
@@ -140,21 +304,68 @@ where
             numerical_jacobian_into(params, &free_params, n_eq, &mut eval_residuals, &mut j);
         }
 
-        // Solve (J^T J + λI) Δx = J^T (−F)  →  Δx
-        let delta = solve_normal_equations(&j, &f, n_free);
-
-        // Damped update: halve the step while the residual grows.
-        let mut alpha = 1.0_f64;
+        // Solve (J^T J + λI) Δx = J^T (−F)  →  Δx, with the base λ first.
+        // When the damped line search cannot keep the residual from growing
+        // (or the system is numerically singular), retry with a stronger λ
+        // scaled to JᵀJ: that bends the step from Gauss–Newton toward
+        // steepest descent, which does reduce the residual for a short
+        // enough step unless the iterate is stationary. A step that fails
+        // the acceptance test is never kept.
         let old_params: Vec<f64> = free_params.iter().map(|&gi| params[gi]).collect();
-        for _ in 0..LINE_SEARCH_STEPS {
-            for (k, &gi) in free_params.iter().enumerate() {
-                params[gi] = old_params[k] + alpha * delta[k];
-            }
-            let f_new = eval_vec(&mut eval_residuals, params, n_eq);
-            if rms(&f_new) < residual * (1.0 + LINE_SEARCH_RELAX) {
+        let diag_scale = max_normal_diagonal(&j, n_free);
+        let mut accepted = false;
+        let mut solved_any = false;
+        let mut non_finite = false;
+        for attempt in 0..=LAMBDA_ESCALATION.len() {
+            let lambda = match attempt {
+                0 => LAMBDA,
+                k => LAMBDA_ESCALATION[k - 1] * diag_scale,
+            };
+            let Some(delta) = try_solve_normal_equations(&j, &f, n_free, lambda) else {
+                continue;
+            };
+            if delta.iter().any(|d| !d.is_finite()) {
+                non_finite = true;
                 break;
             }
-            alpha *= 0.5;
+            solved_any = true;
+            if delta.iter().all(|&d| d == 0.0) {
+                // A zero step "keeps the residual from growing" trivially;
+                // it is no progress.
+                continue;
+            }
+
+            // Damped update: halve the step while the residual grows.
+            let mut alpha = 1.0_f64;
+            for _ in 0..LINE_SEARCH_STEPS {
+                for (k, &gi) in free_params.iter().enumerate() {
+                    params[gi] = old_params[k] + alpha * delta[k];
+                }
+                let f_new = eval_vec(&mut eval_residuals, params, n_eq);
+                if rms(&f_new) < residual * (1.0 + LINE_SEARCH_RELAX) {
+                    accepted = true;
+                    break;
+                }
+                alpha *= 0.5;
+            }
+            if accepted {
+                break;
+            }
+        }
+        if !accepted {
+            // No step at any regularisation helped: put the iterate back
+            // and stop — the next iteration would recompute the same steps.
+            for (k, &gi) in free_params.iter().enumerate() {
+                params[gi] = old_params[k];
+            }
+            failure = if non_finite {
+                SolveStatus::Diverged
+            } else if solved_any {
+                SolveStatus::Stalled
+            } else {
+                SolveStatus::Singular
+            };
+            break;
         }
 
         iters += 1;
@@ -179,7 +390,7 @@ where
     // (rank-deficient or under-constrained components) yield a zero step
     // and the polish declines to act.
     let mut polish_steps = 0usize;
-    while residual > 0.0 && residual < RESIDUAL_TOL && polish_steps < POLISH_STEPS {
+    while residual > 0.0 && residual < tolerance && polish_steps < POLISH_STEPS {
         if let Some(build) = analytic.as_mut() {
             for row in j.iter_mut() {
                 row.fill(0.0);
@@ -210,10 +421,26 @@ where
         }
     }
 
+    let converged = residual < tolerance;
+    let status = if converged {
+        SolveStatus::Converged
+    } else if !residual.is_finite() {
+        SolveStatus::Diverged
+    } else {
+        failure
+    };
+    if !converged && options.on_failure == FailurePolicy::Restore {
+        for (k, &gi) in free_params.iter().enumerate() {
+            params[gi] = initial[k];
+        }
+        residual = rms(&eval_vec(&mut eval_residuals, params, n_eq));
+    }
+
     SolveResult {
-        converged: residual < RESIDUAL_TOL,
+        converged,
         residual,
         iterations: iters,
+        status,
     }
 }
 
@@ -287,7 +514,7 @@ pub(crate) fn householder_qr_column_pivoting(
     let max0 = (0..n_cols)
         .map(|j| col_norm_from(a, j, 0))
         .fold(0.0_f64, f64::max);
-    if !(max0 > 0.0) {
+    if !gt(max0, 0.0) {
         return (pivots, 0);
     }
 
@@ -351,6 +578,10 @@ pub(crate) fn householder_qr_column_pivoting(
 /// are coupled by one free direction, while `x` is pinned by its own pivot
 /// column even though the system still has one DOF. `rel_tol` is relative to
 /// the equilibrated RREF entries (exact dependencies land at roundoff).
+///
+/// Dense reference implementation, compiled for tests only: production code
+/// uses the sparse variant in [`crate::mobility`].
+#[cfg(test)]
 pub(crate) fn null_space_support(j: &[Vec<f64>], rel_tol: f64) -> Vec<bool> {
     let n_cols = j.first().map_or(0, |row| row.len());
     let mut movable = vec![false; n_cols];
@@ -469,39 +700,82 @@ pub(crate) fn solve_normal_equations_with_lambda(
     n: usize,
     lambda: f64,
 ) -> Vec<f64> {
-    let m = j.len();
+    try_solve_normal_equations(j, f, n, lambda).unwrap_or_else(|| vec![0.0; n])
+}
 
-    // A = J^T J + λI  (n×n)
-    let mut a = vec![vec![0.0_f64; n]; n];
-    // b = J^T (−F)    (n-vector)
-    let mut b = vec![0.0_f64; n];
-
-    for i in 0..m {
-        for col in 0..n {
-            b[col] -= j[i][col] * f[i];
-            for k in 0..n {
-                a[col][k] += j[i][col] * j[i][k];
-            }
-        }
+/// Largest diagonal entry of `JᵀJ` (the largest squared column norm of `J`):
+/// the scale that an escalated regularisation is measured against. Falls
+/// back to 1 for an all-zero Jacobian.
+fn max_normal_diagonal(j: &[Vec<f64>], n: usize) -> f64 {
+    let mut best = 0.0_f64;
+    for col in 0..n {
+        let sq: f64 = j.iter().map(|row| row[col] * row[col]).sum();
+        best = best.max(sq);
     }
+    if gt(best, 0.0) {
+        best
+    } else {
+        1.0
+    }
+}
+
+/// [`solve_normal_equations_with_lambda`] that reports a singular system as
+/// `None` instead of a zero step, so the Newton loop can tell "no step
+/// exists" from "the step is zero".
+pub(crate) fn try_solve_normal_equations(
+    j: &[Vec<f64>],
+    f: &[f64],
+    n: usize,
+    lambda: f64,
+) -> Option<Vec<f64>> {
+    let (mut a, mut b) = normal_equations(j, f, n);
     // Tikhonov regularisation
     for i in 0..n {
         a[i][i] += lambda;
     }
 
-    gaussian_elimination(&mut a, &mut b).unwrap_or_else(|| vec![0.0; n])
+    gaussian_elimination(&mut a, &mut b)
+}
+
+/// The normal-equation pair `A = JᵀJ` (n×n) and `b = Jᵀ(−F)`.
+///
+/// A constraint row touches a handful of parameters, so `J` is mostly
+/// zeros even in its dense storage. Only the non-zero entries of each row
+/// are visited: the products that are skipped are exact zeros, so every sum
+/// accumulates the same terms in the same order as the plain triple loop
+/// and the result is bitwise identical — at a cost proportional to the
+/// squared row density instead of `n²` per row.
+pub(crate) fn normal_equations(j: &[Vec<f64>], f: &[f64], n: usize) -> (Vec<Vec<f64>>, Vec<f64>) {
+    let mut a = vec![vec![0.0_f64; n]; n];
+    let mut b = vec![0.0_f64; n];
+    let mut nonzero: Vec<usize> = Vec::new();
+
+    for (row, &fi) in j.iter().zip(f) {
+        nonzero.clear();
+        nonzero.extend((0..n).filter(|&col| row[col] != 0.0));
+        for &col in &nonzero {
+            b[col] -= row[col] * fi;
+            for &k in &nonzero {
+                a[col][k] += row[col] * row[k];
+            }
+        }
+    }
+    (a, b)
 }
 
 /// Gaussian elimination with partial pivoting; `None` when a pivot falls
 /// below [`PIVOT_TOL`] (singular system).
-pub(crate) fn gaussian_elimination(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Option<Vec<f64>> {
+///
+/// Non-finite input does not panic: a NaN entry is picked as the pivot (it
+/// orders above every finite magnitude) and propagates into the result,
+/// which the caller checks for finiteness.
+pub(crate) fn gaussian_elimination(a: &mut [Vec<f64>], b: &mut [f64]) -> Option<Vec<f64>> {
     let n = b.len();
     debug_assert_eq!(a.len(), n);
 
     for col in 0..n {
         // Find pivot row (max absolute value in column)
-        let pivot_row =
-            (col..n).max_by(|&i, &j| a[i][col].abs().partial_cmp(&a[j][col].abs()).unwrap())?;
+        let pivot_row = (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
         a.swap(col, pivot_row);
         b.swap(col, pivot_row);
 
@@ -533,6 +807,152 @@ pub(crate) fn gaussian_elimination(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> O
         x[i] /= a[i][i];
     }
     Some(x)
+}
+
+/// LU factorisation with partial pivoting of a square matrix, kept so that
+/// several right-hand sides can be solved against it.
+///
+/// Solving through the factorisation performs exactly the arithmetic of
+/// [`gaussian_elimination`] on the right-hand side (same pivots, same
+/// multipliers, same order), so the result is bitwise the one a fresh
+/// elimination would give.
+pub(crate) struct LuFactors {
+    /// The upper triangle left by the elimination (rows in pivoted order).
+    upper: Vec<Vec<f64>>,
+    /// The row exchanged with `col` at elimination step `col`.
+    swaps: Vec<usize>,
+    /// `multipliers[col]` holds the elimination factors of rows `col + 1..`.
+    multipliers: Vec<Vec<f64>>,
+}
+
+impl LuFactors {
+    /// Factor `a`; `None` when a pivot falls below [`PIVOT_TOL`].
+    pub(crate) fn factor(mut a: Vec<Vec<f64>>) -> Option<Self> {
+        let n = a.len();
+        let mut swaps = Vec::with_capacity(n);
+        let mut multipliers = Vec::with_capacity(n);
+
+        for col in 0..n {
+            let pivot_row =
+                (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
+            a.swap(col, pivot_row);
+            swaps.push(pivot_row);
+
+            let pivot = a[col][col];
+            if pivot.abs() < PIVOT_TOL {
+                return None;
+            }
+
+            let mut factors = Vec::with_capacity(n - col - 1);
+            for row in (col + 1)..n {
+                let factor = a[row][col] / pivot;
+                for k in col..n {
+                    let v = a[col][k] * factor;
+                    a[row][k] -= v;
+                }
+                factors.push(factor);
+            }
+            multipliers.push(factors);
+        }
+        Some(Self {
+            upper: a,
+            swaps,
+            multipliers,
+        })
+    }
+
+    /// Solve `A x = b` for the factored `A`. `b` is used as scratch space.
+    pub(crate) fn solve(&self, b: &mut [f64]) -> Vec<f64> {
+        let n = b.len();
+        debug_assert_eq!(self.upper.len(), n);
+
+        for col in 0..n {
+            b.swap(col, self.swaps[col]);
+            for (offset, factor) in self.multipliers[col].iter().enumerate() {
+                let bv = b[col] * factor;
+                b[col + 1 + offset] -= bv;
+            }
+        }
+
+        let mut x = vec![0.0_f64; n];
+        for i in (0..n).rev() {
+            x[i] = b[i];
+            for j in (i + 1)..n {
+                let v = self.upper[i][j] * x[j];
+                x[i] -= v;
+            }
+            x[i] /= self.upper[i][i];
+        }
+        x
+    }
+}
+
+/// The row-space Gram system of a set of independent rows `R`, factored once
+/// and solved for many right-hand sides.
+///
+/// For a dependent row `d`, [`RowSpaceGram::coefficients`] returns the `y`
+/// with `(R Rᵀ + λI) y = R d`: the combination of independent rows that
+/// reproduces `d`. The diagnosis asks this for every dependent row; the
+/// matrix is the same each time, so it is built and factored here once
+/// instead of once per dependent row. Rows are sparse, so the products are
+/// accumulated over non-zero entries only.
+pub(crate) struct RowSpaceGram {
+    /// For each column, the independent rows with a non-zero entry there.
+    by_column: Vec<Vec<(usize, f64)>>,
+    /// Number of independent rows.
+    rank: usize,
+    /// `None` when the regularised Gram matrix is numerically singular.
+    factors: Option<LuFactors>,
+}
+
+impl RowSpaceGram {
+    /// `rows` are the independent rows (each `n_cols` long).
+    pub(crate) fn new(rows: &[Vec<f64>], n_cols: usize, lambda: f64) -> Self {
+        let rank = rows.len();
+        let mut by_column: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n_cols];
+        for (i, row) in rows.iter().enumerate() {
+            for (col, &v) in row.iter().enumerate() {
+                if v != 0.0 {
+                    by_column[col].push((i, v));
+                }
+            }
+        }
+
+        let mut gram = vec![vec![0.0_f64; rank]; rank];
+        for entries in &by_column {
+            for &(i, vi) in entries {
+                for &(j, vj) in entries {
+                    gram[i][j] += vi * vj;
+                }
+            }
+        }
+        for (i, row) in gram.iter_mut().enumerate() {
+            row[i] += lambda;
+        }
+
+        Self {
+            by_column,
+            rank,
+            factors: LuFactors::factor(gram),
+        }
+    }
+
+    /// Coefficients of `dependent` over the independent rows; all zeros when
+    /// the Gram system is singular.
+    pub(crate) fn coefficients(&self, dependent: &[f64]) -> Vec<f64> {
+        let Some(factors) = &self.factors else {
+            return vec![0.0_f64; self.rank];
+        };
+        let mut rhs = vec![0.0_f64; self.rank];
+        for (entries, &d) in self.by_column.iter().zip(dependent) {
+            if d != 0.0 {
+                for &(i, vi) in entries {
+                    rhs[i] += vi * d;
+                }
+            }
+        }
+        factors.solve(&mut rhs)
+    }
 }
 
 /// Root-mean-square of a residual vector.
@@ -610,5 +1030,151 @@ mod tests {
             "polished residual must be machine zero"
         );
         assert_eq!(params[0], 2.0, "polish must land on the exact root");
+    }
+
+    #[test]
+    fn non_finite_residual_reports_diverged_and_restores() {
+        // ln(x − 2) is NaN at the start x = 1.
+        let mut params = vec![1.0_f64];
+        let result = newton_solve(&mut params, &[false], 1, |p, f| {
+            f[0] = (p[0] - 2.0).ln();
+        });
+        assert!(!result.converged);
+        assert_eq!(result.status, SolveStatus::Diverged);
+        assert_eq!(params[0], 1.0);
+    }
+
+    #[test]
+    fn exact_stationary_point_without_a_root_reports_stalled() {
+        // x² + 1 has no root, and at x = 0 its gradient is exactly zero:
+        // every regularisation gives the zero step.
+        let mut params = vec![0.0_f64];
+        let result = newton_solve(&mut params, &[false], 1, |p, f| {
+            f[0] = p[0] * p[0] + 1.0;
+        });
+        assert!(!result.converged);
+        assert_eq!(result.status, SolveStatus::Stalled);
+        assert_eq!(result.iterations, 0);
+        assert_eq!(params[0], 0.0);
+    }
+
+    #[test]
+    fn gaussian_elimination_survives_nan() {
+        // 0.1.0 unwrapped a `partial_cmp` here and panicked.
+        let mut a = vec![vec![f64::NAN, 1.0], vec![1.0, 2.0]];
+        let mut b = vec![1.0, 2.0];
+        if let Some(x) = gaussian_elimination(&mut a, &mut b) {
+            assert!(x.iter().any(|v| !v.is_finite()), "NaN must propagate");
+        }
+    }
+
+    /// A small dense, well-conditioned test matrix with a row exchange in
+    /// its elimination (the largest first-column entry is not on top).
+    fn sample_matrix() -> Vec<Vec<f64>> {
+        vec![
+            vec![0.5, 2.0, -1.0, 0.25],
+            vec![4.0, 1.0, 0.5, -2.0],
+            vec![-1.5, 0.75, 3.0, 1.0],
+            vec![2.0, -0.5, 1.25, 5.0],
+        ]
+    }
+
+    #[test]
+    fn lu_factors_reproduce_gaussian_elimination_bitwise() {
+        let factors = LuFactors::factor(sample_matrix()).expect("regular matrix");
+        for rhs in [
+            vec![1.0, 2.0, 3.0, 4.0],
+            vec![-0.3, 0.0, 7.5, 1.0e-3],
+            vec![0.0, 0.0, 0.0, 0.0],
+        ] {
+            let mut a = sample_matrix();
+            let mut b = rhs.clone();
+            let direct = gaussian_elimination(&mut a, &mut b).expect("regular matrix");
+            let through_factors = factors.solve(&mut rhs.clone());
+            assert_eq!(
+                direct.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                through_factors
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                "rhs {rhs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lu_factors_reject_a_singular_matrix() {
+        let singular = vec![vec![1.0, 2.0], vec![2.0, 4.0]];
+        assert!(LuFactors::factor(singular).is_none());
+    }
+
+    #[test]
+    fn row_space_gram_matches_a_fresh_solve_per_row() {
+        // Independent rows with zeros in them, and two rows to express.
+        let rows = vec![
+            vec![1.0, 0.0, 2.0, 0.0, -1.0],
+            vec![0.0, 3.0, 0.0, 0.5, 0.0],
+            vec![0.25, 0.0, 0.0, -2.0, 4.0],
+        ];
+        let n_cols = 5;
+        let gram = RowSpaceGram::new(&rows, n_cols, LAMBDA);
+
+        for dependent in [
+            vec![1.25, 3.0, 2.0, -1.5, 3.0], // rows 0 + 1 + 2
+            vec![0.0, -6.0, 0.0, -1.0, 0.0], // −2 × row 1
+        ] {
+            // The form the diagnosis used: rebuild and eliminate per row.
+            let r = rows.len();
+            let mut a = vec![vec![0.0_f64; r]; r];
+            let mut b = vec![0.0_f64; r];
+            for (i, ri) in rows.iter().enumerate() {
+                b[i] = ri.iter().zip(&dependent).map(|(x, y)| x * y).sum::<f64>();
+                for (j, rj) in rows.iter().enumerate() {
+                    a[i][j] = ri.iter().zip(rj).map(|(x, y)| x * y).sum::<f64>();
+                }
+                a[i][i] += LAMBDA;
+            }
+            let reference = gaussian_elimination(&mut a, &mut b).expect("regular");
+
+            let y = gram.coefficients(&dependent);
+            for (got, want) in y.iter().zip(&reference) {
+                assert!(
+                    (got - want).abs() <= 1e-15 * want.abs().max(1.0),
+                    "{got} vs {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normal_equations_match_the_dense_triple_loop_bitwise() {
+        let j = vec![
+            vec![1.5, 0.0, -2.0, 0.0],
+            vec![0.0, 0.0, 3.0, 0.25],
+            vec![0.0, 0.0, 0.0, 0.0],
+            vec![-1.0, 4.0, 0.0, 0.5],
+        ];
+        let f = vec![0.3, -1.2, 7.0, 2.5];
+        let n = 4;
+
+        let (a, b) = normal_equations(&j, &f, n);
+
+        let mut a_ref = vec![vec![0.0_f64; n]; n];
+        let mut b_ref = vec![0.0_f64; n];
+        for i in 0..j.len() {
+            for col in 0..n {
+                b_ref[col] -= j[i][col] * f[i];
+                for k in 0..n {
+                    a_ref[col][k] += j[i][col] * j[i][k];
+                }
+            }
+        }
+        let bits =
+            |m: &[Vec<f64>]| -> Vec<u64> { m.iter().flatten().map(|v| v.to_bits()).collect() };
+        assert_eq!(bits(&a), bits(&a_ref));
+        assert_eq!(
+            b.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            b_ref.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
     }
 }

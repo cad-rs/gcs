@@ -221,7 +221,7 @@ fn generate() -> Vec<Case> {
                         &mut s,
                         base,
                         DVec3::new((i % 5) as f64 * 2.0, (i / 5) as f64 * 1.5, 1.0),
-                        10 + i as usize * 10,
+                        10 + i * 10,
                     );
                 }
                 s
@@ -244,7 +244,7 @@ fn generate() -> Vec<Case> {
                         push_pinned_body(
                             &mut s,
                             DVec3::new((i % 5) as f64 * 8.0, (i / 5) as f64 * 6.0, 1.0),
-                            10 + i as usize * 10,
+                            10 + i * 10,
                         );
                     }
                     let _ = drift;
@@ -665,6 +665,9 @@ fn assembly_manifest_matches_generated() {
         "tests/assembly_corpus/manifest.json missing — run the ignored \
          write_assembly_corpus_manifest test",
     );
+    // Compare modulo line endings: a checkout that predates `.gitattributes`
+    // (or overrides it) can carry CRLF.
+    let committed = committed.replace("\r\n", "\n");
     let expected = serde_json::to_string_pretty(&manifest_json(&cases)).expect("json") + "\n";
     assert_eq!(committed, expected, "manifest drifted from the generator");
 }
@@ -832,8 +835,9 @@ fn assembly_metrics_within_thresholds() {
         "slowest_case": slowest_ms.1,
         "total_seconds": t_start.elapsed().as_secs_f64(),
     });
-    if let Ok(dir) = std::env::var("CARGO_TARGET_TMPDIR") {
-        let path = std::path::Path::new(&dir).join("gcs_assembly_corpus_report.json");
+    // Cargo sets this for integration tests at compile time only.
+    if let Some(dir) = option_env!("CARGO_TARGET_TMPDIR") {
+        let path = std::path::Path::new(dir).join("gcs_assembly_corpus_report.json");
         let _ = std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap());
         println!("report: {:?}", path);
     }
@@ -842,6 +846,7 @@ fn assembly_metrics_within_thresholds() {
 /// The M4-style probe, corpus-wide: perturb every body's pose, re-solve
 /// from the warm start, and the assembly must return to its configuration
 /// within the per-family contract tolerance.
+#[allow(clippy::too_many_arguments)]
 fn drift_recover_check(
     case: &Case,
     solver: &ConstraintSolver,

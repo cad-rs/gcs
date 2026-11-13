@@ -29,7 +29,6 @@ use crate::numerics::{householder_qr_column_pivoting, solve_normal_equations};
 use crate::rigid3d::solver::ConstraintSolver;
 use crate::rigid3d::{ConstraintSystem, Point3};
 use glam::DQuat;
-use std::collections::HashMap;
 
 /// Rank threshold, relative to the largest initial column norm of the
 /// row-equilibrated transpose Jacobian. All mate rows are analytic (or
@@ -74,61 +73,34 @@ pub fn diagnose(
         };
     }
 
-    let f = ConstraintSolver::build_residual_jacobian(system, positions, rots).r;
-    // Row offset of each constraint in the stacked residual vector.
-    let mut row_of: Vec<usize> = Vec::with_capacity(system.constraints.len());
-    let mut acc = 0usize;
-    for c in &system.constraints {
-        row_of.push(acc);
-        acc += ConstraintSolver::equation_count_of(c);
-    }
-
     let clusters = ConstraintSolver::components(system);
     let mut d = AssemblyDiagnosis::default();
     let mut total_rank = 0i64;
 
     for group in &clusters {
-        let sub: Vec<_> = group.iter().map(|&i| &system.constraints[i]).collect();
-        let n_eq_c: usize = sub
-            .iter()
-            .map(|c| ConstraintSolver::equation_count_of(c))
-            .sum();
-
-        // Bodies of this cluster, sorted (stable column mapping).
-        let mut bodies: Vec<usize> = Vec::new();
-        for c in &sub {
-            for b in [c.component1].into_iter().chain(c.component2) {
-                if !bodies.contains(&b) {
-                    bodies.push(b);
-                }
-            }
-        }
-        bodies.sort_unstable();
-
-        // Local residual slice in component row order.
-        let mut f_c = Vec::with_capacity(n_eq_c);
-        for &gi in group {
-            let eqs = ConstraintSolver::equation_count_of(&system.constraints[gi]);
-            let (s, e) = (row_of[gi], row_of[gi] + eqs);
-            f_c.extend_from_slice(&f[s..e]);
-        }
-
-        // Sub-Jacobian: the cluster's rows over the cluster bodies'
-        // 6-DOF columns (rows of untouched bodies are zero anyway).
-        let n_free_c = bodies.len() * 6;
+        // The cluster as its own system over only the bodies it references
+        // (sorted, so the column mapping is stable): residuals and Jacobian
+        // rows depend on no other body, and an untouched body would only
+        // add zero columns.
         let sub_system = ConstraintSystem {
-            constraints: sub.iter().map(|c| (*c).clone()).collect(),
+            constraints: group
+                .iter()
+                .map(|&i| system.constraints[i].clone())
+                .collect(),
             num_components: system.num_components,
         };
-        let j_full = ConstraintSolver::build_residual_jacobian(&sub_system, positions, rots);
-        let mut j = vec![vec![0.0_f64; n_free_c]; n_eq_c];
-        for (r, row_full) in j_full.j.iter().enumerate() {
-            for (b, &body) in bodies.iter().enumerate() {
-                for k in 0..6 {
-                    j[r][b * 6 + k] = row_full[body * 6 + k];
-                }
-            }
-        }
+        let bodies = ConstraintSolver::referenced_bodies(&sub_system);
+        let compact = ConstraintSolver::compact_system(&sub_system, &bodies);
+        let cluster_positions: Vec<Point3> = bodies.iter().map(|&b| positions[b]).collect();
+        let cluster_rots: Vec<DQuat> = bodies.iter().map(|&b| rots[b]).collect();
+        let rj =
+            ConstraintSolver::build_residual_jacobian(&compact, &cluster_positions, &cluster_rots);
+
+        let n_eq_c = rj.r.len();
+        let n_free_c = bodies.len() * 6;
+        // Residuals and Jacobian in cluster row order.
+        let mut f_c = rj.r;
+        let mut j = rj.j;
 
         // Row-equilibrate (J and f together) so a distance in mm and an
         // angle in radians contribute comparable column norms.
@@ -208,13 +180,6 @@ mod tests {
     }
 
     // ── seed-fault corpus (M6.2 acceptance): 10/10/10 ────────────────────
-
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    enum Expect {
-        Conflict,
-        Redundant,
-        Under,
-    }
 
     fn build(kind: usize, v: f64) -> ConstraintSystem {
         let mut s = ConstraintSystem::with_components(3);
