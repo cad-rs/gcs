@@ -101,6 +101,15 @@ through them from a host's side.
   tolerance. The 3D-geometric family mixes lengths with pure numbers (its
   angular relations are normalised), and the rigid-pose family lengths
   with angles, so both keep the absolute tolerance.
+- **The 2D diagnosis tells a conflict from a redundancy on small geometry.**
+  Its thresholds were relative to the largest residual of a component but
+  never below an absolute floor of one, so on a triangle 1e-6 across a
+  distance asking for 0.2% more than the triangle has came back as
+  `partially_redundant` rather than `conflicting`. The floor is now the
+  size of the component when that is below one (the same unit the solve
+  uses). The case is now right at every size from 1e-6 to 1e3 and at up
+  to a billion sizes from the origin (`tests/scale.rs`); the corpora are
+  unchanged.
 - `SolveStatus` has the new variant `ConvergedToPrecision`, between
   `Converged` and `MaxIterations`; a `match` over the statuses needs an arm
   for it. The same status is how a tolerance below what double precision

@@ -543,3 +543,39 @@ fn a_small_model_with_freedom_left_is_held_to_its_own_size() {
         }
     }
 }
+
+/// Diagnosis at any size: on the solved triangle, a second copy of one of
+/// its distances is redundant, and a copy that asks for 0.2% more is a
+/// conflict, whether the triangle is a millionth of a unit across or a
+/// thousand units, at the origin or a thousand or a billion times its size
+/// away. (With an absolute floor under the thresholds, the 0.2% on the
+/// triangle 1e-6 across read as partially redundant.)
+#[test]
+fn diagnosis_tells_redundant_from_conflicting_at_any_size() {
+    for s in [1.0e-6, 1.0e-4, 1.0e-2, 1.0, 1.0e3] {
+        for (o, (length, expect_conflict)) in [0.0, 1.0e3 * s, 1.0e9 * s]
+            .into_iter()
+            .flat_map(|o| [(o, (5.0, false)), (o, (5.01, true))])
+        {
+            let (mut sk, _) = triangle(s, o, 0.02);
+            assert!(sk.solve().converged, "size {s:e} at {o:e}");
+            let extra = sk.add_constraint(Constraint::point_distance(
+                PointRef::Point(2),
+                PointRef::LineStart(1),
+                length * s,
+            ));
+            let d = sk.diagnose();
+            if expect_conflict {
+                assert!(
+                    d.conflicting.contains(&extra),
+                    "size {s:e} at {o:e}: a conflict of 0.2% not reported: {d:?}"
+                );
+            } else {
+                assert!(
+                    d.conflicting.is_empty() && d.redundant.contains(&extra),
+                    "size {s:e} at {o:e}: a redundant copy not reported as such: {d:?}"
+                );
+            }
+        }
+    }
+}

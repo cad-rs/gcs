@@ -27,8 +27,11 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   relations are pure numbers beside its lengths, and the rigid-pose family,
   which mixes lengths and angles, keep an absolute tolerance, so a small 3D
   model with freedom left stops with its equations within 1e-10 model
-  units. The diagnosis (`diagnose`) has its own absolute thresholds and has
-  not been checked on small geometry. Arc angles are columns in radians,
+  units; the same goes for their diagnosis, whose thresholds keep a floor
+  of one unit. The diagnosis allows no rounding of its own: a redundancy
+  that is not a literal copy, on coordinates far from the origin, might
+  read as partially redundant (not observed; an exact duplicate cancels
+  exactly). Arc angles are columns in radians,
   not lengths, and have not been looked at for scale.
 - **Hard starts.** The step control is a dogleg trust region, but the
   radius is measured in the raw parameter vector, where a length and an

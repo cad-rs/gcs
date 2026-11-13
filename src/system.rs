@@ -602,10 +602,17 @@ where
             }
         }
 
+        // What the thresholds are relative to: the larger of the largest
+        // residual and the unit the equations are measured in (one, or the
+        // size of a component smaller than one; see `equation_unit`). With
+        // a floor of one, a contradiction of 0.2% on a triangle 1e-6 across
+        // read as partially redundant.
+        let unit = equation_unit(eqs.length_scale(group, params));
+
         // Nothing in this component can move: any unsatisfied residual is a
         // genuine conflict.
         let flag_unsatisfied = |d: &mut Diagnosis, f_c: &[f64]| {
-            let scale = f_c.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
+            let scale = f_c.iter().fold(unit, |m, v| m.max(v.abs()));
             for (r, fi) in f_c.iter().enumerate() {
                 if fi.abs() > CONSIST_TOL * scale {
                     d.conflicting.push(row_constraint[r]);
@@ -729,7 +736,7 @@ where
         let f_sub: Vec<f64> = independent.iter().map(|&i| f_c[i]).collect();
         let z = solve_normal_equations(&j_sub, &f_sub, n_cols);
 
-        let scale = f_c.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
+        let scale = f_c.iter().fold(unit, |m, v| m.max(v.abs()));
         for &r in &dependent {
             let drive: f64 = j[r].iter().zip(z.iter()).map(|(ji, zi)| ji * zi).sum();
             let e = (f_c[r] + drive).abs();
