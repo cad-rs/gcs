@@ -1,8 +1,8 @@
 //! Integration tests for the GCS solver.
 
-use rcad_gcs::{Constraint, Sketch};
 use rcad_gcs::constraint::Constraint::*;
 use rcad_gcs::entity::PointRef;
+use rcad_gcs::{Constraint, Sketch};
 
 const TOL: f64 = 1e-7;
 
@@ -98,7 +98,10 @@ fn line_length() {
     sk.add_constraint(Constraint::fix_point(PointRef::LineStart(l), 0.0, 0.0));
     // fix direction: keep y2=0 (horizontal)
     sk.add_constraint(Horizontal(l));
-    sk.add_constraint(LineLength { line: l, length: 5.0 });
+    sk.add_constraint(LineLength {
+        line: l,
+        length: 5.0,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let p = sk.entity_params(l);
@@ -140,8 +143,7 @@ fn perpendicular_lines() {
     assert!(res.converged, "residual={}", res.residual);
     let p1 = sk.entity_params(l1);
     let p2 = sk.entity_params(l2);
-    let dot = (p1[2] - p1[0]) * (p2[2] - p2[0])
-            + (p1[3] - p1[1]) * (p2[3] - p2[1]);
+    let dot = (p1[2] - p1[0]) * (p2[2] - p2[0]) + (p1[3] - p1[1]) * (p2[3] - p2[1]);
     assert_near(dot, 0.0, "perpendicular dot product");
 }
 
@@ -170,7 +172,10 @@ fn circle_radius() {
     let mut sk = Sketch::new();
     let c = sk.add_circle(0.0, 0.0, 1.0);
     sk.add_constraint(Constraint::fix_point(PointRef::Center(c), 0.0, 0.0));
-    sk.add_constraint(Radius { circle: c, radius: 3.0 });
+    sk.add_constraint(Radius {
+        circle: c,
+        radius: 3.0,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let p = sk.entity_params(c);
@@ -185,9 +190,9 @@ fn point_on_circle() {
     sk.fix_entity(c);
     let p = sk.add_point(3.0, 0.0); // outside circle
     sk.add_constraint(Constraint::fix_point(p, 0.0, 3.0)); // fix to (0,3)
-    // The point at (0,3) is at distance 3 from origin, but circle radius is 2 — can't both hold.
-    // Instead: just fix y and let PointOnCircle pull x to satisfy radius.
-    // Re-do: fix only y of p at 0, constrain PointOnCircle.
+                                                           // The point at (0,3) is at distance 3 from origin, but circle radius is 2 — can't both hold.
+                                                           // Instead: just fix y and let PointOnCircle pull x to satisfy radius.
+                                                           // Re-do: fix only y of p at 0, constrain PointOnCircle.
     let mut sk2 = Sketch::new();
     let c2 = sk2.add_circle(0.0, 0.0, 2.0);
     sk2.fix_entity(c2);
@@ -195,7 +200,10 @@ fn point_on_circle() {
     // fix y at 0 so x can adjust to land on circle
     let p2_y = sk2.entities[p2].param_start + 1;
     sk2.fix_param(p2_y);
-    sk2.add_constraint(PointOnCircle { point: PointRef::Point(p2), circle: c2 });
+    sk2.add_constraint(PointOnCircle {
+        point: PointRef::Point(p2),
+        circle: c2,
+    });
     let res2 = sk2.solve();
     assert!(res2.converged, "residual={}", res2.residual);
     let coords = sk2.point_coords(PointRef::Point(p2));
@@ -212,7 +220,10 @@ fn dof_fully_constrained_line() {
     // 4 params; add: fix_start(2) + horizontal(1) + line_length(1) = 4 equations
     sk.add_constraint(Constraint::fix_point(PointRef::LineStart(l), 0.0, 0.0));
     sk.add_constraint(Horizontal(l));
-    sk.add_constraint(LineLength { line: l, length: 5.0 });
+    sk.add_constraint(LineLength {
+        line: l,
+        length: 5.0,
+    });
     assert_eq!(sk.dof(), 0, "fully constrained");
 }
 
@@ -234,7 +245,11 @@ fn angle_between_lines() {
     let l2 = sk.add_line(0.0, 0.0, 1.5, 1.5);
     sk.fix_entity(l1);
     sk.add_constraint(Constraint::fix_point(PointRef::LineStart(l2), 0.0, 0.0));
-    sk.add_constraint(Angle { l1, l2, angle_rad: FRAC_PI_2 });
+    sk.add_constraint(Angle {
+        l1,
+        l2,
+        angle_rad: FRAC_PI_2,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let p1 = sk.entity_params(l1);
@@ -268,7 +283,10 @@ fn point_on_line_constraint() {
     let p = sk.add_point(2.0, 3.0);
     let px_idx = sk.entities[p].param_start;
     sk.fix_param(px_idx);
-    sk.add_constraint(PointOnLine { point: PointRef::Point(p), line: l });
+    sk.add_constraint(PointOnLine {
+        point: PointRef::Point(p),
+        line: l,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let coords = sk.point_coords(PointRef::Point(p));
@@ -285,14 +303,18 @@ fn circle_tangent_to_line() {
     // Circle at (0, 2), radius 1.  Fix x and radius; let y move to satisfy tangency.
     let c = sk.add_circle(0.0, 2.0, 1.0);
     let c_params = sk.entities[c].param_start;
-    sk.fix_param(c_params);     // fix cx
+    sk.fix_param(c_params); // fix cx
     sk.fix_param(c_params + 2); // fix r
     sk.add_constraint(Tangent { circle: c, line: l });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let p = sk.entity_params(c);
     // dist(center, line y=0) = |cy| = r = 1
-    assert_near(p[1].abs(), p[2], "|center y| should equal radius for tangency");
+    assert_near(
+        p[1].abs(),
+        p[2],
+        "|center y| should equal radius for tangency",
+    );
 }
 
 /// CircleCircleTangent (external): c2 slides along X until externally tangent
@@ -308,7 +330,11 @@ fn circle_circle_external_tangent() {
     let c2_params = sk.entities[c2].param_start;
     sk.fix_param(c2_params + 1); // fix cy
     sk.fix_param(c2_params + 2); // fix r
-    sk.add_constraint(CircleCircleTangent { c1, c2, external: true });
+    sk.add_constraint(CircleCircleTangent {
+        c1,
+        c2,
+        external: true,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let p1 = sk.entity_params(c1);
@@ -331,7 +357,11 @@ fn arc_arc_external_tangent() {
     let a2_params = sk.entities[a2].param_start;
     sk.fix_param(a2_params + 1); // fix cy
     sk.fix_param(a2_params + 2); // fix r
-    sk.add_constraint(ArcArcTangent { a1, a2, external: true });
+    sk.add_constraint(ArcArcTangent {
+        a1,
+        a2,
+        external: true,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let p1 = sk.entity_params(a1);
@@ -354,7 +384,7 @@ fn symmetric_across_line() {
     let p1 = sk.add_point(3.0, 0.0);
     sk.add_constraint(Constraint::fix_point(p1, 3.0, 0.0));
     let p2 = sk.add_point(3.0, 1.0); // wrong y, should move to 4
-    // Fix x of p2 so only y is free
+                                     // Fix x of p2 so only y is free
     let p2_x = sk.entities[p2].param_start;
     sk.fix_param(p2_x);
     sk.add_constraint(Symmetric {
@@ -394,7 +424,10 @@ fn midpoint_on_line() {
     let l = sk.add_line(0.0, 0.0, 4.0, 2.0);
     sk.fix_entity(l);
     let p = sk.add_point(0.0, 0.0); // wrong position
-    sk.add_constraint(Constraint::Midpoint { point: PointRef::Point(p), line: l });
+    sk.add_constraint(Constraint::Midpoint {
+        point: PointRef::Point(p),
+        line: l,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let coords = sk.point_coords(PointRef::Point(p));
@@ -408,7 +441,10 @@ fn diameter_constraint() {
     let mut sk = Sketch::new();
     let c = sk.add_circle(0.0, 0.0, 1.0); // radius 1, want diameter 6 → radius 3
     sk.add_constraint(Constraint::fix_point(PointRef::Center(c), 0.0, 0.0));
-    sk.add_constraint(Constraint::Diameter { circle: c, diameter: 6.0 });
+    sk.add_constraint(Constraint::Diameter {
+        circle: c,
+        diameter: 6.0,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let p = sk.entity_params(c);
@@ -423,17 +459,35 @@ fn rectangle_with_diagonal() {
     let l2 = sk.add_line(3.0, 0.0, 3.0, 2.0); // right
     let l3 = sk.add_line(3.0, 2.0, 0.0, 2.0); // top
     let l4 = sk.add_line(0.0, 2.0, 0.0, 0.0); // left
-    let d = sk.add_line(0.0, 0.0, 3.0, 2.0);  // diagonal
-    // Fix the rectangle
+    let d = sk.add_line(0.0, 0.0, 3.0, 2.0); // diagonal
+                                             // Fix the rectangle
     sk.fix_entity(l1);
     // Coincident constraints for corners
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l1), PointRef::LineStart(l2)));
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l2), PointRef::LineStart(l3)));
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l3), PointRef::LineStart(l4)));
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l4), PointRef::LineStart(l1)));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(l1),
+        PointRef::LineStart(l2),
+    ));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(l2),
+        PointRef::LineStart(l3),
+    ));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(l3),
+        PointRef::LineStart(l4),
+    ));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(l4),
+        PointRef::LineStart(l1),
+    ));
     // Diagonal connects l1 start to l3 start
-    sk.add_constraint(Constraint::coincident(PointRef::LineStart(d), PointRef::LineStart(l1)));
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(d), PointRef::LineStart(l3)));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineStart(d),
+        PointRef::LineStart(l1),
+    ));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(d),
+        PointRef::LineStart(l3),
+    ));
     // Opposite sides equal
     sk.add_constraint(EqualLength(l1, l3));
     sk.add_constraint(EqualLength(l2, l4));
@@ -451,14 +505,35 @@ fn four_bar_linkage() {
     let l4 = sk.add_line(5.5, 2.5, 4.0, 0.0); // right arm
     sk.fix_entity(l1);
     // Pin joints
-    sk.add_constraint(Constraint::coincident(PointRef::LineStart(l2), PointRef::LineStart(l1)));
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l2), PointRef::LineStart(l3)));
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l3), PointRef::LineStart(l4)));
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l4), PointRef::LineEnd(l1)));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineStart(l2),
+        PointRef::LineStart(l1),
+    ));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(l2),
+        PointRef::LineStart(l3),
+    ));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(l3),
+        PointRef::LineStart(l4),
+    ));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(l4),
+        PointRef::LineEnd(l1),
+    ));
     // Fix lengths
-    sk.add_constraint(LineLength { line: l2, length: 3.0 });
-    sk.add_constraint(LineLength { line: l3, length: 4.0 });
-    sk.add_constraint(LineLength { line: l4, length: 3.0 });
+    sk.add_constraint(LineLength {
+        line: l2,
+        length: 3.0,
+    });
+    sk.add_constraint(LineLength {
+        line: l3,
+        length: 4.0,
+    });
+    sk.add_constraint(LineLength {
+        line: l4,
+        length: 3.0,
+    });
     // Four-bar has 1 DOF (input angle free)
     assert_eq!(sk.dof(), 1, "four-bar should have 1 DOF");
     let res = sk.solve();
@@ -477,10 +552,16 @@ fn over_constrained_consistent() {
     let l = sk.add_line(0.0, 0.0, 5.0, 0.0);
     sk.add_constraint(Constraint::fix_point(PointRef::LineStart(l), 0.0, 0.0));
     sk.add_constraint(Horizontal(l));
-    sk.add_constraint(LineLength { line: l, length: 5.0 }); // length already 5
+    sk.add_constraint(LineLength {
+        line: l,
+        length: 5.0,
+    }); // length already 5
     let res = sk.solve();
     // Should still converge despite redundant constraint
-    assert!(res.converged || res.residual < 1e-6, "redundant but consistent");
+    assert!(
+        res.converged || res.residual < 1e-6,
+        "redundant but consistent"
+    );
 }
 
 /// Under-constrained: solve should still work with partial constraints.
@@ -523,7 +604,10 @@ fn arc_fixed_radius() {
     let mut sk = Sketch::new();
     let a = sk.add_arc(0.0, 0.0, 2.0, 0.0, std::f64::consts::PI);
     sk.add_constraint(Constraint::fix_point(PointRef::Center(a), 0.0, 0.0));
-    sk.add_constraint(Radius { circle: a, radius: 5.0 });
+    sk.add_constraint(Radius {
+        circle: a,
+        radius: 5.0,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let p = sk.entity_params(a);
@@ -544,7 +628,10 @@ fn three_points_collinear() {
     let l = sk.add_line(0.0, 0.0, 2.0, 2.0);
     sk.add_constraint(Constraint::coincident(PointRef::LineStart(l), p1));
     sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l), p2));
-    sk.add_constraint(PointOnLine { point: PointRef::Point(p3), line: l });
+    sk.add_constraint(PointOnLine {
+        point: PointRef::Point(p3),
+        line: l,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     // p3 should be on the line y=x
@@ -564,7 +651,11 @@ fn circle_circle_internal_tangent() {
     let c2_params = sk.entities[c2].param_start;
     sk.fix_param(c2_params + 1); // fix cy
     sk.fix_param(c2_params + 2); // fix r
-    sk.add_constraint(CircleCircleTangent { c1, c2, external: false });
+    sk.add_constraint(CircleCircleTangent {
+        c1,
+        c2,
+        external: false,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let p1 = sk.entity_params(c1);
@@ -583,7 +674,7 @@ fn point_line_endpoint_distance() {
     let p = sk.add_point(2.0, 5.0);
     let px = sk.entities[p].param_start;
     sk.fix_param(px); // fix x, let y adjust
-    // Distance from point to line endpoint
+                      // Distance from point to line endpoint
     sk.add_constraint(Constraint::point_distance(
         PointRef::Point(p),
         PointRef::LineEnd(l),
@@ -629,7 +720,10 @@ fn line_endpoint_tangent_to_circle() {
     sk.add_constraint(Tangent { circle: c, line: l });
     let res = sk.solve();
     // Tangent constraint should pull the line to be tangent
-    assert!(res.converged || res.residual < 0.1, "tangent line to circle");
+    assert!(
+        res.converged || res.residual < 0.1,
+        "tangent line to circle"
+    );
 }
 
 /// Angle constraint with 45 degrees.
@@ -642,7 +736,11 @@ fn angle_45_degrees() {
     let l2 = sk.add_line(0.0, 0.0, 3.0, 1.0);
     sk.fix_entity(l1);
     sk.add_constraint(Constraint::fix_point(PointRef::LineStart(l2), 0.0, 0.0));
-    sk.add_constraint(Angle { l1, l2, angle_rad: FRAC_PI_4 });
+    sk.add_constraint(Angle {
+        l1,
+        l2,
+        angle_rad: FRAC_PI_4,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let p2 = sk.entity_params(l2);
@@ -703,13 +801,31 @@ fn triangle_with_constraints() {
     let l3 = sk.add_line(2.0, 3.0, 0.0, 0.0); // left side
     sk.add_constraint(Constraint::fix_point(PointRef::LineStart(l1), 0.0, 0.0));
     sk.add_constraint(Horizontal(l1));
-    sk.add_constraint(LineLength { line: l1, length: 5.0 });
-    sk.add_constraint(LineLength { line: l2, length: 4.0 });
-    sk.add_constraint(LineLength { line: l3, length: 3.0 });
+    sk.add_constraint(LineLength {
+        line: l1,
+        length: 5.0,
+    });
+    sk.add_constraint(LineLength {
+        line: l2,
+        length: 4.0,
+    });
+    sk.add_constraint(LineLength {
+        line: l3,
+        length: 3.0,
+    });
     // Connect vertices
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l1), PointRef::LineStart(l2)));
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l2), PointRef::LineStart(l3)));
-    sk.add_constraint(Constraint::coincident(PointRef::LineEnd(l3), PointRef::LineStart(l1)));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(l1),
+        PointRef::LineStart(l2),
+    ));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(l2),
+        PointRef::LineStart(l3),
+    ));
+    sk.add_constraint(Constraint::coincident(
+        PointRef::LineEnd(l3),
+        PointRef::LineStart(l1),
+    ));
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     // Verify 3-4-5 triangle properties
@@ -798,14 +914,29 @@ fn distance_xy_edge_margin_pattern() {
     let l = sk.add_line(0.0, 0.0, 7.5, 0.4); // drifted skeleton
     sk.add_constraint(Constraint::fix_point(PointRef::LineStart(l), 0.0, 0.0));
     sk.add_constraint(Horizontal(l));
-    sk.add_constraint(Constraint::distance_x(PointRef::LineEnd(l), PointRef::LineStart(l), 10.0));
+    sk.add_constraint(Constraint::distance_x(
+        PointRef::LineEnd(l),
+        PointRef::LineStart(l),
+        10.0,
+    ));
 
     let c = sk.add_circle(6.0, 5.0, 1.0); // drifted hole
-    sk.add_constraint(Radius { circle: c, radius: 1.5 });
+    sk.add_constraint(Radius {
+        circle: c,
+        radius: 1.5,
+    });
     // Margin 2 from the right skeleton end (directed: end.x − center.x = 2),
     // margin 3 up from the anchored start (center.y − start.y = 3).
-    sk.add_constraint(Constraint::distance_x(PointRef::LineEnd(l), PointRef::Center(c), 2.0));
-    sk.add_constraint(Constraint::distance_y(PointRef::Center(c), PointRef::LineStart(l), 3.0));
+    sk.add_constraint(Constraint::distance_x(
+        PointRef::LineEnd(l),
+        PointRef::Center(c),
+        2.0,
+    ));
+    sk.add_constraint(Constraint::distance_y(
+        PointRef::Center(c),
+        PointRef::LineStart(l),
+        3.0,
+    ));
 
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);

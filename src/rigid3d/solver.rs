@@ -136,7 +136,8 @@ impl ConstraintSolver {
         // pass 1 would key earlier constraints by stale roots when a later
         // constraint merges two established groups (regression-tested).
         let mut groups: Vec<Vec<usize>> = Vec::new();
-        let mut first_root: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        let mut first_root: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
         for (idx, c) in system.constraints.iter().enumerate() {
             let mut root = find(&mut parent, c.component1);
             if let Some(c2) = c.component2 {
@@ -186,7 +187,10 @@ impl ConstraintSolver {
                 }
             }
             let sub = ConstraintSystem {
-                constraints: group.iter().map(|&i| system.constraints[i].clone()).collect(),
+                constraints: group
+                    .iter()
+                    .map(|&i| system.constraints[i].clone())
+                    .collect(),
                 num_components: system.num_components,
             };
             let r = self.solve_from(&sub, positions.clone(), rots.clone());
@@ -261,10 +265,8 @@ impl ConstraintSolver {
                             pos[comp].x += d * delta[base];
                             pos[comp].y += d * delta[base + 1];
                             pos[comp].z += d * delta[base + 2];
-                            let dw =
-                                DVec3::new(delta[base + 3], delta[base + 4], delta[base + 5]);
-                            rot[comp] =
-                                (rot[comp] * DQuat::from_scaled_axis(dw * d)).normalize();
+                            let dw = DVec3::new(delta[base + 3], delta[base + 4], delta[base + 5]);
+                            rot[comp] = (rot[comp] * DQuat::from_scaled_axis(dw * d)).normalize();
                         }
                         let rj_polished = Self::build_residual_jacobian(system, &pos, &rot);
                         let polished_error = l2_norm(&rj_polished.r);
@@ -429,9 +431,11 @@ impl ConstraintSolver {
                     }
                 }
                 ConstraintType::Distance => {
-                    if let (Some(c2), Some(pt2), Some(dist)) =
-                        (constraint.component2, constraint.point2, constraint.distance)
-                    {
+                    if let (Some(c2), Some(pt2), Some(dist)) = (
+                        constraint.component2,
+                        constraint.point2,
+                        constraint.distance,
+                    ) {
                         let c1 = constraint.component1;
                         let rw1 = rots[c1].mul_vec3(constraint.point1);
                         let rw2 = rots[c2].mul_vec3(pt2);
@@ -439,11 +443,7 @@ impl ConstraintSolver {
                         let w2 = positions[c2] + rw2;
                         let delta = w1 - w2;
                         let len = delta.length();
-                        let u = if len > 1e-14 {
-                            delta / len
-                        } else {
-                            DVec3::X
-                        };
+                        let u = if len > 1e-14 { delta / len } else { DVec3::X };
                         rj.r[row] = len - dist;
                         for jt in 0..3 {
                             rj.j[row][c1 * 6 + jt] = u[jt];
@@ -565,8 +565,8 @@ impl ConstraintSolver {
                         }
                         Self::fill_vec3_residual_fd(
                             |_, rp| {
-                                let q_err = (rp[c1].inverse() * rp[c2] * rel_q.inverse())
-                                    .normalize();
+                                let q_err =
+                                    (rp[c1].inverse() * rp[c2] * rel_q.inverse()).normalize();
                                 q_err.to_scaled_axis()
                             },
                             positions,
@@ -821,16 +821,13 @@ fn apply_parameter_delta(pos: &mut [DVec3], rot: &mut [DQuat], col: usize, delta
         1 => pos[comp].y += delta,
         2 => pos[comp].z += delta,
         3 => {
-            rot[comp] =
-                (rot[comp] * DQuat::from_scaled_axis(DVec3::X * delta)).normalize();
+            rot[comp] = (rot[comp] * DQuat::from_scaled_axis(DVec3::X * delta)).normalize();
         }
         4 => {
-            rot[comp] =
-                (rot[comp] * DQuat::from_scaled_axis(DVec3::Y * delta)).normalize();
+            rot[comp] = (rot[comp] * DQuat::from_scaled_axis(DVec3::Y * delta)).normalize();
         }
         5 => {
-            rot[comp] =
-                (rot[comp] * DQuat::from_scaled_axis(DVec3::Z * delta)).normalize();
+            rot[comp] = (rot[comp] * DQuat::from_scaled_axis(DVec3::Z * delta)).normalize();
         }
         _ => {}
     }
@@ -892,11 +889,7 @@ fn concentric_dir_residual(c: &Constraint, rots: &[DQuat]) -> DVec3 {
     d1w.cross(d2w)
 }
 
-fn concentric_offset_residual(
-    c: &Constraint,
-    positions: &[DVec3],
-    rots: &[DQuat],
-) -> DVec3 {
+fn concentric_offset_residual(c: &Constraint, positions: &[DVec3], rots: &[DQuat]) -> DVec3 {
     let (Some(c2), Some(pt2)) = (c.component2, c.point2) else {
         return DVec3::ZERO;
     };
@@ -965,8 +958,10 @@ mod tests {
         system.add_constraint(Constraint::fixed(0, 0, DVec3::ZERO));
         system.add_constraint(Constraint::coincident(
             1,
-            0, DVec3::ZERO,
-            1, DVec3::new(1.0, 0.0, 0.0),
+            0,
+            DVec3::ZERO,
+            1,
+            DVec3::new(1.0, 0.0, 0.0),
         ));
 
         let solver = ConstraintSolver::new();
@@ -1011,8 +1006,10 @@ mod tests {
         system.add_constraint(Constraint::fixed(0, 0, DVec3::ZERO));
         system.add_constraint(Constraint::distance(
             1,
-            0, DVec3::ZERO,
-            1, DVec3::new(1.0, 0.0, 0.0),
+            0,
+            DVec3::ZERO,
+            1,
+            DVec3::new(1.0, 0.0, 0.0),
             5.0,
         ));
 
@@ -1024,7 +1021,11 @@ mod tests {
         let world_p0 = p0 + DVec3::ZERO;
         let world_p1 = p1 + DVec3::new(1.0, 0.0, 0.0);
         let dist = (world_p1 - world_p0).length();
-        assert!((dist - 5.0).abs() < 0.1, "Distance is {} but expected 5.0", dist);
+        assert!(
+            (dist - 5.0).abs() < 0.1,
+            "Distance is {} but expected 5.0",
+            dist
+        );
     }
 
     #[test]
@@ -1032,12 +1033,18 @@ mod tests {
         let mut system = ConstraintSystem::with_components(3);
         system.add_constraint(Constraint::fixed(0, 0, DVec3::ZERO));
         system.add_constraint(Constraint::coincident(
-            1, 0, DVec3::new(1.0, 0.0, 0.0),
-            1, DVec3::ZERO,
+            1,
+            0,
+            DVec3::new(1.0, 0.0, 0.0),
+            1,
+            DVec3::ZERO,
         ));
         system.add_constraint(Constraint::coincident(
-            2, 1, DVec3::new(1.0, 0.0, 0.0),
-            2, DVec3::ZERO,
+            2,
+            1,
+            DVec3::new(1.0, 0.0, 0.0),
+            2,
+            DVec3::ZERO,
         ));
 
         let solver = ConstraintSolver::new();
@@ -1052,25 +1059,37 @@ mod tests {
         system.add_constraint(Constraint::fixed(0, 0, DVec3::ZERO));
 
         system.add_constraint(Constraint::distance(
-            1, 0, DVec3::ZERO,
-            1, DVec3::ZERO,
+            1,
+            0,
+            DVec3::ZERO,
+            1,
+            DVec3::ZERO,
             10.0,
         ));
 
         system.add_constraint(Constraint::distance(
-            2, 1, DVec3::ZERO,
-            2, DVec3::ZERO,
+            2,
+            1,
+            DVec3::ZERO,
+            2,
+            DVec3::ZERO,
             10.0,
         ));
 
         system.add_constraint(Constraint::distance(
-            3, 0, DVec3::ZERO,
-            3, DVec3::ZERO,
+            3,
+            0,
+            DVec3::ZERO,
+            3,
+            DVec3::ZERO,
             10.0,
         ));
         system.add_constraint(Constraint::distance(
-            4, 2, DVec3::ZERO,
-            3, DVec3::ZERO,
+            4,
+            2,
+            DVec3::ZERO,
+            3,
+            DVec3::ZERO,
             10.0,
         ));
 
@@ -1085,14 +1104,20 @@ mod tests {
         let mut system = ConstraintSystem::with_components(2);
         system.add_constraint(Constraint::fixed(0, 0, DVec3::ZERO));
         system.add_constraint(Constraint::parallel(
-            1, 0, DVec3::new(0.0, 0.0, 1.0),
-            1, DVec3::new(0.0, 0.0, 1.0),
+            1,
+            0,
+            DVec3::new(0.0, 0.0, 1.0),
+            1,
+            DVec3::new(0.0, 0.0, 1.0),
         ));
 
         let solver = ConstraintSolver::new();
         let result = solver.solve(&system);
 
-        assert!(result.success, "parallel Z mates with identity rotation should vanish");
+        assert!(
+            result.success,
+            "parallel Z mates with identity rotation should vanish"
+        );
         assert!(result.error < 1e-5);
     }
 
@@ -1155,8 +1180,11 @@ mod tests {
 
         for i in 1..n {
             system.add_constraint(Constraint::distance(
-                i, i - 1, DVec3::ZERO,
-                i, DVec3::ZERO,
+                i,
+                i - 1,
+                DVec3::ZERO,
+                i,
+                DVec3::ZERO,
                 1.0,
             ));
         }
@@ -1189,10 +1217,7 @@ mod tests {
     fn test_solver_options() {
         let mut system = ConstraintSystem::with_components(2);
         system.add_constraint(Constraint::fixed(0, 0, DVec3::new(5.0, 5.0, 5.0)));
-        system.add_constraint(Constraint::coincident(
-            1, 0, DVec3::ZERO,
-            1, DVec3::ZERO,
-        ));
+        system.add_constraint(Constraint::coincident(1, 0, DVec3::ZERO, 1, DVec3::ZERO));
 
         let options = SolveOptions {
             max_iterations: 50,
@@ -1296,7 +1321,11 @@ mod gate_tests {
 
         // Body 1 sits at a non-identity orientation — the regime where a
         // world-axis vs body-axis basis mixup in the analytic columns shows.
-        let positions = vec![DVec3::ZERO, DVec3::new(1.2, -0.4, 0.8), DVec3::new(0.3, 2.0, -1.0)];
+        let positions = vec![
+            DVec3::ZERO,
+            DVec3::new(1.2, -0.4, 0.8),
+            DVec3::new(0.3, 2.0, -1.0),
+        ];
         let rots = vec![
             DQuat::from_rotation_y(0.7),
             DQuat::from_euler(EulerRot::XYZ, 0.5, -0.9, 0.3),
@@ -1345,7 +1374,6 @@ mod gate_tests {
 }
 
 #[cfg(test)]
-
 #[cfg(test)]
 mod assembly_acceptance {
     use super::*;
@@ -1399,7 +1427,10 @@ mod assembly_acceptance {
         let r0 = solver.solve(&system);
         assert!(r0.success, "error {}", r0.error);
         let t0 = r0.positions[1];
-        assert!((t0 - DVec3::new(1.0, 0.0, 1.0)).length() < 1e-7, "t0 {t0:?}");
+        assert!(
+            (t0 - DVec3::new(1.0, 0.0, 1.0)).length() < 1e-7,
+            "t0 {t0:?}"
+        );
 
         // Pose excursion: shove the free body well off its solution,
         // re-solve — it must return within the contract tolerance.
@@ -1427,7 +1458,10 @@ mod assembly_acceptance {
         pos2[1] += DVec3::new(0.4, -0.3, 0.6);
         rot2[1] = (rot2[1] * DQuat::from_scaled_axis(DVec3::new(0.05, -0.08, 0.03))).normalize();
         let r2 = solver.solve_from(&system, pos2, rot2);
-        assert_eq!(r1.positions[1], r2.positions[1], "re-solve must be deterministic");
+        assert_eq!(
+            r1.positions[1], r2.positions[1],
+            "re-solve must be deterministic"
+        );
     }
 
     /// Localized assembly solve (M3, assembly edition): a lone fixed body
@@ -1457,13 +1491,22 @@ mod assembly_acceptance {
         // Piecewise: solve component 0, then component 1, chaining the
         // warm start through.
         let (seed_pos, seed_rot) = ConstraintSolver::seed_fixed(&system);
-        let r0 = solver
-            .solve_components_from(&system, &comps, Some(&[0]), seed_pos.clone(), seed_rot.clone());
+        let r0 = solver.solve_components_from(
+            &system,
+            &comps,
+            Some(&[0]),
+            seed_pos.clone(),
+            seed_rot.clone(),
+        );
         assert!(r0.success);
-        let r1 = solver.solve_components_from(&system, &comps, Some(&[1]), r0.positions, r0.rotations);
+        let r1 =
+            solver.solve_components_from(&system, &comps, Some(&[1]), r0.positions, r0.rotations);
         assert!(r1.success);
         for (a, b) in r_all.positions.iter().zip(r1.positions.iter()) {
-            assert!((a - b).length() < 1e-9, "per-component divergence {a:?} vs {b:?}");
+            assert!(
+                (a - b).length() < 1e-9,
+                "per-component divergence {a:?} vs {b:?}"
+            );
         }
 
         // Untouched-cluster skip: excursions to the main cluster leave the

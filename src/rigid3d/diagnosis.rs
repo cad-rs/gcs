@@ -68,7 +68,10 @@ pub fn diagnose(
     let free_total = (system.num_components * 6) as i64;
     let n_eq = ConstraintSolver::equation_count(system);
     if n_eq == 0 {
-        return AssemblyDiagnosis { dof: free_total, ..Default::default() };
+        return AssemblyDiagnosis {
+            dof: free_total,
+            ..Default::default()
+        };
     }
 
     let f = ConstraintSolver::build_residual_jacobian(system, positions, rots).r;
@@ -86,7 +89,10 @@ pub fn diagnose(
 
     for group in &clusters {
         let sub: Vec<_> = group.iter().map(|&i| &system.constraints[i]).collect();
-        let n_eq_c: usize = sub.iter().map(|c| ConstraintSolver::equation_count_of(c)).sum();
+        let n_eq_c: usize = sub
+            .iter()
+            .map(|c| ConstraintSolver::equation_count_of(c))
+            .sum();
 
         // Bodies of this cluster, sorted (stable column mapping).
         let mut bodies: Vec<usize> = Vec::new();
@@ -114,8 +120,7 @@ pub fn diagnose(
             constraints: sub.iter().map(|c| (*c).clone()).collect(),
             num_components: system.num_components,
         };
-        let j_full =
-            ConstraintSolver::build_residual_jacobian(&sub_system, positions, rots);
+        let j_full = ConstraintSolver::build_residual_jacobian(&sub_system, positions, rots);
         let mut j = vec![vec![0.0_f64; n_free_c]; n_eq_c];
         for (r, row_full) in j_full.j.iter().enumerate() {
             for (b, &body) in bodies.iter().enumerate() {
@@ -148,8 +153,7 @@ pub fn diagnose(
         total_rank += rank as i64;
 
         let independent = &pivots[..rank];
-        let dependent: Vec<usize> =
-            (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
+        let dependent: Vec<usize> = (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
         if dependent.is_empty() || rank == 0 {
             continue;
         }

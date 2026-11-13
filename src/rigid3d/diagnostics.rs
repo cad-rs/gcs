@@ -137,7 +137,8 @@ impl SolverDiagnostics {
         let max_dof = system.num_components * 6;
         let total_removed = system.total_dof_removed();
 
-        let fixed_count = system.constraints
+        let fixed_count = system
+            .constraints
             .iter()
             .filter(|c| c.constraint_type == crate::rigid3d::ConstraintType::Fixed)
             .count();
@@ -172,12 +173,14 @@ impl SolverDiagnostics {
                 ),
                 recommendations: vec![
                     DiagnosticRecommendation {
-                        description: "Remove redundant constraints to resolve over-constraint".to_string(),
+                        description: "Remove redundant constraints to resolve over-constraint"
+                            .to_string(),
                         affected_constraints: constraint_ids,
                         priority: 1,
                     },
                     DiagnosticRecommendation {
-                        description: "Consider using a fixed constraint instead of multiple mates".to_string(),
+                        description: "Consider using a fixed constraint instead of multiple mates"
+                            .to_string(),
                         affected_constraints: vec![],
                         priority: 2,
                     },
@@ -199,18 +202,19 @@ impl SolverDiagnostics {
                 severity: DiagnosticSeverity::Warning,
                 constraint_ids: vec![],
                 component_ids: (0..system.num_components).collect(),
-                message: format!(
-                    "System is under-constrained: {} DOF remaining",
-                    remaining
-                ),
+                message: format!("System is under-constrained: {} DOF remaining", remaining),
                 recommendations: vec![
                     DiagnosticRecommendation {
-                        description: format!("Add {} more constraints to fully constrain the assembly", remaining),
+                        description: format!(
+                            "Add {} more constraints to fully constrain the assembly",
+                            remaining
+                        ),
                         affected_constraints: vec![],
                         priority: 1,
                     },
                     DiagnosticRecommendation {
-                        description: "Ground one component with a fixed constraint as reference".to_string(),
+                        description: "Ground one component with a fixed constraint as reference"
+                            .to_string(),
                         affected_constraints: vec![],
                         priority: 2,
                     },
@@ -230,7 +234,10 @@ impl SolverDiagnostics {
                 .or_default()
                 .push(constraint);
             if let Some(comp2) = constraint.component2 {
-                component_constraints.entry(comp2).or_default().push(constraint);
+                component_constraints
+                    .entry(comp2)
+                    .or_default()
+                    .push(constraint);
             }
         }
 
@@ -253,17 +260,13 @@ impl SolverDiagnostics {
                     severity: DiagnosticSeverity::Warning,
                     constraint_ids: ids.clone(),
                     component_ids: vec![component],
-                    message: format!(
-                        "Component {} has multiple fixed constraints",
-                        component
-                    ),
-                    recommendations: vec![
-                        DiagnosticRecommendation {
-                            description: "Remove all but one fixed constraint from this component".to_string(),
-                            affected_constraints: ids,
-                            priority: 1,
-                        },
-                    ],
+                    message: format!("Component {} has multiple fixed constraints", component),
+                    recommendations: vec![DiagnosticRecommendation {
+                        description: "Remove all but one fixed constraint from this component"
+                            .to_string(),
+                        affected_constraints: ids,
+                        priority: 1,
+                    }],
                 });
             }
         }
@@ -325,13 +328,12 @@ impl SolverDiagnostics {
                         constraint_ids: vec![c1.id, c2.id],
                         component_ids: vec![c1.component1, c2.component1],
                         message: format!("Constraints {} and {} are conflicting", c1.id, c2.id),
-                        recommendations: vec![
-                            DiagnosticRecommendation {
-                                description: "Remove or modify one of the conflicting constraints".to_string(),
-                                affected_constraints: vec![c1.id, c2.id],
-                                priority: 1,
-                            },
-                        ],
+                        recommendations: vec![DiagnosticRecommendation {
+                            description: "Remove or modify one of the conflicting constraints"
+                                .to_string(),
+                            affected_constraints: vec![c1.id, c2.id],
+                            priority: 1,
+                        }],
                     });
                 }
             }
@@ -346,7 +348,10 @@ impl SolverDiagnostics {
         for constraint in &system.constraints {
             if let Some(comp2) = constraint.component2 {
                 // component1 depends on comp2 through this constraint
-                graph.entry(constraint.component1).or_default().insert(comp2);
+                graph
+                    .entry(constraint.component1)
+                    .or_default()
+                    .insert(comp2);
             }
         }
 
@@ -362,13 +367,11 @@ impl SolverDiagnostics {
                     constraint_ids: vec![],
                     component_ids: (0..system.num_components).collect(),
                     message: "Cyclic dependency detected in constraint graph".to_string(),
-                    recommendations: vec![
-                        DiagnosticRecommendation {
-                            description: "Reorganize constraints to break the cycle".to_string(),
-                            affected_constraints: vec![],
-                            priority: 1,
-                        },
-                    ],
+                    recommendations: vec![DiagnosticRecommendation {
+                        description: "Reorganize constraints to break the cycle".to_string(),
+                        affected_constraints: vec![],
+                        priority: 1,
+                    }],
                 });
                 break;
             }
@@ -452,7 +455,8 @@ impl SolverDiagnostics {
         }
 
         if groups.len() > 1 {
-            let isolated: Vec<usize> = groups.values()
+            let isolated: Vec<usize> = groups
+                .values()
                 .filter(|g| g.len() == 1)
                 .flat_map(|g| g.iter().copied())
                 .collect();
@@ -468,13 +472,12 @@ impl SolverDiagnostics {
                         isolated.len(),
                         isolated
                     ),
-                    recommendations: vec![
-                        DiagnosticRecommendation {
-                            description: "Add mates to connect isolated components to the assembly".to_string(),
-                            affected_constraints: vec![],
-                            priority: 1,
-                        },
-                    ],
+                    recommendations: vec![DiagnosticRecommendation {
+                        description: "Add mates to connect isolated components to the assembly"
+                            .to_string(),
+                        affected_constraints: vec![],
+                        priority: 1,
+                    }],
                 });
             }
         }
@@ -586,8 +589,8 @@ impl DiagnosticIssue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rigid3d::{Constraint, ConstraintSystem, ConstraintType};
     use crate::rigid3d::Point3;
+    use crate::rigid3d::{Constraint, ConstraintSystem, ConstraintType};
 
     #[test]
     fn test_detect_over_constrained() {
@@ -610,7 +613,10 @@ mod tests {
         let mut diag = SolverDiagnostics::new();
         diag.analyze(&system);
 
-        assert!(diag.issues.iter().any(|i| i.issue_type == DiagnosticType::Conflict));
+        assert!(diag
+            .issues
+            .iter()
+            .any(|i| i.issue_type == DiagnosticType::Conflict));
     }
 
     #[test]
@@ -621,7 +627,10 @@ mod tests {
         diag.analyze(&system);
 
         // Empty system shouldn't trigger under-constrained warning
-        assert!(!diag.issues.iter().any(|i| i.issue_type == DiagnosticType::UnderConstrained));
+        assert!(!diag
+            .issues
+            .iter()
+            .any(|i| i.issue_type == DiagnosticType::UnderConstrained));
     }
 
     #[test]
@@ -641,8 +650,11 @@ mod tests {
         let mut system = ConstraintSystem::with_components(3);
         system.add_constraint(Constraint::fixed(0, 0, Point3::ZERO));
         system.add_constraint(Constraint::coincident(
-            1, 0, Point3::ZERO,
-            1, Point3::new(1.0, 0.0, 0.0),
+            1,
+            0,
+            Point3::ZERO,
+            1,
+            Point3::new(1.0, 0.0, 0.0),
         ));
 
         let mut diag = SolverDiagnostics::new();

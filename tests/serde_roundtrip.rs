@@ -9,7 +9,10 @@ fn constraint_model_json_roundtrip() {
     let mut sk = Sketch::new();
     let l = sk.add_line(0.0, 0.0, 10.0, 0.0);
     sk.add_constraint(Constraint::Horizontal(l));
-    sk.add_constraint(Constraint::LineLength { line: l, length: 10.0 });
+    sk.add_constraint(Constraint::LineLength {
+        line: l,
+        length: 10.0,
+    });
 
     let json = serde_json::to_string(&sk).expect("serialize");
     let back: Sketch = serde_json::from_str(&json).expect("deserialize");

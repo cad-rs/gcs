@@ -135,11 +135,7 @@ fn push_chain_body(s: &mut ConstraintSystem, base: usize, t: DVec3, cid: usize) 
 /// Add a shaft-in-bore body: one Coincident (axis point) + one Concentric
 /// (axis) to the ground — the spin DOF stays free. Returns (body, shaft
 /// constraint id, concentric constraint id).
-fn push_shaft_body(
-    s: &mut ConstraintSystem,
-    axis: DVec3,
-    cid: usize,
-) -> (usize, usize, usize) {
+fn push_shaft_body(s: &mut ConstraintSystem, axis: DVec3, cid: usize) -> (usize, usize, usize) {
     let body = s.num_components;
     s.num_components += 1;
     s.add_constraint(Constraint::coincident(cid, 0, axis, body, DVec3::ZERO));
@@ -295,8 +291,7 @@ fn push_fault_families(cases: &mut Vec<Case>) {
     // under: partial mates between two free bodies.
     for (i, build) in [
         // no constraints at all (two free bodies).
-        Box::new(move || ConstraintSystem::with_components(2))
-            as Box<dyn Fn() -> ConstraintSystem>,
+        Box::new(move || ConstraintSystem::with_components(2)) as Box<dyn Fn() -> ConstraintSystem>,
         Box::new(|| {
             let mut s = ConstraintSystem::with_components(2);
             s.add_constraint(Constraint::coincident(
@@ -408,11 +403,7 @@ fn push_fault_families(cases: &mut Vec<Case>) {
             build: Box::new(move || {
                 let mut s = ConstraintSystem::with_components(1);
                 s.add_constraint(Constraint::fixed(0, 0, DVec3::ZERO));
-                s.add_constraint(Constraint::fixed(
-                    1,
-                    0,
-                    DVec3::new(off.0, off.1, off.2),
-                ));
+                s.add_constraint(Constraint::fixed(1, 0, DVec3::new(off.0, off.1, off.2)));
                 s
             }),
         });
@@ -649,8 +640,7 @@ fn manifest_json(cases: &[Case]) -> serde_json::Value {
 }
 
 fn manifest_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/assembly_corpus/manifest.json")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assembly_corpus/manifest.json")
 }
 
 #[test]
@@ -691,8 +681,7 @@ fn assembly_metrics_within_thresholds() {
     let (mut converged, mut conflicts_flagged, mut false_conflicts) = (0, 0, 0);
     let (mut redundant_flagged, mut under_flagged, mut solve_dof_violations) =
         (0usize, 0usize, 0usize);
-    let (mut round_trips, mut hysteresis_violations, mut branch_flips) =
-        (0usize, 0usize, 0usize);
+    let (mut round_trips, mut hysteresis_violations, mut branch_flips) = (0usize, 0usize, 0usize);
     let (mut worst_drift, mut worst_hard_drift) = (0.0_f64, 0.0_f64);
     let mut slowest_ms: (f64, String) = (0.0, String::new());
 
@@ -728,10 +717,7 @@ fn assembly_metrics_within_thresholds() {
                 if r.success {
                     converged += 1;
                 } else {
-                    println!(
-                        "NOT CONVERGED on {}: error {:.3e}",
-                        case.id, r.error
-                    );
+                    println!("NOT CONVERGED on {}: error {:.3e}", case.id, r.error);
                 }
                 if d.dof == 0 {
                     drift_recover_check(
@@ -797,8 +783,7 @@ fn assembly_metrics_within_thresholds() {
     let solvable = n_solve + n_under + n_redundant;
     let convergence_rate = converged as f64 / solvable as f64;
     let conflict_recall = conflicts_flagged as f64 / n_conflict as f64;
-    let conflict_precision =
-        1.0 - false_conflicts as f64 / (cases.len() - n_conflict) as f64;
+    let conflict_precision = 1.0 - false_conflicts as f64 / (cases.len() - n_conflict) as f64;
     let redundant_rate = redundant_flagged as f64 / n_redundant as f64;
     let under_dof_rate = under_flagged as f64 / n_under as f64;
     let hysteresis_rate = 1.0 - hysteresis_violations as f64 / round_trips.max(1) as f64;
@@ -820,7 +805,10 @@ fn assembly_metrics_within_thresholds() {
     assert_eq!(redundant_rate, 1.0, "redundant mates missed");
     assert_eq!(under_dof_rate, 1.0, "under-constrained cases without DOF");
     assert_eq!(solve_dof_violations, 0, "Solve-labeled cases must be rigid");
-    assert_eq!(hysteresis_violations, 0, "no-hysteresis round trips regressed");
+    assert_eq!(
+        hysteresis_violations, 0,
+        "no-hysteresis round trips regressed"
+    );
     // Debug-build budget: dense O((6n)^2) normal equations per iteration
     // on the big star/chain cases; a release build runs ~20x faster.
     assert!(
@@ -882,7 +870,10 @@ fn drift_recover_check(
     let r1 = solver.solve_from(system, pos, rot);
     if !r1.success {
         *violations += 1;
-        println!("{}: re-solve after drift(amp={amp}) did not converge", case.id);
+        println!(
+            "{}: re-solve after drift(amp={amp}) did not converge",
+            case.id
+        );
         return;
     }
     let mut worst = 0.0_f64;

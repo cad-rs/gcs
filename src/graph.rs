@@ -14,9 +14,9 @@
 //! set without a third per-variant method.
 
 use crate::constraint::Constraint;
+use crate::entity::Entity;
 use crate::entity::PointRef;
 use crate::sketch::Sketch;
-use crate::entity::Entity;
 use std::collections::HashMap;
 
 /// Connected components of the constraint graph.
@@ -107,7 +107,8 @@ pub fn constraint_components(
             }
         }
     }
-    order.into_iter()
+    order
+        .into_iter()
         .filter_map(|root| by_root.remove(&root))
         .collect()
 }
@@ -126,10 +127,16 @@ mod tests {
         let la = sk.add_line(0.0, 0.0, 5.0, 0.0);
         sk.add_constraint(Constraint::fix_point(PointRef::Point(pa), 0.0, 0.0));
         sk.add_constraint(Constraint::coincident(PointRef::LineStart(la), pa));
-        sk.add_constraint(Constraint::LineLength { line: la, length: 5.0 });
+        sk.add_constraint(Constraint::LineLength {
+            line: la,
+            length: 5.0,
+        });
         // Group B: a self-contained circle.
         let cb = sk.add_circle(9.0, 9.0, 2.0);
-        sk.add_constraint(Constraint::Radius { circle: cb, radius: 2.0 });
+        sk.add_constraint(Constraint::Radius {
+            circle: cb,
+            radius: 2.0,
+        });
 
         let comps = constraint_components(&sk.params, &sk.entities, &sk.constraints);
         assert_eq!(comps.len(), 2, "two disjoint groups: {comps:?}");
@@ -166,10 +173,23 @@ fn late_merge_pulls_earlier_constraints_together() {
     let p2 = sk.add_point(2.0, 2.0);
     let p3 = sk.add_point(3.0, 3.0);
     sk.add_constraint(Constraint::fix_point(PointRef::Point(p0), 0.0, 0.0)); // c0: p0
-    sk.add_constraint(Constraint::coincident(PointRef::Point(p1), PointRef::Point(p2))); // c1: p1,p2
-    sk.add_constraint(Constraint::coincident(PointRef::Point(p0), PointRef::Point(p1))); // c2: merges
-    sk.add_constraint(Constraint::coincident(PointRef::Point(p2), PointRef::Point(p3))); // c3: p3 joins
+    sk.add_constraint(Constraint::coincident(
+        PointRef::Point(p1),
+        PointRef::Point(p2),
+    )); // c1: p1,p2
+    sk.add_constraint(Constraint::coincident(
+        PointRef::Point(p0),
+        PointRef::Point(p1),
+    )); // c2: merges
+    sk.add_constraint(Constraint::coincident(
+        PointRef::Point(p2),
+        PointRef::Point(p3),
+    )); // c3: p3 joins
     let comps = crate::graph::constraint_components(&sk.params, &sk.entities, &sk.constraints);
-    assert_eq!(comps.len(), 1, "all four constraints share one component: {comps:?}");
+    assert_eq!(
+        comps.len(),
+        1,
+        "all four constraints share one component: {comps:?}"
+    );
     assert_eq!(comps[0], vec![0, 1, 2, 3]);
 }

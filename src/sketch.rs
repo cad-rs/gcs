@@ -67,7 +67,14 @@ impl Sketch {
 
     /// Add an arc with center (cx,cy), radius r, from `start_angle` to
     /// `end_angle` (both in radians, counter-clockwise).
-    pub fn add_arc(&mut self, cx: f64, cy: f64, r: f64, start_angle: f64, end_angle: f64) -> EntityId {
+    pub fn add_arc(
+        &mut self,
+        cx: f64,
+        cy: f64,
+        r: f64,
+        start_angle: f64,
+        end_angle: f64,
+    ) -> EntityId {
         self.push_entity(EntityKind::Arc, &[cx, cy, r, start_angle, end_angle])
     }
 
@@ -115,7 +122,11 @@ impl Sketch {
     /// Overwrite the full flat parameter vector (corpus drift probes and
     /// warm-start experiments). Length must match.
     pub fn set_params(&mut self, params: Vec<f64>) {
-        assert_eq!(params.len(), self.params.len(), "param vector length mismatch");
+        assert_eq!(
+            params.len(),
+            self.params.len(),
+            "param vector length mismatch"
+        );
         self.params = params;
     }
 
@@ -179,7 +190,11 @@ impl Sketch {
     /// - `dof < 0`: over-constrained (conflicting constraints).
     pub fn dof(&self) -> i64 {
         let free = self.fixed.iter().filter(|&&f| !f).count() as i64;
-        let eqs: i64 = self.constraints.iter().map(|c| c.equation_count() as i64).sum();
+        let eqs: i64 = self
+            .constraints
+            .iter()
+            .map(|c| c.equation_count() as i64)
+            .sum();
         free - eqs
     }
 
@@ -188,11 +203,14 @@ impl Sketch {
     /// Returns the number of free parameters, constraint equations,
     /// the net DOF, and the indices of free parameters.
     pub fn dof_analysis(&self) -> DofReport {
-        let free_param_indices: Vec<usize> = (0..self.params.len())
-            .filter(|&i| !self.fixed[i])
-            .collect();
+        let free_param_indices: Vec<usize> =
+            (0..self.params.len()).filter(|&i| !self.fixed[i]).collect();
         let free = free_param_indices.len() as i64;
-        let eqs: i64 = self.constraints.iter().map(|c| c.equation_count() as i64).sum();
+        let eqs: i64 = self
+            .constraints
+            .iter()
+            .map(|c| c.equation_count() as i64)
+            .sum();
         DofReport {
             free_params: free_param_indices.len(),
             equations: eqs as usize,
@@ -220,12 +238,7 @@ impl Sketch {
     /// parameters (true DOF, redundant / conflicting constraint indices).
     /// See [`crate::diagnosis`].
     pub fn diagnose(&self) -> crate::diagnosis::Diagnosis {
-        crate::diagnosis::diagnose(
-            &self.params,
-            &self.fixed,
-            &self.entities,
-            &self.constraints,
-        )
+        crate::diagnosis::diagnose(&self.params, &self.fixed, &self.entities, &self.constraints)
     }
 
     /// Connected components of this sketch's constraint graph: groups of
@@ -274,9 +287,10 @@ impl Sketch {
 
     /// Return a [`PointRef`] for the center of a `Circle` or `Arc` entity.
     pub fn center(&self, id: EntityId) -> PointRef {
-        debug_assert!(
-            matches!(self.entities[id].kind, EntityKind::Circle | EntityKind::Arc)
-        );
+        debug_assert!(matches!(
+            self.entities[id].kind,
+            EntityKind::Circle | EntityKind::Arc
+        ));
         PointRef::Center(id)
     }
 }

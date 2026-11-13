@@ -90,7 +90,11 @@ fn rectangle_length_round_trip() {
             let r = sk.add_line(len, 0.0, len, 6.0);
             let t = sk.add_line(len, 6.0, 0.0, 6.0);
             let l = sk.add_line(0.0, 6.0, 0.0, 0.0);
-            sk.add_constraint(Fixed { point: PointRef::Point(origin), x: 0.0, y: 0.0 });
+            sk.add_constraint(Fixed {
+                point: PointRef::Point(origin),
+                x: 0.0,
+                y: 0.0,
+            });
             sk.add_constraint(Coincident(PointRef::LineStart(b), PointRef::Point(origin)));
             for line in [b, t] {
                 sk.add_constraint(Horizontal(line));
@@ -102,8 +106,14 @@ fn rectangle_length_round_trip() {
             sk.add_constraint(Coincident(PointRef::LineEnd(r), PointRef::LineStart(t)));
             sk.add_constraint(Coincident(PointRef::LineEnd(t), PointRef::LineStart(l)));
             sk.add_constraint(Coincident(PointRef::LineEnd(l), PointRef::LineStart(b)));
-            sk.add_constraint(LineLength { line: b, length: len });
-            sk.add_constraint(LineLength { line: r, length: 6.0 });
+            sk.add_constraint(LineLength {
+                line: b,
+                length: len,
+            });
+            sk.add_constraint(LineLength {
+                line: r,
+                length: 6.0,
+            });
             sk
         },
         10.0,
@@ -121,8 +131,15 @@ fn margin_pattern_round_trip() {
             let mut sk = Sketch::new();
             let anchor = sk.add_point(0.0, 0.0);
             let line = sk.add_line(0.0, 0.0, len, 0.0);
-            sk.add_constraint(Fixed { point: PointRef::Point(anchor), x: 0.0, y: 0.0 });
-            sk.add_constraint(Coincident(PointRef::LineStart(line), PointRef::Point(anchor)));
+            sk.add_constraint(Fixed {
+                point: PointRef::Point(anchor),
+                x: 0.0,
+                y: 0.0,
+            });
+            sk.add_constraint(Coincident(
+                PointRef::LineStart(line),
+                PointRef::Point(anchor),
+            ));
             sk.add_constraint(Horizontal(line));
             sk.add_constraint(DistanceX {
                 p1: PointRef::LineEnd(line),
@@ -130,7 +147,10 @@ fn margin_pattern_round_trip() {
                 distance: len,
             });
             let hole = sk.add_circle(len - 2.0, 3.0, 1.5);
-            sk.add_constraint(Radius { circle: hole, radius: 1.5 });
+            sk.add_constraint(Radius {
+                circle: hole,
+                radius: 1.5,
+            });
             sk.add_constraint(DistanceX {
                 p1: PointRef::LineEnd(line),
                 p2: PointRef::Center(hole),
@@ -162,16 +182,29 @@ fn triangle_sss_round_trip() {
             let l01 = sk.add_line(0.0, 0.0, base, 0.0);
             let l12 = sk.add_line(base, 0.0, base * 0.4, 2.5);
             let l20 = sk.add_line(base * 0.4, 2.5, 0.0, 0.0);
-            sk.add_constraint(Fixed { point: PointRef::Point(p0), x: 0.0, y: 0.0 });
+            sk.add_constraint(Fixed {
+                point: PointRef::Point(p0),
+                x: 0.0,
+                y: 0.0,
+            });
             sk.add_constraint(Coincident(PointRef::LineStart(l01), PointRef::Point(p0)));
             sk.add_constraint(Coincident(PointRef::LineEnd(l01), PointRef::Point(p1)));
             sk.add_constraint(Coincident(PointRef::LineStart(l12), PointRef::Point(p1)));
             sk.add_constraint(Coincident(PointRef::LineEnd(l12), PointRef::Point(p2)));
             sk.add_constraint(Coincident(PointRef::LineStart(l20), PointRef::Point(p2)));
             sk.add_constraint(Coincident(PointRef::LineEnd(l20), PointRef::Point(p0)));
-            sk.add_constraint(LineLength { line: l01, length: base });
-            sk.add_constraint(LineLength { line: l12, length: 4.0 });
-            sk.add_constraint(LineLength { line: l20, length: 3.5 });
+            sk.add_constraint(LineLength {
+                line: l01,
+                length: base,
+            });
+            sk.add_constraint(LineLength {
+                line: l12,
+                length: 4.0,
+            });
+            sk.add_constraint(LineLength {
+                line: l20,
+                length: 3.5,
+            });
             sk
         },
         5.0,
@@ -189,15 +222,30 @@ fn symmetric_bore_round_trip() {
             let a = sk.add_point(0.0, 0.0);
             let b = sk.add_point(span, 0.0);
             let bore = sk.add_circle(span * 0.5, 2.0, 1.0);
-            sk.add_constraint(Fixed { point: PointRef::Point(a), x: 0.0, y: 0.0 });
-            sk.add_constraint(DistanceX { p1: PointRef::Point(b), p2: PointRef::Point(a), distance: span });
-            sk.add_constraint(DistanceY { p1: PointRef::Point(b), p2: PointRef::Point(a), distance: 0.0 });
+            sk.add_constraint(Fixed {
+                point: PointRef::Point(a),
+                x: 0.0,
+                y: 0.0,
+            });
+            sk.add_constraint(DistanceX {
+                p1: PointRef::Point(b),
+                p2: PointRef::Point(a),
+                distance: span,
+            });
+            sk.add_constraint(DistanceY {
+                p1: PointRef::Point(b),
+                p2: PointRef::Point(a),
+                distance: 0.0,
+            });
             sk.add_constraint(SymmetricPoint {
                 p1: PointRef::Center(bore),
                 p2: PointRef::Point(b),
                 about: PointRef::Point(a),
             });
-            sk.add_constraint(Radius { circle: bore, radius: 1.0 });
+            sk.add_constraint(Radius {
+                circle: bore,
+                radius: 1.0,
+            });
             sk
         },
         10.0,

@@ -60,11 +60,22 @@ pub const POLISH_STEPS: usize = 4;
 /// - `eval_residuals`: writes the `n_eq` residual components for a given
 ///   parameter vector into the output buffer (called with the buffer sized
 ///   `n_eq`).
-pub fn newton_solve<F>(params: &mut Vec<f64>, fixed: &[bool], n_eq: usize, mut eval_residuals: F) -> SolveResult
+pub fn newton_solve<F>(
+    params: &mut Vec<f64>,
+    fixed: &[bool],
+    n_eq: usize,
+    mut eval_residuals: F,
+) -> SolveResult
 where
     F: FnMut(&[f64], &mut [f64]),
 {
-    newton_solve_with_jacobian(params, fixed, n_eq, &mut eval_residuals, Jacobian::FiniteDifference)
+    newton_solve_with_jacobian(
+        params,
+        fixed,
+        n_eq,
+        &mut eval_residuals,
+        Jacobian::FiniteDifference,
+    )
 }
 
 /// Where the Newton loop sources its Jacobian each iteration.
@@ -93,7 +104,11 @@ where
     let n_free = free_params.len();
 
     if n_eq == 0 || n_free == 0 {
-        return SolveResult { converged: true, residual: 0.0, iterations: 0 };
+        return SolveResult {
+            converged: true,
+            residual: 0.0,
+            iterations: 0,
+        };
     }
 
     let mut residual;
@@ -253,7 +268,10 @@ pub(crate) fn numerical_jacobian_into<F>(
 /// factorization. With finite-difference Jacobians the threshold must sit
 /// above the differentiation noise floor (~1e-8 relative) — see
 /// `diagnosis::RANK_REL_TOL`.
-pub(crate) fn householder_qr_column_pivoting(a: &mut [Vec<f64>], rel_tol: f64) -> (Vec<usize>, usize) {
+pub(crate) fn householder_qr_column_pivoting(
+    a: &mut [Vec<f64>],
+    rel_tol: f64,
+) -> (Vec<usize>, usize) {
     let n_rows = a.len();
     let n_cols = if n_rows == 0 { 0 } else { a[0].len() };
     let mut pivots: Vec<usize> = (0..n_cols).collect();
@@ -266,7 +284,9 @@ pub(crate) fn householder_qr_column_pivoting(a: &mut [Vec<f64>], rel_tol: f64) -
             .sqrt()
     };
 
-    let max0 = (0..n_cols).map(|j| col_norm_from(a, j, 0)).fold(0.0_f64, f64::max);
+    let max0 = (0..n_cols)
+        .map(|j| col_norm_from(a, j, 0))
+        .fold(0.0_f64, f64::max);
     if !(max0 > 0.0) {
         return (pivots, 0);
     }
@@ -480,8 +500,8 @@ pub(crate) fn gaussian_elimination(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> O
 
     for col in 0..n {
         // Find pivot row (max absolute value in column)
-        let pivot_row = (col..n)
-            .max_by(|&i, &j| a[i][col].abs().partial_cmp(&a[j][col].abs()).unwrap())?;
+        let pivot_row =
+            (col..n).max_by(|&i, &j| a[i][col].abs().partial_cmp(&a[j][col].abs()).unwrap())?;
         a.swap(col, pivot_row);
         b.swap(col, pivot_row);
 
@@ -585,7 +605,10 @@ mod tests {
             f[0] = p[0] * p[0] - 4.0;
         });
         assert!(result.converged, "residual {}", result.residual);
-        assert_eq!(result.residual, 0.0, "polished residual must be machine zero");
+        assert_eq!(
+            result.residual, 0.0,
+            "polished residual must be machine zero"
+        );
         assert_eq!(params[0], 2.0, "polish must land on the exact root");
     }
 }

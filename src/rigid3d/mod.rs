@@ -21,9 +21,11 @@ mod dof;
 mod solver;
 
 pub use constraint::{ComponentId, Constraint, ConstraintSystem, ConstraintType};
-pub use diagnosis::{diagnose as diagnose_assembly, AssemblyDiagnosis, CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL};
+pub use diagnosis::{
+    diagnose as diagnose_assembly, AssemblyDiagnosis, CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL,
+};
 pub use diagnostics::{DiagnosticIssue, DiagnosticType, SolverDiagnostics};
-pub use dof::{DegreeOfFreedom, DOFAnalyzer, DOFResult};
+pub use dof::{DOFAnalyzer, DOFResult, DegreeOfFreedom};
 pub use solver::{ConstraintSolver, PoseSolveResult, SolveOptions};
 
 /// 3D point (alias for `glam::DVec3`).

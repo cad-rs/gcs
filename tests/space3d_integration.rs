@@ -1,8 +1,8 @@
 //! Integration tests for the 3D GCS solver.
 
-use rcad_gcs::space3d::SpaceSketch;
 use rcad_gcs::space3d::constraint::SpaceConstraint;
 use rcad_gcs::space3d::entity::SpacePointRef;
+use rcad_gcs::space3d::SpaceSketch;
 
 const TOL: f64 = 1e-7;
 
@@ -46,8 +46,16 @@ fn coincident_points_3d() {
 fn line_length_3d() {
     let mut sk = SpaceSketch::new();
     let l = sk.add_line(0.0, 0.0, 0.0, 1.0, 1.0, 1.0); // length sqrt(3)
-    sk.add_constraint(SpaceConstraint::fix_point(SpacePointRef::LineStart(l), 0.0, 0.0, 0.0));
-    sk.add_constraint(SpaceConstraint::LineLength { line: l, length: 3.0 });
+    sk.add_constraint(SpaceConstraint::fix_point(
+        SpacePointRef::LineStart(l),
+        0.0,
+        0.0,
+        0.0,
+    ));
+    sk.add_constraint(SpaceConstraint::LineLength {
+        line: l,
+        length: 3.0,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let (x1, y1, z1, x2, y2, z2) = sk.line_endpoints(l).unwrap();
@@ -62,9 +70,12 @@ fn point_on_plane_3d() {
     let p = sk.add_point(1.0, 2.0, 0.0);
     let plane = sk.add_plane(0.0, 0.0, 1.0, 10.0); // z = 10
     sk.fix_entity(plane);
-    sk.fix_param(sk.entities[p].param_start);     // fix x
+    sk.fix_param(sk.entities[p].param_start); // fix x
     sk.fix_param(sk.entities[p].param_start + 1); // fix y
-    sk.add_constraint(SpaceConstraint::PointOnPlane { point: SpacePointRef::Point(p), plane });
+    sk.add_constraint(SpaceConstraint::PointOnPlane {
+        point: SpacePointRef::Point(p),
+        plane,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let c = sk.point_coords(p).unwrap();
@@ -76,12 +87,15 @@ fn point_on_plane_3d() {
 fn cylinder_radius() {
     let mut sk = SpaceSketch::new();
     let cyl = sk.add_cylinder(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0); // axis along Z, radius 1
-    // Fix center and axis, leave radius free
+                                                                  // Fix center and axis, leave radius free
     let cs = sk.entities[cyl].param_start;
     for i in 0..6 {
         sk.fix_param(cs + i);
     }
-    sk.add_constraint(SpaceConstraint::CylinderRadius { cylinder: cyl, radius: 2.5 });
+    sk.add_constraint(SpaceConstraint::CylinderRadius {
+        cylinder: cyl,
+        radius: 2.5,
+    });
     let res = sk.solve();
     assert!(res.converged, "residual={}", res.residual);
     let e = &sk.entities[cyl];

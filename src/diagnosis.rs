@@ -94,7 +94,10 @@ pub fn diagnose(
     let n_eq: usize = constraints.iter().map(|c| c.equation_count()).sum();
 
     if n_eq == 0 {
-        return Diagnosis { dof: free_total as i64, ..Default::default() };
+        return Diagnosis {
+            dof: free_total as i64,
+            ..Default::default()
+        };
     }
 
     // Global residuals once; per-component slices below.
@@ -196,8 +199,7 @@ pub fn diagnose(
         total_rank += rank as i64;
 
         let independent = &pivots[..rank];
-        let dependent: Vec<usize> =
-            (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
+        let dependent: Vec<usize> = (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
         if dependent.is_empty() || rank == 0 {
             continue;
         }
@@ -219,18 +221,19 @@ pub fn diagnose(
             let mut gram = vec![vec![0.0_f64; r]; r];
             let mut rhs = vec![0.0_f64; r];
             for (i, ri) in rows.iter().enumerate() {
-                rhs[i] = ri.iter().zip(dep_row.iter()).map(|(a, b)| a * b).sum::<f64>();
+                rhs[i] = ri
+                    .iter()
+                    .zip(dep_row.iter())
+                    .map(|(a, b)| a * b)
+                    .sum::<f64>();
                 for (j, rj) in rows.iter().enumerate() {
                     gram[i][j] = ri.iter().zip(rj.iter()).map(|(a, b)| a * b).sum::<f64>();
                 }
                 gram[i][i] += LAMBDA;
             }
-            let y = gaussian_elimination(&mut gram, &mut rhs)
-                .unwrap_or_else(|| vec![0.0_f64; r]);
+            let y = gaussian_elimination(&mut gram, &mut rhs).unwrap_or_else(|| vec![0.0_f64; r]);
             let max_c = y.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            let support: Vec<usize> = (0..r)
-                .filter(|&jj| y[jj].abs() > 1.0e-6 * max_c)
-                .collect();
+            let support: Vec<usize> = (0..r).filter(|&jj| y[jj].abs() > 1.0e-6 * max_c).collect();
             // Self-verification: the reported group must be a REAL
             // relation — reconstruct the dependent row from the support
             // and reject the group when the reconstruction residual is
@@ -238,10 +241,7 @@ pub fn diagnose(
             // surface a fake dependency group).
             let residual: f64 = (0..n_free_c)
                 .map(|rr| {
-                    let recon: f64 = support
-                        .iter()
-                        .map(|&jj| y[jj] * rows[jj][rr])
-                        .sum();
+                    let recon: f64 = support.iter().map(|&jj| y[jj] * rows[jj][rr]).sum();
                     (recon - dep_row[rr]).abs()
                 })
                 .fold(0.0_f64, f64::max);
@@ -442,8 +442,14 @@ mod tests {
             // C2: radius and diameter disagreeing on the same parameter.
             Box::new(|sk: &mut Sketch| {
                 let c = sk.add_circle(0.0, 0.0, 10.0);
-                sk.add_constraint(Constraint::Radius { circle: c, radius: 3.0 });
-                sk.add_constraint(Constraint::Diameter { circle: c, diameter: 50.0 });
+                sk.add_constraint(Constraint::Radius {
+                    circle: c,
+                    radius: 3.0,
+                });
+                sk.add_constraint(Constraint::Diameter {
+                    circle: c,
+                    diameter: 50.0,
+                });
             }),
             // C3: fixed points further apart than the demanded distance.
             Box::new(|sk: &mut Sketch| {
@@ -466,7 +472,10 @@ mod tests {
                 let l = sk.add_line(0.0, 0.0, 3.0, 0.0);
                 sk.add_constraint(Constraint::fix_point(PointRef::LineStart(l), 0.0, 0.0));
                 sk.add_constraint(Constraint::fix_point(PointRef::LineEnd(l), 3.0, 0.0));
-                sk.add_constraint(Constraint::LineLength { line: l, length: 7.0 });
+                sk.add_constraint(Constraint::LineLength {
+                    line: l,
+                    length: 7.0,
+                });
             }),
             // C6: concentric circles whose centers are pinned apart.
             Box::new(|sk: &mut Sketch| {
@@ -482,7 +491,10 @@ mod tests {
                 sk.fix_entity(l);
                 let p = point(sk, 9.0, 9.0);
                 fixed(sk, p, 9.0, 9.0);
-                sk.add_constraint(Constraint::Midpoint { point: PointRef::Point(p), line: l });
+                sk.add_constraint(Constraint::Midpoint {
+                    point: PointRef::Point(p),
+                    line: l,
+                });
             }),
             // C8: equal lengths on two pinned lines of different lengths.
             Box::new(|sk: &mut Sketch| {
@@ -543,8 +555,14 @@ mod tests {
             // R4: consistent radius + diameter (same demand).
             Box::new(|sk: &mut Sketch| {
                 let c = sk.add_circle(1.0, 1.0, 5.0);
-                sk.add_constraint(Constraint::Radius { circle: c, radius: 5.0 });
-                sk.add_constraint(Constraint::Diameter { circle: c, diameter: 10.0 });
+                sk.add_constraint(Constraint::Radius {
+                    circle: c,
+                    radius: 5.0,
+                });
+                sk.add_constraint(Constraint::Diameter {
+                    circle: c,
+                    diameter: 10.0,
+                });
             }),
             // R5: point already at the pinned line's midpoint.
             Box::new(|sk: &mut Sketch| {
@@ -552,7 +570,10 @@ mod tests {
                 sk.fix_entity(l);
                 let p = point(sk, 2.0, 0.0);
                 fixed(sk, p, 2.0, 0.0);
-                sk.add_constraint(Constraint::Midpoint { point: PointRef::Point(p), line: l });
+                sk.add_constraint(Constraint::Midpoint {
+                    point: PointRef::Point(p),
+                    line: l,
+                });
             }),
             // R6: duplicate horizontal.
             Box::new(|sk: &mut Sketch| {
@@ -598,62 +619,107 @@ mod tests {
                 let l = sk.add_line(0.0, 0.0, 6.0, 0.0);
                 sk.fix_entity(l);
                 let p = point(sk, 2.0, 0.0);
-                sk.add_constraint(Constraint::PointOnLine { point: PointRef::Point(p), line: l });
-                sk.add_constraint(Constraint::PointOnLine { point: PointRef::Point(p), line: l });
+                sk.add_constraint(Constraint::PointOnLine {
+                    point: PointRef::Point(p),
+                    line: l,
+                });
+                sk.add_constraint(Constraint::PointOnLine {
+                    point: PointRef::Point(p),
+                    line: l,
+                });
             }),
         ];
 
         let under: Vec<(&str, Build)> = vec![
-            ("no constraints", Box::new(|sk: &mut Sketch| {
-                point(sk, 1.0, 2.0);
-            })),
-            ("line with fixed start", Box::new(|sk: &mut Sketch| {
-                let l = sk.add_line(0.0, 0.0, 3.0, 4.0);
-                sk.add_constraint(Constraint::fix_point(PointRef::LineStart(l), 0.0, 0.0));
-            })),
-            ("circle with radius only", Box::new(|sk: &mut Sketch| {
-                let c = sk.add_circle(1.0, 1.0, 2.0);
-                sk.add_constraint(Constraint::Radius { circle: c, radius: 2.0 });
-            })),
-            ("coincident pair", Box::new(|sk: &mut Sketch| {
-                let p1 = point(sk, 0.0, 0.0);
-                let p2 = point(sk, 5.0, 5.0);
-                sk.add_constraint(Constraint::coincident(p1, p2));
-            })),
-            ("horizontal line", Box::new(|sk: &mut Sketch| {
-                let l = sk.add_line(0.0, 0.0, 5.0, 1.0);
-                sk.add_constraint(Constraint::Horizontal(l));
-            })),
-            ("single distance", Box::new(|sk: &mut Sketch| {
-                let p1 = point(sk, 0.0, 0.0);
-                let p2 = point(sk, 3.0, 4.0);
-                sk.add_constraint(Constraint::point_distance(p1, p2, 5.0));
-            })),
-            ("midpoint of free line", Box::new(|sk: &mut Sketch| {
-                let l = sk.add_line(0.0, 0.0, 4.0, 0.0);
-                let p = point(sk, 2.0, 0.0);
-                sk.add_constraint(Constraint::Midpoint { point: PointRef::Point(p), line: l });
-            })),
-            ("equal lengths of free lines", Box::new(|sk: &mut Sketch| {
-                let l1 = sk.add_line(0.0, 0.0, 1.0, 0.0);
-                let l2 = sk.add_line(5.0, 5.0, 8.0, 5.0);
-                sk.add_constraint(Constraint::EqualLength(l1, l2));
-            })),
-            ("point on free circle", Box::new(|sk: &mut Sketch| {
-                let c = sk.add_circle(0.0, 0.0, 3.0);
-                let p = point(sk, 3.0, 0.0);
-                sk.add_constraint(Constraint::PointOnCircle { point: PointRef::Point(p), circle: c });
-            })),
-            ("free symmetric pair", Box::new(|sk: &mut Sketch| {
-                let l = sk.add_line(0.0, 0.0, 0.0, 8.0);
-                let p1 = point(sk, 3.0, 2.0);
-                let p2 = point(sk, -3.0, 2.0);
-                sk.add_constraint(Constraint::Symmetric {
-                    p1: PointRef::Point(p1),
-                    p2: PointRef::Point(p2),
-                    line: l,
-                });
-            })),
+            (
+                "no constraints",
+                Box::new(|sk: &mut Sketch| {
+                    point(sk, 1.0, 2.0);
+                }),
+            ),
+            (
+                "line with fixed start",
+                Box::new(|sk: &mut Sketch| {
+                    let l = sk.add_line(0.0, 0.0, 3.0, 4.0);
+                    sk.add_constraint(Constraint::fix_point(PointRef::LineStart(l), 0.0, 0.0));
+                }),
+            ),
+            (
+                "circle with radius only",
+                Box::new(|sk: &mut Sketch| {
+                    let c = sk.add_circle(1.0, 1.0, 2.0);
+                    sk.add_constraint(Constraint::Radius {
+                        circle: c,
+                        radius: 2.0,
+                    });
+                }),
+            ),
+            (
+                "coincident pair",
+                Box::new(|sk: &mut Sketch| {
+                    let p1 = point(sk, 0.0, 0.0);
+                    let p2 = point(sk, 5.0, 5.0);
+                    sk.add_constraint(Constraint::coincident(p1, p2));
+                }),
+            ),
+            (
+                "horizontal line",
+                Box::new(|sk: &mut Sketch| {
+                    let l = sk.add_line(0.0, 0.0, 5.0, 1.0);
+                    sk.add_constraint(Constraint::Horizontal(l));
+                }),
+            ),
+            (
+                "single distance",
+                Box::new(|sk: &mut Sketch| {
+                    let p1 = point(sk, 0.0, 0.0);
+                    let p2 = point(sk, 3.0, 4.0);
+                    sk.add_constraint(Constraint::point_distance(p1, p2, 5.0));
+                }),
+            ),
+            (
+                "midpoint of free line",
+                Box::new(|sk: &mut Sketch| {
+                    let l = sk.add_line(0.0, 0.0, 4.0, 0.0);
+                    let p = point(sk, 2.0, 0.0);
+                    sk.add_constraint(Constraint::Midpoint {
+                        point: PointRef::Point(p),
+                        line: l,
+                    });
+                }),
+            ),
+            (
+                "equal lengths of free lines",
+                Box::new(|sk: &mut Sketch| {
+                    let l1 = sk.add_line(0.0, 0.0, 1.0, 0.0);
+                    let l2 = sk.add_line(5.0, 5.0, 8.0, 5.0);
+                    sk.add_constraint(Constraint::EqualLength(l1, l2));
+                }),
+            ),
+            (
+                "point on free circle",
+                Box::new(|sk: &mut Sketch| {
+                    let c = sk.add_circle(0.0, 0.0, 3.0);
+                    let p = point(sk, 3.0, 0.0);
+                    sk.add_constraint(Constraint::PointOnCircle {
+                        point: PointRef::Point(p),
+                        circle: c,
+                    });
+                }),
+            ),
+            (
+                "free symmetric pair",
+                Box::new(|sk: &mut Sketch| {
+                    let l = sk.add_line(0.0, 0.0, 0.0, 8.0);
+                    let p1 = point(sk, 3.0, 2.0);
+                    let p2 = point(sk, -3.0, 2.0);
+                    sk.add_constraint(Constraint::Symmetric {
+                        p1: PointRef::Point(p1),
+                        p2: PointRef::Point(p2),
+                        line: l,
+                    });
+                }),
+            ),
         ];
 
         let conflict_names = [
@@ -719,7 +785,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod degenerate_and_bench {
     use crate::constraint::Constraint;
@@ -742,10 +807,19 @@ mod degenerate_and_bench {
             let c = sk.add_circle(3.0, 1.0 + jitter, 1.0);
             sk.add_constraint(Constraint::Tangent { circle: c, line: l });
             let p = sk.add_point(2.0 + jitter, 0.0);
-            sk.add_constraint(Constraint::PointOnLine { point: PointRef::Point(p), line: l });
+            sk.add_constraint(Constraint::PointOnLine {
+                point: PointRef::Point(p),
+                line: l,
+            });
             let q = sk.add_point(4.0, jitter);
-            sk.add_constraint(Constraint::PointOnLine { point: PointRef::Point(q), line: l });
-            sk.add_constraint(Constraint::PointOnLine { point: PointRef::Point(q), line: l });
+            sk.add_constraint(Constraint::PointOnLine {
+                point: PointRef::Point(q),
+                line: l,
+            });
+            sk.add_constraint(Constraint::PointOnLine {
+                point: PointRef::Point(q),
+                line: l,
+            });
             sk.diagnose()
         };
         let exact = build(0.0);
@@ -760,7 +834,8 @@ mod degenerate_and_bench {
                 "conflicting set jitters at eps={eps}"
             );
             assert_eq!(
-                exact.redundant.len(), perturbed.redundant.len(),
+                exact.redundant.len(),
+                perturbed.redundant.len(),
                 "redundant count jitters at eps={eps}"
             );
         }
@@ -809,8 +884,9 @@ mod degenerate_and_bench {
         use crate::entity::{Entity, EntityKind};
         use crate::numerics::numerical_jacobian_into;
         use crate::solver::analytic_jacobian;
-        let entities: Vec<Entity> =
-            (0..n).map(|i| Entity::new(EntityKind::Point, i * 2)).collect();
+        let entities: Vec<Entity> = (0..n)
+            .map(|i| Entity::new(EntityKind::Point, i * 2))
+            .collect();
         let mut constraints = vec![Constraint::fix_point(PointRef::Point(0), 0.0, 0.0)];
         for i in 0..n - 1 {
             constraints.push(Constraint::point_distance(
@@ -863,12 +939,18 @@ mod decomposition_acceptance {
         sk.add_constraint(Constraint::fix_point(PointRef::Point(pa), 0.0, 0.0));
         sk.add_constraint(Constraint::coincident(PointRef::LineStart(la), pa));
         sk.add_constraint(Constraint::Horizontal(la));
-        sk.add_constraint(Constraint::LineLength { line: la, length: 5.0 });
+        sk.add_constraint(Constraint::LineLength {
+            line: la,
+            length: 5.0,
+        });
         // Group B: pinned circle center + driven radius.
         // Entity: circle id 2 (params 6-8). Constraints 4-5.
         let cb = sk.add_circle(9.0, 9.0, 2.0);
         sk.add_constraint(Constraint::fix_point(PointRef::Center(cb), 9.0, 9.0));
-        sk.add_constraint(Constraint::Radius { circle: cb, radius: 2.0 });
+        sk.add_constraint(Constraint::Radius {
+            circle: cb,
+            radius: 2.0,
+        });
         sk
     }
 
@@ -916,7 +998,10 @@ mod decomposition_acceptance {
         // index 3, line entity id 1).
         sk.params[2] += 0.8;
         sk.params[4] += 1.5;
-        sk.constraints[3] = Constraint::LineLength { line: 1, length: 3.0 };
+        sk.constraints[3] = Constraint::LineLength {
+            line: 1,
+            length: 3.0,
+        };
 
         let comps = sk.components();
         let a_component = comps
@@ -955,7 +1040,10 @@ mod decomposition_acceptance {
     fn conflict_isolated_to_its_component() {
         let mut sk = build();
         // Sabotage group B: a second, disagreeing radius (constraint 6).
-        sk.add_constraint(Constraint::Radius { circle: 2, radius: 7.0 });
+        sk.add_constraint(Constraint::Radius {
+            circle: 2,
+            radius: 7.0,
+        });
         let d = sk.diagnose();
         assert_eq!(d.conflicting, vec![6], "{d:?}");
         assert!(d.redundant.is_empty(), "{d:?}");

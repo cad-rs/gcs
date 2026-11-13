@@ -122,11 +122,20 @@ mod tests {
         let pa = sk.add_point(0.0, 0.0, 0.0);
         let la = sk.add_line(0.0, 0.0, 0.0, 5.0, 0.0, 0.0);
         sk.add_constraint(SpaceConstraint::fix_point(pa, 0.0, 0.0, 0.0));
-        sk.add_constraint(SpaceConstraint::coincident(SpacePointRef::LineStart(la), pa));
-        sk.add_constraint(SpaceConstraint::LineLength { line: la, length: 5.0 });
+        sk.add_constraint(SpaceConstraint::coincident(
+            SpacePointRef::LineStart(la),
+            pa,
+        ));
+        sk.add_constraint(SpaceConstraint::LineLength {
+            line: la,
+            length: 5.0,
+        });
         // Group B: a self-contained sphere radius.
         let sb = sk.add_sphere(9.0, 9.0, 9.0, 2.0);
-        sk.add_constraint(SpaceConstraint::SphereRadius { sphere: sb, radius: 2.0 });
+        sk.add_constraint(SpaceConstraint::SphereRadius {
+            sphere: sb,
+            radius: 2.0,
+        });
 
         let comps = constraint_components(&sk.params, &sk.entities, &sk.constraints);
         assert_eq!(comps.len(), 2, "two disjoint groups: {comps:?}");
@@ -142,14 +151,31 @@ mod tests {
         use crate::space3d::entity::SpaceFrame3;
         let mut sk = SpaceSketch::new();
         let line = sk.add_line(0.0, 0.0, 0.0, 3.0, 0.0, 0.0);
-        let circle =
-            sk.add_circle(0.0, 1.0, 0.0, 1.0, SpaceFrame3::sanitized(glam::DVec3::Z, glam::DVec3::X, 0.0, 0.0));
-        let other =
-            sk.add_circle(9.0, 9.0, 9.0, 2.0, SpaceFrame3::sanitized(glam::DVec3::Y, glam::DVec3::X, 0.0, 0.0));
+        let circle = sk.add_circle(
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            SpaceFrame3::sanitized(glam::DVec3::Z, glam::DVec3::X, 0.0, 0.0),
+        );
+        let other = sk.add_circle(
+            9.0,
+            9.0,
+            9.0,
+            2.0,
+            SpaceFrame3::sanitized(glam::DVec3::Y, glam::DVec3::X, 0.0, 0.0),
+        );
         sk.add_constraint(SpaceConstraint::LineTangentCircle { line, circle });
-        sk.add_constraint(SpaceConstraint::CircleRadius { circle: other, radius: 2.0 });
+        sk.add_constraint(SpaceConstraint::CircleRadius {
+            circle: other,
+            radius: 2.0,
+        });
         let comps = constraint_components(&sk.params, &sk.entities, &sk.constraints);
-        assert_eq!(comps.len(), 2, "line+circle and the unrelated circle: {comps:?}");
+        assert_eq!(
+            comps.len(),
+            2,
+            "line+circle and the unrelated circle: {comps:?}"
+        );
         assert_eq!(comps[0], vec![0]);
         assert_eq!(comps[1], vec![1]);
     }
@@ -183,7 +209,11 @@ mod tests {
         sk.add_constraint(SpaceConstraint::coincident(p0, p1));
         sk.add_constraint(SpaceConstraint::coincident(p2, p3));
         let comps = constraint_components(&sk.params, &sk.entities, &sk.constraints);
-        assert_eq!(comps.len(), 1, "all four constraints share one component: {comps:?}");
+        assert_eq!(
+            comps.len(),
+            1,
+            "all four constraints share one component: {comps:?}"
+        );
         assert_eq!(comps[0], vec![0, 1, 2, 3]);
     }
 }

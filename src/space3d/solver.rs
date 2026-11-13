@@ -117,7 +117,12 @@ pub fn normalize_planes_touched(
 }
 
 fn normalize_plane_at(params: &mut [f64], idx: [usize; 4]) {
-    let (nx, ny, nz, d) = (params[idx[0]], params[idx[1]], params[idx[2]], params[idx[3]]);
+    let (nx, ny, nz, d) = (
+        params[idx[0]],
+        params[idx[1]],
+        params[idx[2]],
+        params[idx[3]],
+    );
     let len = (nx * nx + ny * ny + nz * nz).sqrt();
     // Skip the division when the representation is already unit to
     // roundoff: re-normalizing an already normalized plane would perturb
@@ -195,7 +200,11 @@ pub fn solve_components(
     } else {
         (f.iter().map(|x| x * x).sum::<f64>() / f.len() as f64).sqrt()
     };
-    SolveResult { converged, residual, iterations }
+    SolveResult {
+        converged,
+        residual,
+        iterations,
+    }
 }
 
 /// Residual report for the current parameters without iterating — the
@@ -213,7 +222,11 @@ pub(crate) fn residual_report(
     } else {
         (f.iter().map(|x| x * x).sum::<f64>() / f.len() as f64).sqrt()
     };
-    SolveResult { converged: residual < RESIDUAL_TOL, residual, iterations: 0 }
+    SolveResult {
+        converged: residual < RESIDUAL_TOL,
+        residual,
+        iterations: 0,
+    }
 }
 
 /// Solve one connected subsystem: `sub` are the constraints (already
@@ -249,16 +262,11 @@ fn solve_one(
     // is held, so the Newton loop's free list is exactly this component's
     // movable parameters.
     let mut fixed_c: Vec<bool> = vec![true; params.len()];
-    let free: Vec<usize> = touched
-        .iter()
-        .copied()
-        .filter(|&p| !fixed[p])
-        .collect();
+    let free: Vec<usize> = touched.iter().copied().filter(|&p| !fixed[p]).collect();
     for &p in &free {
         fixed_c[p] = false;
     }
-    let col_of: HashMap<usize, usize> =
-        free.iter().enumerate().map(|(c, &p)| (p, c)).collect();
+    let col_of: HashMap<usize, usize> = free.iter().enumerate().map(|(c, &p)| (p, c)).collect();
 
     let n_eq: usize = sub.iter().map(|c| c.equation_count()).sum();
     let mut build = |p: &[f64], out: &mut [Vec<f64>]| {
@@ -338,7 +346,9 @@ mod tests {
         let constraints = vec![
             SpaceConstraint::Fixed {
                 point: SpacePointRef::Point(0),
-                x: 0.0, y: 0.0, z: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
             },
             SpaceConstraint::Coincident(SpacePointRef::Point(0), SpacePointRef::Point(1)),
         ];
@@ -361,7 +371,9 @@ mod tests {
         let constraints = vec![
             SpaceConstraint::Fixed {
                 point: SpacePointRef::Point(0),
-                x: 0.0, y: 0.0, z: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
             },
             SpaceConstraint::PointDistance {
                 p1: SpacePointRef::Point(0),
@@ -389,29 +401,37 @@ mod tests {
         ];
         // Plane: z = 10 (normal = (0,0,1), d = 10)
         // Fix the plane params and point x,y, leave z free for PointOnPlane to solve.
-        let constraints = vec![
-            SpaceConstraint::PointOnPlane { point: SpacePointRef::Point(0), plane: 1 },
-        ];
+        let constraints = vec![SpaceConstraint::PointOnPlane {
+            point: SpacePointRef::Point(0),
+            plane: 1,
+        }];
         let mut params = vec![1.0, 2.0, 0.0, 0.0, 0.0, 1.0, 10.0];
         // Fix plane params (indices 3-6) and point x,y (indices 0,1); z (index 2) is free.
         let fixed = vec![false, false, false, true, true, true, true];
 
         let result = solve_space(&mut params, &fixed, &entities, &constraints);
         assert!(result.converged, "not converged: {}", result.residual);
-        assert!((params[2] - 10.0).abs() < 1e-7, "z should be 10, got {}", params[2]);
+        assert!(
+            (params[2] - 10.0).abs() < 1e-7,
+            "z should be 10, got {}",
+            params[2]
+        );
     }
 
     #[test]
     fn line_length_3d() {
-        let entities = vec![
-            SpaceEntity::new(SpaceEntityKind::SpaceLine, 0),
-        ];
+        let entities = vec![SpaceEntity::new(SpaceEntityKind::SpaceLine, 0)];
         let constraints = vec![
             SpaceConstraint::Fixed {
                 point: SpacePointRef::LineStart(0),
-                x: 0.0, y: 0.0, z: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
             },
-            SpaceConstraint::LineLength { line: 0, length: 3.0 },
+            SpaceConstraint::LineLength {
+                line: 0,
+                length: 3.0,
+            },
         ];
         let mut params = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         let fixed = vec![true, true, true, false, false, false];
@@ -434,15 +454,29 @@ mod tests {
         let constraints = vec![
             SpaceConstraint::Fixed {
                 point: SpacePointRef::SphereCenter(0),
-                x: 0.0, y: 0.0, z: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
             },
-            SpaceConstraint::SphereRadius { sphere: 0, radius: 2.0 },
-            SpaceConstraint::SphereRadius { sphere: 1, radius: 1.0 },
+            SpaceConstraint::SphereRadius {
+                sphere: 0,
+                radius: 2.0,
+            },
+            SpaceConstraint::SphereRadius {
+                sphere: 1,
+                radius: 1.0,
+            },
             SpaceConstraint::Fixed {
                 point: SpacePointRef::SphereCenter(1),
-                x: 5.0, y: 0.0, z: 0.0,
+                x: 5.0,
+                y: 0.0,
+                z: 0.0,
             },
-            SpaceConstraint::SphereTangent { s1: 0, s2: 1, external: true },
+            SpaceConstraint::SphereTangent {
+                s1: 0,
+                s2: 1,
+                external: true,
+            },
         ];
         let mut params = vec![0.0, 0.0, 0.0, 2.0, 5.0, 0.0, 0.0, 1.0];
         // Fix sphere 0 center + radius, sphere 1 center + radius
@@ -464,20 +498,28 @@ mod tests {
         let constraints = vec![
             SpaceConstraint::Fixed {
                 point: SpacePointRef::LineStart(0),
-                x: 0.0, y: 0.0, z: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
             },
             SpaceConstraint::Fixed {
                 point: SpacePointRef::LineEnd(0),
-                x: 1.0, y: 0.0, z: 0.0,
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
             },
             SpaceConstraint::Fixed {
                 point: SpacePointRef::LineStart(1),
-                x: 0.0, y: 0.0, z: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
             },
             SpaceConstraint::LinePerpendicularLine(0, 1),
         ];
         let mut params = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-        let fixed = vec![true, true, true, true, true, true, true, true, true, false, false, false];
+        let fixed = vec![
+            true, true, true, true, true, true, true, true, true, false, false, false,
+        ];
 
         let result = solve_space(&mut params, &fixed, &entities, &constraints);
         assert!(result.converged, "not converged: {}", result.residual);
@@ -497,16 +539,27 @@ mod tests {
         let constraints = vec![
             SpaceConstraint::Fixed {
                 point: SpacePointRef::LineStart(0),
-                x: 0.0, y: 0.0, z: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
             },
-            SpaceConstraint::LineParallelToDir { line: 0, dx: 1.0, dy: 0.0, dz: 0.0 },
+            SpaceConstraint::LineParallelToDir {
+                line: 0,
+                dx: 1.0,
+                dy: 0.0,
+                dz: 0.0,
+            },
         ];
         assert_eq!(constraints[1].equation_count(), 2);
         let mut params = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         let fixed = vec![true, true, true, false, false, false];
         let result = solve_space(&mut params, &fixed, &entities, &constraints);
         assert!(result.converged, "residual {}", result.residual);
-        assert!(params[5].abs() < 1e-7, "z direction should be zero, got {}", params[5]);
+        assert!(
+            params[5].abs() < 1e-7,
+            "z direction should be zero, got {}",
+            params[5]
+        );
     }
 
     /// 3D-0 acceptance measurement (ignored by default; run explicitly):
@@ -530,8 +583,7 @@ mod tests {
             .collect();
         let n_eq: usize = constraints.iter().map(|c| c.equation_count()).sum();
         let free: Vec<usize> = (0..params.len()).collect();
-        let col_of: HashMap<usize, usize> =
-            free.iter().enumerate().map(|(c, &p)| (p, c)).collect();
+        let col_of: HashMap<usize, usize> = free.iter().enumerate().map(|(c, &p)| (p, c)).collect();
 
         let mut ja = vec![vec![0.0_f64; free.len()]; n_eq];
         let t0 = Instant::now();
@@ -556,7 +608,10 @@ mod tests {
         println!("params: {n_eq} equations x {} free", free.len());
         println!("analytic assembly: {analytic_us:.0} us");
         println!("finite differences: {fd_us:.0} us");
-        println!("speedup: {:.1}x, max |analytic - fd| = {max_err:.2e}", fd_us / analytic_us);
+        println!(
+            "speedup: {:.1}x, max |analytic - fd| = {max_err:.2e}",
+            fd_us / analytic_us
+        );
     }
 
     #[test]
@@ -584,11 +639,15 @@ mod tests {
             SpaceEntity::new(SpaceEntityKind::SpacePoint, 0),
             SpaceEntity::new(SpaceEntityKind::Plane, 3),
         ];
-        let constraints = vec![
-            SpaceConstraint::PointOnPlane { point: SpacePointRef::Point(0), plane: 1 },
-        ];
+        let constraints = vec![SpaceConstraint::PointOnPlane {
+            point: SpacePointRef::Point(0),
+            plane: 1,
+        }];
         let _ = solve_space(&mut params, &fixed, &entities, &constraints);
         let len = (params[3] * params[3] + params[4] * params[4] + params[5] * params[5]).sqrt();
-        assert!((len - 1.0).abs() < 1e-12, "plane normal not unit after solve: {len}");
+        assert!(
+            (len - 1.0).abs() < 1e-12,
+            "plane normal not unit after solve: {len}"
+        );
     }
 }

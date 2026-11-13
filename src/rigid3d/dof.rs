@@ -132,7 +132,7 @@ impl ConstraintTypeExt for crate::rigid3d::ConstraintType {
             Self::Perpendicular => 5,
             Self::Concentric => 2, // Second component: slide along + spin about the axis
             Self::PointOnPlane => 5, // One translational DOF removed
-            Self::Lock => 0,          // Relative pose fully fixed
+            Self::Lock => 0,       // Relative pose fully fixed
         }
     }
 }
@@ -140,8 +140,8 @@ impl ConstraintTypeExt for crate::rigid3d::ConstraintType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rigid3d::{Constraint, ConstraintSystem, ConstraintType};
     use crate::rigid3d::Point3;
+    use crate::rigid3d::{Constraint, ConstraintSystem, ConstraintType};
 
     #[test]
     fn test_dof_all() {
@@ -194,8 +194,10 @@ mod tests {
         system.add_constraint(Constraint::fixed(0, 0, Point3::ZERO));
         system.add_constraint(Constraint::coincident(
             1,
-            0, Point3::ZERO,
-            1, Point3::new(1.0, 0.0, 0.0),
+            0,
+            Point3::ZERO,
+            1,
+            Point3::new(1.0, 0.0, 0.0),
         ));
 
         let analyzer = DOFAnalyzer::new();

@@ -12,9 +12,10 @@ use std::collections::HashMap;
 use crate::constraint::Constraint;
 use crate::entity::Entity;
 
-
-pub use crate::numerics::{FD_H, LAMBDA, MAX_ITER, PIVOT_TOL, RESIDUAL_TOL, SOLVER_NORM_TOL, SolveResult};
 use crate::numerics;
+pub use crate::numerics::{
+    SolveResult, FD_H, LAMBDA, MAX_ITER, PIVOT_TOL, RESIDUAL_TOL, SOLVER_NORM_TOL,
+};
 
 /// Evaluate the stacked residual vector of `constraints` at `params`.
 pub(crate) fn eval_residuals<C: AsRef<Constraint>>(
@@ -27,7 +28,8 @@ pub(crate) fn eval_residuals<C: AsRef<Constraint>>(
     let mut row = 0;
     for c in constraints {
         let cnt = c.as_ref().equation_count();
-        c.as_ref().residuals(params, entities, &mut f[row..row + cnt]);
+        c.as_ref()
+            .residuals(params, entities, &mut f[row..row + cnt]);
         row += cnt;
     }
     f
@@ -115,7 +117,11 @@ pub fn solve_components(
     } else {
         (f.iter().map(|x| x * x).sum::<f64>() / f.len() as f64).sqrt()
     };
-    SolveResult { converged, residual, iterations }
+    SolveResult {
+        converged,
+        residual,
+        iterations,
+    }
 }
 
 /// Solve one connected subsystem: `sub` are the constraints (already
@@ -149,16 +155,11 @@ fn solve_one(
     // is held, so the Newton loop's free list is exactly this component's
     // movable parameters.
     let mut fixed_c: Vec<bool> = vec![true; params.len()];
-    let free: Vec<usize> = touched
-        .iter()
-        .copied()
-        .filter(|&p| !fixed[p])
-        .collect();
+    let free: Vec<usize> = touched.iter().copied().filter(|&p| !fixed[p]).collect();
     for &p in &free {
         fixed_c[p] = false;
     }
-    let col_of: HashMap<usize, usize> =
-        free.iter().enumerate().map(|(c, &p)| (p, c)).collect();
+    let col_of: HashMap<usize, usize> = free.iter().enumerate().map(|(c, &p)| (p, c)).collect();
 
     let n_eq: usize = sub.iter().map(|c| c.equation_count()).sum();
     let mut build = |p: &[f64], out: &mut [Vec<f64>]| {
@@ -230,7 +231,10 @@ mod tests {
 
         let result = solve(&mut params, &fixed, &entities, &constraints);
         println!("params after = {:?}", params);
-        println!("converged={} residual={}", result.converged, result.residual);
+        println!(
+            "converged={} residual={}",
+            result.converged, result.residual
+        );
         assert!(result.converged, "not converged: {}", result.residual);
         assert!((params[0] - 0.0).abs() < 1e-7);
         assert!((params[1] - 0.0).abs() < 1e-7);
@@ -281,8 +285,16 @@ mod tests {
         let fixed = vec![false, false];
 
         let result = solve(&mut params, &fixed, &entities, &constraints);
-        assert!(result.converged, "under-constrained should converge: residual={}", result.residual);
-        assert!((params[0] - 5.0).abs() < 1e-7, "x should be 5.0, got {}", params[0]);
+        assert!(
+            result.converged,
+            "under-constrained should converge: residual={}",
+            result.residual
+        );
+        assert!(
+            (params[0] - 5.0).abs() < 1e-7,
+            "x should be 5.0, got {}",
+            params[0]
+        );
     }
 
     #[test]
@@ -293,16 +305,36 @@ mod tests {
 
         let entities = vec![Entity::new(EntityKind::Point, 0)];
         let constraints = vec![
-            Constraint::Fixed { point: PointRef::Point(0), x: 3.0, y: 4.0 },
-            Constraint::Fixed { point: PointRef::Point(0), x: 3.0, y: 4.0 }, // duplicate
+            Constraint::Fixed {
+                point: PointRef::Point(0),
+                x: 3.0,
+                y: 4.0,
+            },
+            Constraint::Fixed {
+                point: PointRef::Point(0),
+                x: 3.0,
+                y: 4.0,
+            }, // duplicate
         ];
         let mut params = vec![0.0, 0.0];
         let fixed = vec![false, false];
 
         let result = solve(&mut params, &fixed, &entities, &constraints);
-        assert!(result.converged, "over-constrained consistent should converge: residual={}, iterations={}", result.residual, result.iterations);
-        assert!((params[0] - 3.0).abs() < 1e-6, "x should be 3.0, got {}", params[0]);
-        assert!((params[1] - 4.0).abs() < 1e-6, "y should be 4.0, got {}", params[1]);
+        assert!(
+            result.converged,
+            "over-constrained consistent should converge: residual={}, iterations={}",
+            result.residual, result.iterations
+        );
+        assert!(
+            (params[0] - 3.0).abs() < 1e-6,
+            "x should be 3.0, got {}",
+            params[0]
+        );
+        assert!(
+            (params[1] - 4.0).abs() < 1e-6,
+            "y should be 4.0, got {}",
+            params[1]
+        );
     }
 
     #[test]
@@ -317,9 +349,21 @@ mod tests {
             Entity::new(EntityKind::Point, 1),
         ];
         let constraints = vec![
-            Constraint::Fixed { point: PointRef::Point(0), x: 0.0, y: 0.0 },
-            Constraint::Fixed { point: PointRef::Point(1), x: 1.0, y: 1.0 },
-            Constraint::PointDistance { p1: PointRef::Point(0), p2: PointRef::Point(1), distance: 5.0 },
+            Constraint::Fixed {
+                point: PointRef::Point(0),
+                x: 0.0,
+                y: 0.0,
+            },
+            Constraint::Fixed {
+                point: PointRef::Point(1),
+                x: 1.0,
+                y: 1.0,
+            },
+            Constraint::PointDistance {
+                p1: PointRef::Point(0),
+                p2: PointRef::Point(1),
+                distance: 5.0,
+            },
         ];
         let mut params = vec![0.0, 0.0, 1.0, 1.0];
         let fixed = vec![false, false, false, false];
@@ -430,7 +474,10 @@ mod tests {
         let fixed = vec![false, false];
 
         let result = solve(&mut params, &fixed, &entities, &constraints);
-        assert!(result.converged, "empty constraints should trivially converge");
+        assert!(
+            result.converged,
+            "empty constraints should trivially converge"
+        );
         assert_eq!(result.residual, 0.0);
         assert_eq!(result.iterations, 0);
     }

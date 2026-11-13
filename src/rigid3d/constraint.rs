@@ -422,11 +422,7 @@ mod tests {
 
     #[test]
     fn test_coincident_constraint() {
-        let c = Constraint::coincident(
-            0,
-            1, DVec3::ZERO,
-            2, DVec3::new(1.0, 0.0, 0.0),
-        );
+        let c = Constraint::coincident(0, 1, DVec3::ZERO, 2, DVec3::new(1.0, 0.0, 0.0));
         assert_eq!(c.constraint_type, ConstraintType::Coincident);
         assert_eq!(c.dof_removed(), 3);
     }
@@ -437,8 +433,10 @@ mod tests {
         system.add_constraint(Constraint::fixed(0, 1, DVec3::ZERO));
         system.add_constraint(Constraint::coincident(
             1,
-            1, DVec3::ZERO,
-            2, DVec3::new(1.0, 0.0, 0.0),
+            1,
+            DVec3::ZERO,
+            2,
+            DVec3::new(1.0, 0.0, 0.0),
         ));
 
         assert_eq!(system.constraints.len(), 2);

@@ -94,12 +94,7 @@ pub fn diagnose(
         .filter(|e| {
             let idx = [e.param(0), e.param(1), e.param(2), e.param(3)];
             idx.iter().all(|&i| !fixed[i])
-                && plane_tangents(
-                    params[idx[0]],
-                    params[idx[1]],
-                    params[idx[2]],
-                )
-                .is_some()
+                && plane_tangents(params[idx[0]], params[idx[1]], params[idx[2]]).is_some()
         })
         .count();
 
@@ -120,8 +115,7 @@ pub fn diagnose(
         acc += c.equation_count();
     }
 
-    let components =
-        crate::space3d::graph::constraint_components(params, entities, constraints);
+    let components = crate::space3d::graph::constraint_components(params, entities, constraints);
     let mut d = SpaceDiagnosis::default();
     let mut total_rank = 0i64;
 
@@ -230,8 +224,7 @@ pub fn diagnose(
         total_rank += rank as i64;
 
         let independent = &pivots[..rank];
-        let dependent: Vec<usize> =
-            (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
+        let dependent: Vec<usize> = (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
         if dependent.is_empty() || rank == 0 {
             continue;
         }
@@ -251,25 +244,25 @@ pub fn diagnose(
             let mut gram = vec![vec![0.0_f64; r]; r];
             let mut rhs = vec![0.0_f64; r];
             for (i, ri) in rows.iter().enumerate() {
-                rhs[i] = ri.iter().zip(dep_row.iter()).map(|(a, b)| a * b).sum::<f64>();
+                rhs[i] = ri
+                    .iter()
+                    .zip(dep_row.iter())
+                    .map(|(a, b)| a * b)
+                    .sum::<f64>();
                 for (j, rj) in rows.iter().enumerate() {
                     gram[i][j] = ri.iter().zip(rj.iter()).map(|(a, b)| a * b).sum::<f64>();
                 }
                 gram[i][i] += LAMBDA;
             }
-            let y = gaussian_elimination(&mut gram, &mut rhs)
-                .unwrap_or_else(|| vec![0.0_f64; r]);
+            let y = gaussian_elimination(&mut gram, &mut rhs).unwrap_or_else(|| vec![0.0_f64; r]);
             let max_c = y.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-            let support: Vec<usize> = (0..r)
-                .filter(|&jj| y[jj].abs() > 1.0e-6 * max_c)
-                .collect();
+            let support: Vec<usize> = (0..r).filter(|&jj| y[jj].abs() > 1.0e-6 * max_c).collect();
             // Self-verification: the reported group must be a REAL relation —
             // reconstruct the dependent row from the support and reject the
             // group when the reconstruction residual is not at roundoff.
             let residual: f64 = (0..n_eff)
                 .map(|rr| {
-                    let recon: f64 =
-                        support.iter().map(|&jj| y[jj] * rows[jj][rr]).sum();
+                    let recon: f64 = support.iter().map(|&jj| y[jj] * rows[jj][rr]).sum();
                     (recon - dep_row[rr]).abs()
                 })
                 .fold(0.0_f64, f64::max);
@@ -348,8 +341,7 @@ fn effective_columns(
             // Partially fixed plane: keep the raw free coordinates.
             continue;
         }
-        let Some((t1, t2)) = plane_tangents(params[idx[0]], params[idx[1]], params[idx[2]])
-        else {
+        let Some((t1, t2)) = plane_tangents(params[idx[0]], params[idx[1]], params[idx[2]]) else {
             continue;
         };
         let offset = (0.0, 0.0, 0.0, 1.0);
@@ -385,11 +377,7 @@ fn effective_columns(
 /// Two unit vectors spanning the tangent plane of `n = (nx, ny, nz)`.
 /// Deterministic: the helper axis is the coordinate axis least aligned with
 /// the normal, so the basis does not jitter between equivalent normals.
-fn plane_tangents(
-    nx: f64,
-    ny: f64,
-    nz: f64,
-) -> Option<((f64, f64, f64), (f64, f64, f64))> {
+fn plane_tangents(nx: f64, ny: f64, nz: f64) -> Option<((f64, f64, f64), (f64, f64, f64))> {
     let len = (nx * nx + ny * ny + nz * nz).sqrt();
     if !(len > SOLVER_NORM_TOL) {
         return None;
@@ -464,15 +452,24 @@ mod tests {
         let d = sk.diagnose();
         assert_eq!(d.dof, 0, "plane must be fully constrained: {d:?}");
         assert!(d.conflicting.is_empty(), "{d:?}");
-        assert!(d.redundant.is_empty(), "gauge must not surface as a dependency: {d:?}");
+        assert!(
+            d.redundant.is_empty(),
+            "gauge must not surface as a dependency: {d:?}"
+        );
     }
 
     #[test]
     fn duplicate_sphere_radius_is_redundant() {
         let mut sk = SpaceSketch::new();
         let s = sk.add_sphere(0.0, 0.0, 0.0, 2.0);
-        sk.add_constraint(SpaceConstraint::SphereRadius { sphere: s, radius: 2.0 });
-        sk.add_constraint(SpaceConstraint::SphereRadius { sphere: s, radius: 2.0 });
+        sk.add_constraint(SpaceConstraint::SphereRadius {
+            sphere: s,
+            radius: 2.0,
+        });
+        sk.add_constraint(SpaceConstraint::SphereRadius {
+            sphere: s,
+            radius: 2.0,
+        });
         let d = sk.diagnose();
         assert!(!d.redundant.is_empty(), "{d:?}");
         assert!(d.conflicting.is_empty(), "{d:?}");
@@ -491,5 +488,4 @@ mod tests {
         let d = sk.diagnose();
         assert!(!d.conflicting.is_empty(), "{d:?}");
     }
-
 }

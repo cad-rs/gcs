@@ -34,7 +34,11 @@ fn assert_near(a: f64, b: f64, tol: f64, label: &str) {
 
 fn plane_normal(sk: &SpaceSketch, plane: usize) -> (f64, f64, f64) {
     let e = &sk.entities[plane];
-    (sk.params[e.param(0)], sk.params[e.param(1)], sk.params[e.param(2)])
+    (
+        sk.params[e.param(0)],
+        sk.params[e.param(1)],
+        sk.params[e.param(2)],
+    )
 }
 
 fn point3(sk: &SpaceSketch, id: usize) -> (f64, f64, f64) {
@@ -55,16 +59,34 @@ fn convergence_corpus() {
         sk.add_constraint(SpaceConstraint::point_distance(p0, p1, 3.0));
         sk.add_constraint(SpaceConstraint::point_distance(p1, p2, 4.0));
         solve(&mut sk);
-        assert_near(dist(point3(&sk, p0), point3(&sk, p1)), 3.0, 1e-8, "chain d01");
-        assert_near(dist(point3(&sk, p1), point3(&sk, p2)), 4.0, 1e-8, "chain d12");
+        assert_near(
+            dist(point3(&sk, p0), point3(&sk, p1)),
+            3.0,
+            1e-8,
+            "chain d01",
+        );
+        assert_near(
+            dist(point3(&sk, p1), point3(&sk, p2)),
+            4.0,
+            1e-8,
+            "chain d12",
+        );
     }
 
     // 2. Driven line: fixed start, prescribed length and axial direction.
     {
         let mut sk = SpaceSketch::new();
         let l = sk.add_line(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
-        sk.add_constraint(SpaceConstraint::fix_point(SpacePointRef::LineStart(l), 0.0, 0.0, 0.0));
-        sk.add_constraint(SpaceConstraint::LineLength { line: l, length: 5.0 });
+        sk.add_constraint(SpaceConstraint::fix_point(
+            SpacePointRef::LineStart(l),
+            0.0,
+            0.0,
+            0.0,
+        ));
+        sk.add_constraint(SpaceConstraint::LineLength {
+            line: l,
+            length: 5.0,
+        });
         sk.add_constraint(SpaceConstraint::LineParallelToDir {
             line: l,
             dx: 0.0,
@@ -73,7 +95,12 @@ fn convergence_corpus() {
         });
         solve(&mut sk);
         let (_, _, _, x2, y2, z2) = sk.line_endpoints(l).unwrap();
-        assert_near((x2 * x2 + y2 * y2 + z2 * z2).sqrt(), 5.0, 1e-8, "line length");
+        assert_near(
+            (x2 * x2 + y2 * y2 + z2 * z2).sqrt(),
+            5.0,
+            1e-8,
+            "line length",
+        );
         assert_near(x2, 0.0, 1e-8, "line dx");
         assert_near(y2, 0.0, 1e-8, "line dy");
     }
@@ -92,7 +119,12 @@ fn convergence_corpus() {
             sphere: s,
         });
         solve(&mut sk);
-        assert_near(dist(point3(&sk, p), (0.0, 0.0, 0.0)), 3.0, 1e-8, "point on sphere");
+        assert_near(
+            dist(point3(&sk, p), (0.0, 0.0, 0.0)),
+            3.0,
+            1e-8,
+            "point on sphere",
+        );
     }
 
     // 4. Point pulled onto a cylinder surface.
@@ -120,7 +152,12 @@ fn convergence_corpus() {
         let l = sk.add_line(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
         let plane = sk.add_plane(0.0, 0.0, 1.0, 0.0);
         sk.fix_entity(plane);
-        sk.add_constraint(SpaceConstraint::fix_point(SpacePointRef::LineStart(l), 0.0, 0.0, 0.0));
+        sk.add_constraint(SpaceConstraint::fix_point(
+            SpacePointRef::LineStart(l),
+            0.0,
+            0.0,
+            0.0,
+        ));
         sk.add_constraint(SpaceConstraint::LinePerpendicularPlane { line: l, plane });
         solve(&mut sk);
         let (_, _, _, x2, y2, z2) = sk.line_endpoints(l).unwrap();
@@ -135,7 +172,12 @@ fn convergence_corpus() {
         let l1 = sk.add_line(0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
         sk.fix_entity(l1);
         let l2 = sk.add_line(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
-        sk.add_constraint(SpaceConstraint::fix_point(SpacePointRef::LineStart(l2), 0.0, 0.0, 0.0));
+        sk.add_constraint(SpaceConstraint::fix_point(
+            SpacePointRef::LineStart(l2),
+            0.0,
+            0.0,
+            0.0,
+        ));
         sk.add_constraint(SpaceConstraint::AngleLineLine {
             l1,
             l2,
@@ -153,7 +195,12 @@ fn convergence_corpus() {
         let plane = sk.add_plane(0.3, -0.4, 0.5, 1.2);
         let p = sk.add_point(0.0, 0.0, 5.0);
         sk.fix_entity(p);
-        sk.add_constraint(SpaceConstraint::PlaneNormal { plane, nx: 0.0, ny: 0.0, nz: 1.0 });
+        sk.add_constraint(SpaceConstraint::PlaneNormal {
+            plane,
+            nx: 0.0,
+            ny: 0.0,
+            nz: 1.0,
+        });
         sk.add_constraint(SpaceConstraint::PointOnPlane {
             point: SpacePointRef::Point(p),
             plane,
@@ -165,7 +212,11 @@ fn convergence_corpus() {
         assert_near(n.2, 1.0, 1e-8, "plane nz");
         let e = &sk.entities[plane];
         assert_near(sk.params[e.param(3)], 5.0, 1e-8, "plane d");
-        assert_eq!(sk.diagnose().dof, 0, "determined plane is fully constrained");
+        assert_eq!(
+            sk.diagnose().dof,
+            0,
+            "determined plane is fully constrained"
+        );
     }
 
     // 8. Externally tangent spheres with one free center coordinate.
@@ -178,7 +229,11 @@ fn convergence_corpus() {
         for k in [1usize, 2, 3] {
             sk.fix_param(start + k);
         }
-        sk.add_constraint(SpaceConstraint::SphereTangent { s1, s2, external: true });
+        sk.add_constraint(SpaceConstraint::SphereTangent {
+            s1,
+            s2,
+            external: true,
+        });
         solve(&mut sk);
         let e = &sk.entities[s2];
         let cx = sk.params[e.param(0)];
@@ -195,10 +250,19 @@ fn convergence_corpus() {
         for k in [1usize, 2, 3, 4, 5, 6] {
             sk.fix_param(start + k);
         }
-        sk.add_constraint(SpaceConstraint::CylinderTangent { c1, c2, external: true });
+        sk.add_constraint(SpaceConstraint::CylinderTangent {
+            c1,
+            c2,
+            external: true,
+        });
         solve(&mut sk);
         let e = &sk.entities[c2];
-        assert_near(sk.params[e.param(0)], 2.5, 1e-8, "cylinder tangent center x");
+        assert_near(
+            sk.params[e.param(0)],
+            2.5,
+            1e-8,
+            "cylinder tangent center x",
+        );
     }
 
     // 10. Plane tangent to a sphere with a free offset.
@@ -258,7 +322,12 @@ fn convergence_corpus() {
         let l1 = sk.add_line(0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
         sk.fix_entity(l1);
         let l2 = sk.add_line(2.0, 0.0, 0.0, 3.0, 1.0, 1.0);
-        sk.add_constraint(SpaceConstraint::fix_point(SpacePointRef::LineStart(l2), 2.0, 0.0, 0.0));
+        sk.add_constraint(SpaceConstraint::fix_point(
+            SpacePointRef::LineStart(l2),
+            2.0,
+            0.0,
+            0.0,
+        ));
         sk.add_constraint(SpaceConstraint::LineParallelLine(l1, l2));
         solve(&mut sk);
         let (_, _, _, x2, y2, z2) = sk.line_endpoints(l2).unwrap();
@@ -296,9 +365,22 @@ fn conflict_distance_beyond_pinned_span() {
 fn conflict_line_length_vs_pinned_ends() {
     let mut sk = SpaceSketch::new();
     let l = sk.add_line(0.0, 0.0, 0.0, 3.0, 0.0, 0.0);
-    sk.add_constraint(SpaceConstraint::fix_point(SpacePointRef::LineStart(l), 0.0, 0.0, 0.0));
-    sk.add_constraint(SpaceConstraint::fix_point(SpacePointRef::LineEnd(l), 3.0, 0.0, 0.0));
-    sk.add_constraint(SpaceConstraint::LineLength { line: l, length: 7.0 });
+    sk.add_constraint(SpaceConstraint::fix_point(
+        SpacePointRef::LineStart(l),
+        0.0,
+        0.0,
+        0.0,
+    ));
+    sk.add_constraint(SpaceConstraint::fix_point(
+        SpacePointRef::LineEnd(l),
+        3.0,
+        0.0,
+        0.0,
+    ));
+    sk.add_constraint(SpaceConstraint::LineLength {
+        line: l,
+        length: 7.0,
+    });
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
 }
@@ -320,8 +402,18 @@ fn conflict_parallel_and_perpendicular() {
 fn conflict_plane_normals() {
     let mut sk = SpaceSketch::new();
     let plane = sk.add_plane(0.3, -0.4, 0.5, 1.2);
-    sk.add_constraint(SpaceConstraint::PlaneNormal { plane, nx: 0.0, ny: 0.0, nz: 1.0 });
-    sk.add_constraint(SpaceConstraint::PlaneNormal { plane, nx: 1.0, ny: 0.0, nz: 0.0 });
+    sk.add_constraint(SpaceConstraint::PlaneNormal {
+        plane,
+        nx: 0.0,
+        ny: 0.0,
+        nz: 1.0,
+    });
+    sk.add_constraint(SpaceConstraint::PlaneNormal {
+        plane,
+        nx: 1.0,
+        ny: 0.0,
+        nz: 0.0,
+    });
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
 }
@@ -330,8 +422,14 @@ fn conflict_plane_normals() {
 fn conflict_sphere_radius() {
     let mut sk = SpaceSketch::new();
     let s = sk.add_sphere(0.0, 0.0, 0.0, 2.0);
-    sk.add_constraint(SpaceConstraint::SphereRadius { sphere: s, radius: 2.0 });
-    sk.add_constraint(SpaceConstraint::SphereRadius { sphere: s, radius: 3.0 });
+    sk.add_constraint(SpaceConstraint::SphereRadius {
+        sphere: s,
+        radius: 2.0,
+    });
+    sk.add_constraint(SpaceConstraint::SphereRadius {
+        sphere: s,
+        radius: 3.0,
+    });
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
 }
@@ -340,8 +438,14 @@ fn conflict_sphere_radius() {
 fn conflict_cylinder_radius() {
     let mut sk = SpaceSketch::new();
     let c = sk.add_cylinder(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0);
-    sk.add_constraint(SpaceConstraint::CylinderRadius { cylinder: c, radius: 1.0 });
-    sk.add_constraint(SpaceConstraint::CylinderRadius { cylinder: c, radius: 2.0 });
+    sk.add_constraint(SpaceConstraint::CylinderRadius {
+        cylinder: c,
+        radius: 1.0,
+    });
+    sk.add_constraint(SpaceConstraint::CylinderRadius {
+        cylinder: c,
+        radius: 2.0,
+    });
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
 }
@@ -365,8 +469,14 @@ fn conflict_point_pinned_off_plane() {
 
 fn assert_redundant(sk: &SpaceSketch, label: &str) {
     let d = sk.diagnose();
-    assert!(!d.redundant.is_empty(), "{label}: expected a redundant row, got {d:?}");
-    assert!(d.conflicting.is_empty(), "{label}: misclassified as conflicting: {d:?}");
+    assert!(
+        !d.redundant.is_empty(),
+        "{label}: expected a redundant row, got {d:?}"
+    );
+    assert!(
+        d.conflicting.is_empty(),
+        "{label}: misclassified as conflicting: {d:?}"
+    );
 }
 
 #[test]
@@ -410,8 +520,14 @@ fn redundancy_corpus() {
     {
         let mut sk = SpaceSketch::new();
         let s = sk.add_sphere(0.0, 0.0, 0.0, 2.0);
-        sk.add_constraint(SpaceConstraint::SphereRadius { sphere: s, radius: 2.0 });
-        sk.add_constraint(SpaceConstraint::SphereRadius { sphere: s, radius: 2.0 });
+        sk.add_constraint(SpaceConstraint::SphereRadius {
+            sphere: s,
+            radius: 2.0,
+        });
+        sk.add_constraint(SpaceConstraint::SphereRadius {
+            sphere: s,
+            radius: 2.0,
+        });
         assert_redundant(&sk, "duplicate sphere radius");
     }
 
@@ -419,8 +535,14 @@ fn redundancy_corpus() {
     {
         let mut sk = SpaceSketch::new();
         let c = sk.add_cylinder(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0);
-        sk.add_constraint(SpaceConstraint::CylinderRadius { cylinder: c, radius: 2.0 });
-        sk.add_constraint(SpaceConstraint::CylinderRadius { cylinder: c, radius: 2.0 });
+        sk.add_constraint(SpaceConstraint::CylinderRadius {
+            cylinder: c,
+            radius: 2.0,
+        });
+        sk.add_constraint(SpaceConstraint::CylinderRadius {
+            cylinder: c,
+            radius: 2.0,
+        });
         assert_redundant(&sk, "duplicate cylinder radius");
     }
 
@@ -428,8 +550,14 @@ fn redundancy_corpus() {
     {
         let mut sk = SpaceSketch::new();
         let l = sk.add_line(0.0, 0.0, 0.0, 3.0, 4.0, 0.0);
-        sk.add_constraint(SpaceConstraint::LineLength { line: l, length: 5.0 });
-        sk.add_constraint(SpaceConstraint::LineLength { line: l, length: 5.0 });
+        sk.add_constraint(SpaceConstraint::LineLength {
+            line: l,
+            length: 5.0,
+        });
+        sk.add_constraint(SpaceConstraint::LineLength {
+            line: l,
+            length: 5.0,
+        });
         assert_redundant(&sk, "duplicate line length");
     }
 
@@ -458,8 +586,14 @@ fn redundancy_corpus() {
 fn dependency_group_names_the_whole_relation() {
     let mut sk = SpaceSketch::new();
     let s = sk.add_sphere(0.0, 0.0, 0.0, 2.0);
-    sk.add_constraint(SpaceConstraint::SphereRadius { sphere: s, radius: 2.0 });
-    sk.add_constraint(SpaceConstraint::SphereRadius { sphere: s, radius: 2.0 });
+    sk.add_constraint(SpaceConstraint::SphereRadius {
+        sphere: s,
+        radius: 2.0,
+    });
+    sk.add_constraint(SpaceConstraint::SphereRadius {
+        sphere: s,
+        radius: 2.0,
+    });
     let d = sk.diagnose();
     assert!(
         d.dependency_groups.iter().any(|g| g == &vec![0, 1]),
@@ -483,7 +617,11 @@ fn rank_based_dof_corpus() {
     let b = sk.add_point(1.0, 0.0, 0.0);
     sk.add_constraint(SpaceConstraint::point_distance(a, b, 2.0));
     let d = sk.diagnose();
-    assert_eq!((d.rank, d.dof), (1, 5), "one distance removes one of six DOF: {d:?}");
+    assert_eq!(
+        (d.rank, d.dof),
+        (1, 5),
+        "one distance removes one of six DOF: {d:?}"
+    );
 
     let mut sk = SpaceSketch::new();
     sk.add_line(0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
@@ -505,7 +643,11 @@ fn rank_based_dof_corpus() {
     let plane = sk.add_plane(0.3, -0.4, 0.5, 1.2);
     let start = sk.entities[plane].param_start;
     sk.fix_param(start + 3);
-    assert_eq!(sk.diagnose().dof, 3, "offset-fixed plane keeps three normal DOF");
+    assert_eq!(
+        sk.diagnose().dof,
+        3,
+        "offset-fixed plane keeps three normal DOF"
+    );
 }
 
 // ── determinism ──────────────────────────────────────────────────────────────
@@ -515,7 +657,12 @@ fn deterministic_system() -> SpaceSketch {
     let plane = sk.add_plane(0.3, -0.4, 0.5, 1.2);
     let p = sk.add_point(0.0, 0.0, 4.0);
     sk.fix_entity(p);
-    sk.add_constraint(SpaceConstraint::PlaneNormal { plane, nx: 0.0, ny: 0.0, nz: 1.0 });
+    sk.add_constraint(SpaceConstraint::PlaneNormal {
+        plane,
+        nx: 0.0,
+        ny: 0.0,
+        nz: 1.0,
+    });
     sk.add_constraint(SpaceConstraint::PointOnPlane {
         point: SpacePointRef::Point(p),
         plane,
@@ -529,7 +676,11 @@ fn repeated_solve_is_bitwise_deterministic() {
     let mut b = deterministic_system();
     solve(&mut a);
     solve(&mut b);
-    assert_eq!(a.params_snapshot(), b.params_snapshot(), "same input must give identical bits");
+    assert_eq!(
+        a.params_snapshot(),
+        b.params_snapshot(),
+        "same input must give identical bits"
+    );
 }
 
 #[test]
@@ -538,7 +689,11 @@ fn re_solve_at_the_solution_is_bitwise_stable() {
     solve(&mut sk);
     let first = sk.params_snapshot();
     solve(&mut sk);
-    assert_eq!(sk.params_snapshot(), first, "warm start at the solution must not move");
+    assert_eq!(
+        sk.params_snapshot(),
+        first,
+        "warm start at the solution must not move"
+    );
 }
 
 #[test]
@@ -550,7 +705,10 @@ fn per_component_solve_matches_all_at_once() {
         sk.add_constraint(SpaceConstraint::fix_point(pa, 0.0, 0.0, 0.0));
         sk.add_constraint(SpaceConstraint::point_distance(pa, pb, 5.0));
         let s = sk.add_sphere(9.0, 9.0, 9.0, 2.0);
-        sk.add_constraint(SpaceConstraint::SphereRadius { sphere: s, radius: 2.5 });
+        sk.add_constraint(SpaceConstraint::SphereRadius {
+            sphere: s,
+            radius: 2.5,
+        });
         sk
     }
 
@@ -565,7 +723,10 @@ fn per_component_solve_matches_all_at_once() {
         assert!(r.converged, "component {c}: residual {}", r.residual);
     }
     for (a, b) in all.params.iter().zip(piecewise.params.iter()) {
-        assert!((a - b).abs() < 1e-12, "per-component params diverge: {a} vs {b}");
+        assert!(
+            (a - b).abs() < 1e-12,
+            "per-component params diverge: {a} vs {b}"
+        );
     }
 }
 
@@ -595,7 +756,10 @@ fn incremental_system() -> SpaceSketch {
     sk.add_constraint(SpaceConstraint::fix_point(pa, 0.0, 0.0, 0.0));
     sk.add_constraint(SpaceConstraint::point_distance(pa, pb, 5.0));
     let s = sk.add_sphere(9.0, 9.0, 9.0, 2.0);
-    sk.add_constraint(SpaceConstraint::SphereRadius { sphere: s, radius: 2.5 });
+    sk.add_constraint(SpaceConstraint::SphereRadius {
+        sphere: s,
+        radius: 2.5,
+    });
     sk
 }
 
@@ -622,7 +786,8 @@ fn incremental_resolve_leaves_other_components_bitwise_untouched() {
     // Group B (sphere) parameters are bitwise unchanged.
     for (k, before) in before_sphere.iter().enumerate() {
         assert_eq!(
-            sk.params[sphere_start + k], *before,
+            sk.params[sphere_start + k],
+            *before,
             "untouched component param {} moved",
             sphere_start + k
         );
@@ -666,7 +831,11 @@ fn empty_incremental_selection_does_not_move() {
     let before = sk.params_snapshot();
     let r = sk.solve_incremental(&[]);
     assert!(r.converged, "settled system should report converged: {r:?}");
-    assert_eq!(sk.params_snapshot(), before, "empty selection must not move params");
+    assert_eq!(
+        sk.params_snapshot(),
+        before,
+        "empty selection must not move params"
+    );
 }
 
 #[test]
@@ -683,7 +852,12 @@ fn solve_selected_leaves_unselected_components_bitwise_untouched() {
     let r = sk.solve_selected(Some(&[a_ord]));
     assert!(r.converged, "residual {}", r.residual);
     for (k, v) in before.iter().enumerate() {
-        assert_eq!(sk.params[sphere_start + k], *v, "sphere param {} moved", sphere_start + k);
+        assert_eq!(
+            sk.params[sphere_start + k],
+            *v,
+            "sphere param {} moved",
+            sphere_start + k
+        );
     }
 }
 
@@ -706,9 +880,16 @@ fn equivalent_plane_scalings_produce_identical_systems() {
     let pa = a.add_plane(0.0, 0.0, 1.0, 10.0);
     let mut b = SpaceSketch::new();
     let pb = b.add_plane(0.0, 0.0, 5.0, 50.0);
-    assert_eq!(a.params, b.params, "scaled representations must normalize identically");
+    assert_eq!(
+        a.params, b.params,
+        "scaled representations must normalize identically"
+    );
     let _ = (pa, pb);
-    assert_eq!(a.diagnose(), b.diagnose(), "diagnosis must be scale invariant");
+    assert_eq!(
+        a.diagnose(),
+        b.diagnose(),
+        "diagnosis must be scale invariant"
+    );
 }
 
 #[test]
@@ -724,7 +905,11 @@ fn fixed_plane_parameters_are_not_renormalized() {
     sk.fix_param(start);
     let before = sk.params_snapshot();
     sk.normalize_planes();
-    assert_eq!(sk.params_snapshot(), before, "masked plane was renormalized");
+    assert_eq!(
+        sk.params_snapshot(),
+        before,
+        "masked plane was renormalized"
+    );
 }
 
 #[test]
