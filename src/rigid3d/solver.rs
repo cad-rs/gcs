@@ -1,4 +1,4 @@
-//! Gauss-Newton / damped least-squares solve over rigid-body DoFs.
+//! Rigid-pose solve: the assembly side of the shared pipeline.
 //!
 //! Per component: translation `(tx, ty, tz)` plus incremental orientation via
 //! quaternion integration (`q ← normalize(q · dq)`). Mate offsets `point1` /
@@ -9,16 +9,20 @@
 //! except the orientation rows of `Fixed` and `Lock`, which use central
 //! finite differences.
 //!
-//! Only the bodies a system's constraints reference become unknowns; the
-//! normal equations are accumulated over the non-zero Jacobian entries.
-//!
-//! The linear algebra is plain `Vec` containers on the crate's shared
-//! Gaussian-elimination core — no external linalg dependency.
+//! This module supplies the equations (residuals and Jacobian rows per
+//! constraint) and the solver front end. The iteration itself — the
+//! normal-equation step, the line search, the convergence polish — is the
+//! Newton core the other families use, driven per connected cluster. A body
+//! that a `Fixed` constraint pins in full is grounded: placed at its pose and
+//! left out of the unknowns, so the clusters hanging off it solve
+//! independently.
 
 use glam::{DQuat, DVec3, EulerRot};
 
 use super::constraint::{Constraint, ConstraintSystem, ConstraintType};
-use crate::numerics::{gaussian_elimination, normal_equations};
+use super::equations::{pack, unpack, RigidEquations, COLUMNS_PER_BODY};
+use crate::numerics::{CoreOptions, FailurePolicy, ResidualNorm};
+use crate::system;
 
 /// Finite-difference step for direction-mate Jacobian rows.
 const FD_EPS: f64 = 1e-7;
@@ -172,6 +176,21 @@ impl ConstraintSolver {
 
     /// [`Self::solve_components`] from an explicit warm start — the
     /// chaining form for piecewise multi-component solves.
+    ///
+    /// A body that a `Fixed` constraint pins in full (position and
+    /// orientation) is grounded: it is placed at that pose and is not an
+    /// unknown. Mates to the ground therefore couple nothing, and a
+    /// selected component is solved as the independent sub-clusters it
+    /// falls into once the ground is taken out — a hub with forty parts
+    /// pinned to it is forty small solves, not one large one.
+    ///
+    /// Each sub-cluster is one Newton solve of the shared pipeline over its
+    /// own bodies (six columns each): the normal-equation step, the line
+    /// search and the convergence polish are the ones the 2D and
+    /// 3D-geometric families use. A sub-cluster converges when the L2 norm
+    /// of its own residuals is below the tolerance; `success` says that
+    /// every one did, and `error` is the L2 norm of the whole system's
+    /// residuals at the returned poses.
     pub fn solve_components_from(
         &self,
         system: &ConstraintSystem,
@@ -180,220 +199,73 @@ impl ConstraintSolver {
         positions: Vec<DVec3>,
         rots: Vec<DQuat>,
     ) -> PoseSolveResult {
-        let mut positions = positions;
-        let mut rots = rots;
-        let mut success = true;
-        let mut iterations = 0usize;
-        for (ord, group) in components.iter().enumerate() {
-            if let Some(sel) = only {
-                if !sel.contains(&ord) {
-                    continue;
-                }
+        // Grounded bodies are known, not unknowns: place them, and let the
+        // clusters that hang off them come apart.
+        let eqs = RigidEquations::grounded(system);
+        let mut params = pack(&positions, &rots);
+        let mut clusters: Vec<Vec<usize>> = Vec::new();
+        for (ordinal, group) in components.iter().enumerate() {
+            if only.is_some_and(|selected| !selected.contains(&ordinal)) {
+                continue;
             }
-            let sub = ConstraintSystem {
-                constraints: group
-                    .iter()
-                    .map(|&i| system.constraints[i].clone())
-                    .collect(),
-                num_components: system.num_components,
-            };
-            let r = self.solve_from(&sub, positions.clone(), rots.clone());
-            // Untouched bodies have zero Jacobian columns in the sub-system,
-            // so their poses pass through unchanged.
-            positions = r.positions;
-            rots = r.rotations;
-            success &= r.success;
-            iterations += r.iterations;
+            eqs.snap_grounded(group, &mut params);
+            clusters.extend(system::components_of(&eqs, group, &params));
         }
-        let rj = Self::build_residual_jacobian(system, &positions, &rots);
+
+        let fixed = vec![false; system.num_components * COLUMNS_PER_BODY];
+        let result = system::solve_components(
+            &eqs,
+            &mut params,
+            &fixed,
+            &clusters,
+            None,
+            &self.core_options(),
+            |_, _| {},
+        );
+
+        // The reported error counts every constraint as an equation again,
+        // the grounding ones included.
+        let error = eqs.residual_norm_of_every_constraint(&params);
+        let (positions, rots) = unpack(&params);
         PoseSolveResult {
-            success,
-            error: l2_norm(&rj.r),
-            iterations,
-            positions,
-            rotations: rots.clone(),
-            orientations: quats_to_euler_xyz(&rots),
-        }
-    }
-
-    /// Solve from an explicit warm start (poses are NOT re-seeded) — the
-    /// M4-style round-trip and drift-probe entry point.
-    ///
-    /// Only the bodies the constraints reference become unknowns: a body no
-    /// constraint touches would contribute six all-zero Jacobian columns,
-    /// which cost cubic time in the linear solve and change nothing. Its
-    /// pose is passed through untouched.
-    pub fn solve_from(
-        &self,
-        system: &ConstraintSystem,
-        positions: Vec<DVec3>,
-        rots: Vec<DQuat>,
-    ) -> PoseSolveResult {
-        let active = Self::referenced_bodies(system);
-        if active.len() == system.num_components {
-            return self.solve_all_bodies(system, positions, rots);
-        }
-
-        let compact = Self::compact_system(system, &active);
-        let compact_positions: Vec<DVec3> = active.iter().map(|&b| positions[b]).collect();
-        let compact_rots: Vec<DQuat> = active.iter().map(|&b| rots[b]).collect();
-        let solved = self.solve_all_bodies(&compact, compact_positions, compact_rots);
-
-        let mut positions = positions;
-        let mut rots = rots;
-        for (k, &body) in active.iter().enumerate() {
-            positions[body] = solved.positions[k];
-            rots[body] = solved.rotations[k];
-        }
-        PoseSolveResult {
-            success: solved.success,
-            error: solved.error,
-            iterations: solved.iterations,
+            success: result.converged,
+            error,
+            iterations: result.iterations,
             orientations: quats_to_euler_xyz(&rots),
             positions,
             rotations: rots,
         }
     }
 
-    /// Sorted indices of the bodies at least one constraint references.
-    pub(crate) fn referenced_bodies(system: &ConstraintSystem) -> Vec<usize> {
-        let mut used = vec![false; system.num_components];
-        for c in &system.constraints {
-            used[c.component1] = true;
-            if let Some(c2) = c.component2 {
-                used[c2] = true;
-            }
-        }
-        (0..system.num_components).filter(|&b| used[b]).collect()
-    }
-
-    /// The same constraints over only the `active` bodies (sorted), with
-    /// component indices renumbered to positions in `active`. Ascending
-    /// order is kept, so the surviving Jacobian columns keep their order.
-    pub(crate) fn compact_system(system: &ConstraintSystem, active: &[usize]) -> ConstraintSystem {
-        let mut index_of = vec![usize::MAX; system.num_components];
-        for (k, &body) in active.iter().enumerate() {
-            index_of[body] = k;
-        }
-        let constraints = system
-            .constraints
-            .iter()
-            .map(|c| {
-                let mut c = c.clone();
-                c.component1 = index_of[c.component1];
-                c.component2 = c.component2.map(|b| index_of[b]);
-                c
-            })
-            .collect();
-        ConstraintSystem {
-            constraints,
-            num_components: active.len(),
-        }
-    }
-
-    /// The Gauss–Newton loop with every body of `system` as an unknown.
-    fn solve_all_bodies(
+    /// Solve from an explicit warm start (poses are NOT re-seeded) — the
+    /// M4-style round-trip and drift-probe entry point.
+    ///
+    /// Solves every connected cluster on its own (a full solve is the
+    /// composition of the per-cluster solves, as in the other families). A
+    /// body no constraint references keeps its pose untouched.
+    pub fn solve_from(
         &self,
         system: &ConstraintSystem,
         positions: Vec<DVec3>,
         rots: Vec<DQuat>,
     ) -> PoseSolveResult {
-        let n = system.num_components;
-        let cols = n * 6;
-        let mut positions = positions;
-        let mut rots = rots;
+        let components = Self::components(system);
+        self.solve_components_from(system, &components, None, positions, rots)
+    }
 
-        let m = Self::equation_count(system);
-        if m == 0 {
-            return PoseSolveResult {
-                success: true,
-                error: 0.0,
-                iterations: 0,
-                positions,
-                rotations: rots.clone(),
-                orientations: quats_to_euler_xyz(&rots),
-            };
-        }
-
-        let mut error = f64::MAX;
-
-        for iter in 0..self.options.max_iterations {
-            let rj = Self::build_residual_jacobian(system, &positions, &rots);
-            error = l2_norm(&rj.r);
-
-            if error < self.options.tolerance {
-                // Convergence polish (solver roadmap follow-up): the loop
-                // returns at the first pose under `tolerance`, which is
-                // path-dependent at that scale. One more accepted-if-
-                // not-worse Gauss-Newton step shrinks the terminal error
-                // further (measured round-trip drift drops well below the
-                // per-family corpus tolerances); the bitwise container-
-                // byte contract is closed on the 2D line, where the
-                // unregularised polish plus the sketcher persistence zero
-                // band land the terminal state exactly.
-                if error > 0.0 {
-                    if let Some(delta) =
-                        Self::solve_gauss_newton_step(&rj.j, &rj.r, self.options.lm_lambda, cols)
-                    {
-                        let d = self.options.damping;
-                        let mut pos = positions.clone();
-                        let mut rot = rots.clone();
-                        for comp in 0..n {
-                            let base = comp * 6;
-                            pos[comp].x += d * delta[base];
-                            pos[comp].y += d * delta[base + 1];
-                            pos[comp].z += d * delta[base + 2];
-                            let dw = DVec3::new(delta[base + 3], delta[base + 4], delta[base + 5]);
-                            rot[comp] = (rot[comp] * DQuat::from_scaled_axis(dw * d)).normalize();
-                        }
-                        let rj_polished = Self::build_residual_jacobian(system, &pos, &rot);
-                        let polished_error = l2_norm(&rj_polished.r);
-                        if polished_error <= error {
-                            return PoseSolveResult {
-                                success: true,
-                                error: polished_error,
-                                iterations: iter,
-                                positions: pos,
-                                rotations: rot.clone(),
-                                orientations: quats_to_euler_xyz(&rot),
-                            };
-                        }
-                    }
-                }
-                return PoseSolveResult {
-                    success: true,
-                    error,
-                    iterations: iter,
-                    positions,
-                    rotations: rots.clone(),
-                    orientations: quats_to_euler_xyz(&rots),
-                };
-            }
-
-            let Some(delta) =
-                Self::solve_gauss_newton_step(&rj.j, &rj.r, self.options.lm_lambda, cols)
-            else {
-                break;
-            };
-
-            let d = self.options.damping;
-            for comp in 0..n {
-                let base = comp * 6;
-                positions[comp].x += d * delta[base];
-                positions[comp].y += d * delta[base + 1];
-                positions[comp].z += d * delta[base + 2];
-                let dw = DVec3::new(delta[base + 3], delta[base + 4], delta[base + 5]);
-                rots[comp] = (rots[comp] * DQuat::from_scaled_axis(dw * d)).normalize();
-            }
-        }
-
-        PoseSolveResult {
-            success: error < self.options.tolerance,
-            error,
-            iterations: self.options.max_iterations,
-            positions,
-            rotations: rots.clone(),
-            orientations: quats_to_euler_xyz(&rots),
+    /// This solver's options in the Newton core's terms. A solve that does
+    /// not converge returns the poses it reached, as it always has.
+    fn core_options(&self) -> CoreOptions {
+        CoreOptions {
+            tolerance: self.options.tolerance,
+            norm: ResidualNorm::L2,
+            max_iterations: self.options.max_iterations,
+            on_failure: FailurePolicy::KeepLast,
+            lambda: self.options.lm_lambda.max(1e-16),
+            initial_step: self.options.damping,
+            // One polish step, as this family has always done.
+            polish_steps: 1,
+            polish_singular: true,
         }
     }
 
@@ -431,19 +303,39 @@ impl ConstraintSolver {
             .sum()
     }
 
+    #[cfg(test)]
     pub(crate) fn build_residual_jacobian(
         system: &ConstraintSystem,
         positions: &[DVec3],
         rots: &[DQuat],
     ) -> ResidualJacobian {
+        let mut rj = ResidualJacobian {
+            r: Vec::new(),
+            j: Vec::new(),
+        };
+        Self::fill_residual_jacobian(system, positions, rots, &mut rj);
+        rj
+    }
+
+    /// [`Self::build_residual_jacobian`] into the buffers of `rj`, which are
+    /// resized and overwritten.
+    pub(crate) fn fill_residual_jacobian(
+        system: &ConstraintSystem,
+        positions: &[DVec3],
+        rots: &[DQuat],
+        rj: &mut ResidualJacobian,
+    ) {
         let n = system.num_components;
         let cols = n * 6;
         let m = Self::equation_count(system);
 
-        let mut rj = ResidualJacobian {
-            r: vec![0.0_f64; m],
-            j: vec![vec![0.0_f64; cols]; m],
-        };
+        rj.r.clear();
+        rj.r.resize(m, 0.0_f64);
+        rj.j.resize_with(m, Vec::new);
+        for row in rj.j.iter_mut() {
+            row.clear();
+            row.resize(cols, 0.0_f64);
+        }
 
         let mut row = 0usize;
         for constraint in &system.constraints {
@@ -660,7 +552,6 @@ impl ConstraintSolver {
         }
 
         debug_assert_eq!(row, m);
-        rj
     }
 
     fn fill_vec3_residual_fd<F>(
@@ -845,32 +736,6 @@ impl ConstraintSolver {
             }
         }
     }
-
-    /// Returns `Δ` solving `(JᵀJ + λI) Δ = -Jᵀ r`, with adaptive λ if the system is near-singular.
-    fn solve_gauss_newton_step(
-        j: &[Vec<f64>],
-        r: &[f64],
-        base_lambda: f64,
-        cols: usize,
-    ) -> Option<Vec<f64>> {
-        // A = JᵀJ, b = −Jᵀr
-        let (a, b) = normal_equations(j, r, cols);
-
-        let mut lambda = base_lambda.max(1e-16);
-
-        for _ in 0..8 {
-            let mut augmented = a.clone();
-            for (i, row) in augmented.iter_mut().enumerate() {
-                row[i] += lambda;
-            }
-            if let Some(delta) = gaussian_elimination(&mut augmented, &mut b.clone()) {
-                return Some(delta);
-            }
-            lambda *= 10.0;
-        }
-
-        None
-    }
 }
 
 #[inline]
@@ -882,6 +747,7 @@ fn e_axis(j: usize) -> DVec3 {
     }
 }
 
+#[cfg(test)]
 fn l2_norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
@@ -1446,7 +1312,6 @@ mod gate_tests {
     }
 }
 
-#[cfg(test)]
 #[cfg(test)]
 mod assembly_acceptance {
     use super::*;

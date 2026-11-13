@@ -8,6 +8,7 @@
 
 use crate::constraint::Constraint;
 use crate::entity::Entity;
+use crate::numerics::CoreOptions;
 use crate::system::{self, Equations, SparseRow};
 
 pub use crate::numerics::{
@@ -161,7 +162,15 @@ pub fn solve_components_with(
         entities,
         constraints,
     };
-    system::solve_components(&eqs, params, fixed, components, only, options, |_, _| {})
+    system::solve_components(
+        &eqs,
+        params,
+        fixed,
+        components,
+        only,
+        &CoreOptions::from(options),
+        |_, _| {},
+    )
 }
 
 #[cfg(test)]

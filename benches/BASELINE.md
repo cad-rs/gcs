@@ -70,15 +70,43 @@ the benchmark name is N.
 | `assembly/diagnose_star/20` | | 7.36 ms | 4.06 ms | 1.8× |
 | `assembly/diagnose_star/40` | | 53.4 ms | 31.8 ms | 1.7× |
 
+### After the move to the shared pipeline (P1.1)
+
+The rigid-pose family now solves and diagnoses through the same pipeline as
+the other two, and a body pinned in full by a `Fixed` constraint is
+grounded (placed, not solved for). Same machine, same fixtures:
+
+| Benchmark | P0 | P1.1 | Change |
+|---|---:|---:|---:|
+| `assembly/solve_chain/5` | 66 µs | 109 µs | 1.65× slower |
+| `assembly/solve_chain/20` | 0.817 ms | 1.01 ms | 1.24× slower |
+| `assembly/solve_chain/40` | 4.22 ms | 4.41 ms | level |
+| `assembly/solve_star/5` | 75 µs | 88.5 µs | 1.18× slower |
+| `assembly/solve_star/20` | 0.884 ms | 0.348 ms | 2.5× faster |
+| `assembly/solve_star/40` | 4.28 ms | 0.695 ms | 6.2× faster |
+| `assembly/diagnose_star/5` | 131 µs | 307 µs | 2.3× slower |
+| `assembly/diagnose_star/20` | 4.06 ms | 6.50 ms | 1.6× slower |
+| `assembly/diagnose_star/40` | 31.8 ms | 44.9 ms | 1.4× slower |
+
+- The star is faster because its parts hang off the ground and now solve as
+  independent six-column systems; it scales linearly in the number of parts.
+- The chain is one coupled cluster either way, so only the fixed cost of
+  the generic pipeline shows: noticeable at 5 bodies, gone by 40.
+- The diagnosis pays that fixed cost too, and now also extracts dependency
+  groups, which the assembly diagnosis did not report before.
+- The 2D and 3D-geometric benchmarks moved by less than 15%, mostly down:
+  the Newton loop no longer re-evaluates the residuals of a step it has
+  just accepted.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.
 
-| Gate | 0.1.0 | P0 |
-|---|---:|---:|
-| `corpus_metrics_within_thresholds` (2D, 320 cases), unoptimised | 6.2 s | 2.4 s |
-| `assembly_metrics_within_thresholds` (333 cases), unoptimised | 411 s | 69 s |
-| `assembly_metrics_within_thresholds`, optimised | 21.0 s | 1.7 s |
+| Gate | 0.1.0 | P0 | P1.1 |
+|---|---:|---:|---:|
+| `corpus_metrics_within_thresholds` (2D, 320 cases), unoptimised | 6.2 s | 2.4 s | 2.4 s |
+| `assembly_metrics_within_thresholds` (333 cases), unoptimised | 411 s | 69 s | 38 s |
+| `assembly_metrics_within_thresholds`, optimised | 21.0 s | 1.7 s | 1.5 s |
 
 ## Reading the numbers
 

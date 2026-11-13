@@ -5,10 +5,11 @@
 //! per component. Jacobian rows are analytic (translation columns ±I,
 //! rotation columns via the `ω × r` linearization, direction rows via
 //! `δd = ω × d`), except the orientation rows of `Fixed` and `Lock`, which
-//! use central finite differences. The step solves `(JᵀJ + λI) Δ = −Jᵀr`
-//! with an adaptive λ ladder for near-singular systems
-//! (Levenberg–Marquardt-style), on the shared Gaussian-elimination core of
-//! [`crate::numerics`].
+//! use central finite differences. The solve and the diagnosis are the
+//! shared pipeline of the other families, run over these columns: the
+//! Newton core of [`crate::numerics`] steps a pose by adding the
+//! translation and rotating the quaternion. A body that a `Fixed` constraint
+//! pins in full is grounded and is not solved for.
 //!
 //! Constraint set: Fixed (± orientation), Coincident, Distance, Angle,
 //! Parallel, Perpendicular, Concentric, PointOnPlane, Lock.

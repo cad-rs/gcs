@@ -69,7 +69,7 @@ pub fn diagnose(
 ) -> AssemblyDiagnosis {
     let params = pack(positions, rots);
     let fixed = vec![false; system.num_components * COLUMNS_PER_BODY];
-    let d = system::diagnose(&RigidEquations { system }, &params, &fixed, &NoGauge);
+    let d = system::diagnose(&RigidEquations::new(system), &params, &fixed, &NoGauge);
 
     // Constraint indices → mate ids, keeping the order and dropping repeats
     // (two constraints may carry the same id).

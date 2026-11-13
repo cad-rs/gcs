@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use crate::diagnosis::{Diagnosis, CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL};
 use crate::numerics::{
     self, gt, householder_qr_column_pivoting, le, solve_normal_equations, AdditiveSpace,
-    RowSpaceGram, SolveOptions, SolveResult, SolveStatus, StepSpace, LAMBDA,
+    CoreOptions, RowSpaceGram, SolveResult, SolveStatus, StepSpace, LAMBDA,
 };
 
 /// A sparse row or direction: `(parameter or column index, value)` pairs.
@@ -152,6 +152,17 @@ pub(crate) fn touched_params<E: Equations + ?Sized>(
 /// indices, ordered by first appearance, so the partition is deterministic.
 /// A constraint that touches no parameter forms a group of its own.
 pub(crate) fn components<E: Equations + ?Sized>(eqs: &E, params: &[f64]) -> Vec<Vec<usize>> {
+    components_of(eqs, &all_indices(eqs), params)
+}
+
+/// [`components`] of the constraints `indices` alone: the connected
+/// components of the graph those constraints span, as groups of the given
+/// indices in order of first appearance.
+pub(crate) fn components_of<E: Equations + ?Sized>(
+    eqs: &E,
+    indices: &[usize],
+    params: &[f64],
+) -> Vec<Vec<usize>> {
     // Union-find over columns.
     let mut parent: Vec<usize> = (0..eqs.column_count(params)).collect();
     fn find(parent: &mut [usize], x: usize) -> usize {
@@ -177,10 +188,9 @@ pub(crate) fn components<E: Equations + ?Sized>(eqs: &E, params: &[f64]) -> Vec<
 
     // Pass 1: every constraint unions the parameters it touches. Its first
     // touched parameter is remembered for the grouping pass.
-    let count = eqs.constraint_count();
-    let mut first_param: Vec<Option<usize>> = Vec::with_capacity(count);
+    let mut first_param: Vec<Option<usize>> = Vec::with_capacity(indices.len());
     let mut scratch: Vec<SparseRow> = Vec::new();
-    for i in 0..count {
+    for &i in indices {
         scratch.clear();
         scratch.resize_with(eqs.equation_count(i), Vec::new);
         eqs.jacobian(i, params, &mut scratch);
@@ -203,7 +213,7 @@ pub(crate) fn components<E: Equations + ?Sized>(eqs: &E, params: &[f64]) -> Vec<
     // (regression-tested).
     let mut order: Vec<usize> = Vec::new();
     let mut by_root: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (index, first) in first_param.into_iter().enumerate() {
+    for (&index, first) in indices.iter().zip(first_param) {
         match first {
             Some(param) => {
                 let root = find(&mut parent, param);
@@ -247,7 +257,7 @@ pub(crate) fn solve_components<E, F>(
     fixed: &[bool],
     components: &[Vec<usize>],
     only: Option<&[usize]>,
-    options: &SolveOptions,
+    options: &CoreOptions,
     after_solve: F,
 ) -> SolveResult
 where
@@ -291,7 +301,7 @@ fn solve_one<E: Equations + ?Sized>(
     group: &[usize],
     params: &mut [f64],
     fixed: &[bool],
-    options: &SolveOptions,
+    options: &CoreOptions,
 ) -> (SolveResult, Vec<usize>) {
     let touched = touched_params(eqs, group, params);
     // Only this component's own free columns move: the Newton loop's free

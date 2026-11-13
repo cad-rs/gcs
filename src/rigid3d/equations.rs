@@ -7,9 +7,11 @@
 //! step and renormalised. Counting in columns is what makes the degrees of
 //! freedom come out right without any gauge bookkeeping.
 
+use std::cell::RefCell;
+
 use glam::{DQuat, DVec3};
 
-use super::constraint::ConstraintSystem;
+use super::constraint::{ConstraintSystem, ConstraintType};
 use super::solver::{ConstraintSolver, ResidualJacobian};
 use crate::numerics::StepSpace;
 use crate::system::{Equations, SparseRow};
@@ -29,7 +31,6 @@ pub(crate) fn pack(positions: &[DVec3], rots: &[DQuat]) -> Vec<f64> {
 }
 
 /// The poses held in a parameter vector written by [`pack`].
-#[cfg(test)]
 pub(crate) fn unpack(params: &[f64]) -> (Vec<DVec3>, Vec<DQuat>) {
     let bodies = params.len() / STORED_PER_BODY;
     (
@@ -50,46 +51,188 @@ fn rotation(params: &[f64], body: usize) -> DQuat {
 
 /// An assembly's constraints as the pipeline's [`Equations`].
 pub(crate) struct RigidEquations<'a> {
-    pub(crate) system: &'a ConstraintSystem,
+    system: &'a ConstraintSystem,
+    /// Per body: grounded, so not an unknown (see [`RigidEquations::grounded`]).
+    held: Vec<bool>,
+    /// Per constraint: the `Fixed` that defines a grounded body.
+    definition: Vec<bool>,
+    /// Per constraint: the constraint as a system of its own, over just its
+    /// own bodies.
+    alone: Vec<Alone>,
+    /// Per constraint, its last evaluation. The Newton loop asks for the
+    /// residuals and then the Jacobian at the same poses, and a constraint
+    /// evaluation yields both (some rows are finite-differenced), so the
+    /// second request is served from here. The buffers are reused.
+    last: RefCell<Vec<Evaluation>>,
 }
 
-impl RigidEquations<'_> {
-    /// Residuals and Jacobian of constraint `index` over the columns of its
-    /// own bodies only. Returns them with those bodies (ascending) and how
-    /// many there are (one or two).
+/// One constraint as a system over its own one or two bodies.
+struct Alone {
+    /// The constraint, its component indices renumbered to `0` / `1`.
+    system: ConstraintSystem,
+    /// The constraint's bodies in the full system, ascending.
+    bodies: [usize; 2],
+    /// How many bodies there are (one or two).
+    count: usize,
+}
+
+/// One constraint evaluated at particular poses of its own bodies.
+struct Evaluation {
+    /// Whether anything has been evaluated yet.
+    filled: bool,
+    /// The stored parameters of the constraint's bodies it was evaluated at.
+    inputs: [f64; 2 * STORED_PER_BODY],
+    /// Residuals, and the Jacobian over the columns of the constraint's
+    /// bodies.
+    rj: ResidualJacobian,
+}
+
+impl<'a> RigidEquations<'a> {
+    /// Every body is an unknown and every constraint an equation — the
+    /// view the diagnosis takes.
+    pub(crate) fn new(system: &'a ConstraintSystem) -> Self {
+        let alone = system
+            .constraints
+            .iter()
+            .map(|constraint| {
+                let first = constraint.component1;
+                let (bodies, count) = match constraint.component2 {
+                    Some(second) if second != first => ([first.min(second), first.max(second)], 2),
+                    _ => ([first, first], 1),
+                };
+                let local_index = |body: usize| usize::from(count == 2 && body == bodies[1]);
+                let mut local = constraint.clone();
+                local.component1 = local_index(first);
+                local.component2 = constraint.component2.map(local_index);
+                Alone {
+                    system: ConstraintSystem {
+                        constraints: vec![local],
+                        num_components: count,
+                    },
+                    bodies,
+                    count,
+                }
+            })
+            .collect();
+        let last = (0..system.constraints.len())
+            .map(|_| Evaluation {
+                filled: false,
+                inputs: [0.0; 2 * STORED_PER_BODY],
+                rj: ResidualJacobian {
+                    r: Vec::new(),
+                    j: Vec::new(),
+                },
+            })
+            .collect();
+        Self {
+            system,
+            held: vec![false; system.num_components],
+            definition: vec![false; system.constraints.len()],
+            alone,
+            last: RefCell::new(last),
+        }
+    }
+
+    /// The view the solve takes: a body that a `Fixed` constraint pins in
+    /// full (position and orientation) is grounded. Its pose is known, so
+    /// it is not an unknown: its columns are left out, and the constraint
+    /// that defines it contributes no equation (it holds by construction
+    /// once [`RigidEquations::snap_grounded`] has placed the body). Mates
+    /// to a grounded body then couple nothing — the clusters hanging off
+    /// the ground separate.
+    ///
+    /// The first full `Fixed` of a body is its definition. A second one, or
+    /// any other constraint between grounded bodies only, stays an
+    /// equation with nothing left to move: it holds or the solve fails.
+    pub(crate) fn grounded(system: &'a ConstraintSystem) -> Self {
+        let mut equations = Self::new(system);
+        for (index, constraint) in system.constraints.iter().enumerate() {
+            let body = constraint.component1;
+            if constraint.constraint_type == ConstraintType::Fixed
+                && constraint.fixed_orientation.is_some()
+                && !equations.held[body]
+            {
+                equations.held[body] = true;
+                equations.definition[index] = true;
+            }
+        }
+        equations
+    }
+
+    /// Place the grounded bodies that the constraints `group` define at
+    /// their fixed pose.
+    pub(crate) fn snap_grounded(&self, group: &[usize], params: &mut [f64]) {
+        for &index in group {
+            if !self.definition[index] {
+                continue;
+            }
+            let constraint = &self.system.constraints[index];
+            let Some(orientation) = constraint.fixed_orientation else {
+                continue;
+            };
+            let (t, q) = (constraint.point1, orientation.normalize());
+            let base = constraint.component1 * STORED_PER_BODY;
+            params[base..base + STORED_PER_BODY]
+                .copy_from_slice(&[t.x, t.y, t.z, q.x, q.y, q.z, q.w]);
+        }
+    }
+
+    /// L2 norm of the residuals of every constraint at `params`, the
+    /// grounding definitions included: the error of the system as authored,
+    /// whichever view this is.
+    pub(crate) fn residual_norm_of_every_constraint(&self, params: &[f64]) -> f64 {
+        let mut sum = 0.0_f64;
+        for index in 0..self.system.constraints.len() {
+            self.with_evaluation(index, params, |rj, _| {
+                for r in &rj.r {
+                    sum += r * r;
+                }
+            });
+        }
+        sum.sqrt()
+    }
+
+    /// Run `read` on the evaluation of constraint `index` at `params`:
+    /// residuals and Jacobian over the columns of its own bodies only.
     ///
     /// The numbers come from the same builder the whole-system assembly
     /// uses, run on the constraint alone: a constraint's rows depend on no
     /// other body.
-    fn local(&self, index: usize, params: &[f64]) -> (ResidualJacobian, [usize; 2], usize) {
-        let constraint = &self.system.constraints[index];
-        let first = constraint.component1;
-        let (bodies, count) = match constraint.component2 {
-            Some(second) if second != first => ([first.min(second), first.max(second)], 2),
-            _ => ([first, first], 1),
-        };
-        let local_index = |body: usize| usize::from(count == 2 && body == bodies[1]);
+    fn with_evaluation<R>(
+        &self,
+        index: usize,
+        params: &[f64],
+        read: impl FnOnce(&ResidualJacobian, &Alone) -> R,
+    ) -> R {
+        let alone = &self.alone[index];
+        let mut inputs = [0.0_f64; 2 * STORED_PER_BODY];
+        for (k, &body) in alone.bodies[..alone.count].iter().enumerate() {
+            inputs[k * STORED_PER_BODY..(k + 1) * STORED_PER_BODY]
+                .copy_from_slice(&params[body * STORED_PER_BODY..(body + 1) * STORED_PER_BODY]);
+        }
 
-        let mut local = constraint.clone();
-        local.component1 = local_index(first);
-        local.component2 = constraint.component2.map(local_index);
-        let alone = ConstraintSystem {
-            constraints: vec![local],
-            num_components: count,
-        };
-        let positions: Vec<DVec3> = bodies[..count]
-            .iter()
-            .map(|&b| position(params, b))
-            .collect();
-        let rots: Vec<DQuat> = bodies[..count]
-            .iter()
-            .map(|&b| rotation(params, b))
-            .collect();
-        (
-            ConstraintSolver::build_residual_jacobian(&alone, &positions, &rots),
-            bodies,
-            count,
-        )
+        let mut last = self.last.borrow_mut();
+        let seen = &mut last[index];
+        // Bitwise comparison: the same poses give the same numbers.
+        if !seen.filled || seen.inputs.map(f64::to_bits) != inputs.map(f64::to_bits) {
+            let positions = [
+                position(params, alone.bodies[0]),
+                position(params, alone.bodies[1]),
+            ];
+            let rots = [
+                rotation(params, alone.bodies[0]),
+                rotation(params, alone.bodies[1]),
+            ];
+            ConstraintSolver::fill_residual_jacobian(
+                &alone.system,
+                &positions[..alone.count],
+                &rots[..alone.count],
+                &mut seen.rj,
+            );
+            seen.inputs = inputs;
+            seen.filled = true;
+        }
+        read(&seen.rj, alone)
     }
 }
 
@@ -103,19 +246,29 @@ impl Equations for RigidEquations<'_> {
     }
 
     fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]) {
-        let (rj, _, _) = self.local(index, params);
-        out.copy_from_slice(&rj.r);
+        if self.definition[index] {
+            out.fill(0.0);
+            return;
+        }
+        self.with_evaluation(index, params, |rj, _| out.copy_from_slice(&rj.r));
     }
 
     fn jacobian(&self, index: usize, params: &[f64], out: &mut [SparseRow]) {
-        let (rj, bodies, count) = self.local(index, params);
-        for (row, entries) in rj.j.iter().zip(out.iter_mut()) {
-            for (k, &body) in bodies[..count].iter().enumerate() {
-                for d in 0..COLUMNS_PER_BODY {
-                    entries.push((body * COLUMNS_PER_BODY + d, row[k * COLUMNS_PER_BODY + d]));
+        if self.definition[index] {
+            return;
+        }
+        self.with_evaluation(index, params, |rj, alone| {
+            for (row, entries) in rj.j.iter().zip(out.iter_mut()) {
+                for (k, &body) in alone.bodies[..alone.count].iter().enumerate() {
+                    if self.held[body] {
+                        continue;
+                    }
+                    for d in 0..COLUMNS_PER_BODY {
+                        entries.push((body * COLUMNS_PER_BODY + d, row[k * COLUMNS_PER_BODY + d]));
+                    }
                 }
             }
-        }
+        });
     }
 
     fn column_count(&self, _params: &[f64]) -> usize {

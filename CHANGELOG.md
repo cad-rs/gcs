@@ -42,6 +42,21 @@ minor version.
   A component whose parameters are all fixed used to report
   `converged = true` whatever its residual. It now reports
   `converged = false` and `Stalled` when its equations do not hold.
+- **The rigid-pose solve runs on the shared Newton core.** It gains the
+  line search and the regularisation escalation of the other families.
+  `ConstraintSolver::solve` and `solve_from` now solve every connected
+  cluster on its own (as `solve_components` always did) instead of the
+  whole system at once: `success` means every cluster's own residual norm
+  is below the tolerance, and `iterations` is the sum over clusters.
+- **A body pinned in full by a `Fixed` constraint is grounded.** When the
+  constraint gives both position and orientation, the body is placed at
+  exactly that pose and is no longer solved for; a warm start that has it
+  elsewhere is corrected, not iterated. Parts mated only to the ground no
+  longer couple with one another. Results change slightly for the better:
+  on the assembly corpus the worst round-trip drift went from 1.2e-7 to
+  1.0e-13, and the nine configurations that flipped branch after a large
+  perturbation no longer do. A translation-only `Fixed` is an ordinary
+  equation as before.
 - `solver::solve`, `solver::solve_components`, `space3d::solver::solve_space`,
   `space3d::solver::solve_components` and `numerics::newton_solve` take the
   parameters as `&mut [f64]` instead of `&mut Vec<f64>`.
@@ -99,11 +114,12 @@ minor version.
   (`src/system.rs`); each family is now an adapter that supplies residuals
   and Jacobian rows, plus the plane and cylinder gauge for 3D. Results are
   unchanged: the corpus reports are identical to the last digit.
-- The rigid-pose diagnosis is that same shared diagnosis, run over six
-  columns per body, instead of a third copy. The Newton core steps through
-  a `StepSpace`, so a pose (translation plus unit quaternion) can be
-  stepped by the same loop as plain parameters; the rigid solve itself has
-  not moved onto it yet.
+- The rigid-pose family is on that pipeline too: its diagnosis is the
+  shared diagnosis run over six columns per body, and its solve is the
+  shared per-component solve. The Newton core steps through a `StepSpace`,
+  so a pose (translation plus unit quaternion) is stepped by the same loop
+  as plain parameters. The family's own Gauss–Newton loop and its copy of
+  the QR analysis are gone.
 
 ### Performance
 
@@ -116,9 +132,13 @@ minor version.
   once instead of once per dependent row. With many redundant constraints
   that is the difference between seconds and minutes (a 780-parameter
   system with 255 redundant rows: about 113 s → 2.4 s).
-- Assembly corpus gate on the reference machine: 21.0 s → 1.7 s optimised,
-  411 s → 69 s unoptimised, with identical metrics. See
-  `benches/BASELINE.md` for per-size numbers.
+- Grounded bodies decouple what hangs off them: a hub with 40 parts pinned
+  to it solves about 6× faster than before the change. Small assemblies
+  pay a fixed cost for the shared pipeline (a 5-body chain solves in
+  109 µs instead of 66 µs), and the assembly diagnosis is 1.4× to 2.3×
+  slower while reporting more.
+- Assembly corpus gate on the reference machine: 21.0 s → 1.5 s optimised,
+  411 s → 38 s unoptimised. See `benches/BASELINE.md` for per-size numbers.
 
 ## 0.1.0 — 2026-11-13
 

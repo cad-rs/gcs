@@ -13,7 +13,7 @@
 //! iterates only the components an edit landed in — untouched components
 //! keep their parameters bitwise.
 
-use crate::numerics::{self, SolveOptions, SolveResult, SolveStatus};
+use crate::numerics::{self, CoreOptions, SolveOptions, SolveResult, SolveStatus};
 use crate::space3d::constraint::SpaceConstraint;
 use crate::space3d::entity::{SpaceEntity, SpaceEntityKind};
 use crate::system::{self, Equations, SparseRow};
@@ -253,7 +253,7 @@ pub fn solve_components_with(
         fixed,
         components,
         only,
-        options,
+        &CoreOptions::from(options),
         |params, touched| normalize_planes_touched(params, entities, fixed, touched),
     )
 }

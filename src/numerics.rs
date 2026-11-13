@@ -109,6 +109,58 @@ impl Default for SolveOptions {
     }
 }
 
+/// Which norm of the residual vector a tolerance is measured in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResidualNorm {
+    /// Root mean square (the 2D and 3D-geometric families).
+    Rms,
+    /// Euclidean norm (the rigid-pose family).
+    L2,
+}
+
+/// What the Newton loop is told, whichever family is calling.
+///
+/// The public [`SolveOptions`] belongs to the 2D and 3D-geometric families
+/// and the rigid-pose family has its own option type (an L2 tolerance, a
+/// step scale, a base regularisation); both map onto this.
+#[derive(Debug, Clone)]
+pub(crate) struct CoreOptions {
+    /// Convergence tolerance on the residual, measured in `norm`.
+    pub(crate) tolerance: f64,
+    /// The norm `tolerance` refers to.
+    pub(crate) norm: ResidualNorm,
+    /// Maximum Newton iterations.
+    pub(crate) max_iterations: usize,
+    /// What a failed solve leaves in the parameters.
+    pub(crate) on_failure: FailurePolicy,
+    /// Base Tikhonov regularisation of the normal equations.
+    pub(crate) lambda: f64,
+    /// The step length the line search starts from (1 is the full step).
+    pub(crate) initial_step: f64,
+    /// Upper bound on convergence-polish steps (see [`POLISH_STEPS`]).
+    pub(crate) polish_steps: usize,
+    /// Whether the convergence polish falls back to a regularised step when
+    /// the unregularised one does not exist (an under-constrained
+    /// component). Off for the 2D and 3D-geometric families, which leave
+    /// such a component at the first iterate under the tolerance.
+    pub(crate) polish_singular: bool,
+}
+
+impl From<&SolveOptions> for CoreOptions {
+    fn from(options: &SolveOptions) -> Self {
+        Self {
+            tolerance: options.tolerance,
+            norm: ResidualNorm::Rms,
+            max_iterations: options.max_iterations,
+            on_failure: options.on_failure,
+            lambda: LAMBDA,
+            initial_step: 1.0,
+            polish_steps: POLISH_STEPS,
+            polish_singular: false,
+        }
+    }
+}
+
 /// `a > b`, and `false` when either side is NaN. Spelled through
 /// `partial_cmp` so a guard written as `!gt(a, b)` visibly takes the NaN
 /// case too.
@@ -313,7 +365,14 @@ where
     F: FnMut(&[f64], &mut [f64]),
 {
     let space = AdditiveSpace::from_mask(&fixed[..params.len()]);
-    newton_solve_in(params, &space, n_eq, eval_residuals, jacobian, options)
+    newton_solve_in(
+        params,
+        &space,
+        n_eq,
+        eval_residuals,
+        jacobian,
+        &CoreOptions::from(options),
+    )
 }
 
 /// The damped Newton loop over the free coordinates of `space`, with an
@@ -324,15 +383,13 @@ pub(crate) fn newton_solve_in<F>(
     n_eq: usize,
     mut eval_residuals: F,
     jacobian: Jacobian<'_>,
-    options: &SolveOptions,
+    options: &CoreOptions,
 ) -> SolveResult
 where
     F: FnMut(&[f64], &mut [f64]),
 {
     let n_free = space.dim();
     let storage = space.storage();
-
-    let tolerance = options.tolerance;
 
     if n_eq == 0 {
         return SolveResult {
@@ -342,6 +399,13 @@ where
             status: SolveStatus::Converged,
         };
     }
+
+    // The loop measures the RMS residual. An L2 tolerance over `n_eq`
+    // equations is the same test with the tolerance scaled.
+    let tolerance = match options.norm {
+        ResidualNorm::Rms => options.tolerance,
+        ResidualNorm::L2 => options.tolerance / (n_eq as f64).sqrt(),
+    };
     if n_free == 0 {
         // Equations but nothing that may move: the state is what it is,
         // satisfied or not. Report which (0.1.0 called both converged).
@@ -379,8 +443,11 @@ where
         Jacobian::Analytic(build) => Some(build),
     };
 
+    // The residual vector at the current iterate. An accepted trial step
+    // hands its residuals over, so each point is evaluated once.
+    let mut f = eval_vec(&mut eval_residuals, params, n_eq);
+
     for _ in 0..options.max_iterations {
-        let f = eval_vec(&mut eval_residuals, params, n_eq);
         residual = rms(&f);
         if residual < tolerance {
             break;
@@ -415,7 +482,7 @@ where
         let mut non_finite = false;
         for attempt in 0..=LAMBDA_ESCALATION.len() {
             let lambda = match attempt {
-                0 => LAMBDA,
+                0 => options.lambda,
                 k => LAMBDA_ESCALATION[k - 1] * diag_scale,
             };
             let Some(delta) = try_solve_normal_equations(&j, &f, n_free, lambda) else {
@@ -433,7 +500,7 @@ where
             }
 
             // Damped update: halve the step while the residual grows.
-            let mut alpha = 1.0_f64;
+            let mut alpha = options.initial_step;
             for _ in 0..LINE_SEARCH_STEPS {
                 for (s, d) in step.iter_mut().zip(&delta) {
                     *s = alpha * d;
@@ -442,6 +509,7 @@ where
                 let f_new = eval_vec(&mut eval_residuals, params, n_eq);
                 if rms(&f_new) < residual * (1.0 + LINE_SEARCH_RELAX) {
                     accepted = true;
+                    f = f_new;
                     break;
                 }
                 alpha *= 0.5;
@@ -467,7 +535,9 @@ where
         iters += 1;
     }
 
-    let mut f_final = eval_vec(&mut eval_residuals, params, n_eq);
+    // `f` belongs to the iterate the loop left: an accepted step handed its
+    // residuals over, and a rejected one was put back.
+    let mut f_final = f;
     residual = rms(&f_final);
 
     // Convergence polish (solver roadmap follow-up): the loop stops at
@@ -486,7 +556,7 @@ where
     // (rank-deficient or under-constrained components) yield a zero step
     // and the polish declines to act.
     let mut polish_steps = 0usize;
-    while residual > 0.0 && residual < tolerance && polish_steps < POLISH_STEPS {
+    while residual > 0.0 && residual < tolerance && polish_steps < options.polish_steps {
         if let Some(build) = analytic.as_mut() {
             for row in j.iter_mut() {
                 row.fill(0.0);
@@ -495,8 +565,18 @@ where
         } else {
             numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
         }
-        // Unregularised step: see the block comment above.
-        let delta = solve_normal_equations_with_lambda(&j, &f_final, n_free, 0.0);
+        // Unregularised step: see the block comment above. A singular
+        // system has none; a family that asks for it gets the regularised
+        // step there instead, so an under-constrained component is polished
+        // too (toward its minimum-norm correction).
+        let delta = match try_solve_normal_equations(&j, &f_final, n_free, 0.0) {
+            Some(delta) => delta,
+            None if options.polish_singular => {
+                try_solve_normal_equations(&j, &f_final, n_free, options.lambda)
+                    .unwrap_or_else(|| vec![0.0_f64; n_free])
+            }
+            None => vec![0.0_f64; n_free],
+        };
         let saved = save(params, storage);
         space.apply(params, &saved, &delta);
         let f_polish = eval_vec(&mut eval_residuals, params, n_eq);
