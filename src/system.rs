@@ -60,6 +60,13 @@ pub(crate) trait Equations {
         Box::new(AdditiveSpace::new(free.to_vec()))
     }
 
+    /// The size of the quantity that column `column` steps, for judging
+    /// what a rounding of it is worth: the magnitude of the parameter by
+    /// default.
+    fn column_magnitude(&self, column: usize, params: &[f64]) -> f64 {
+        params[column].abs()
+    }
+
     /// Whether a solve cross-checks the Jacobian against finite differences
     /// in debug builds (two residual evaluations per free column).
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
@@ -117,6 +124,33 @@ pub(crate) fn analytic_jacobian<E: Equations + ?Sized>(
                     out[row + k][col] += v;
                 }
             }
+        }
+        row += count;
+    }
+}
+
+/// Per equation of the constraints `indices`, the size of the numbers it is
+/// computed from: `Σ|∂f/∂q|·|q|` over every column the equation touches,
+/// held or free. One rounding of those numbers moves the residual by about
+/// `ε` times this.
+pub(crate) fn row_magnitudes<E: Equations + ?Sized>(
+    eqs: &E,
+    indices: &[usize],
+    params: &[f64],
+    out: &mut [f64],
+) {
+    let mut rows: Vec<SparseRow> = Vec::new();
+    let mut row = 0;
+    for &i in indices {
+        let count = eqs.equation_count(i);
+        rows.clear();
+        rows.resize_with(count, Vec::new);
+        eqs.jacobian(i, params, &mut rows);
+        for (k, entries) in rows.iter().enumerate() {
+            out[row + k] = entries
+                .iter()
+                .map(|&(column, v)| v.abs() * eqs.column_magnitude(column, params))
+                .sum();
         }
         row += count;
     }
@@ -327,23 +361,15 @@ fn solve_one<E: Equations + ?Sized>(
     // this catches per-call assembly bugs (column mapping, mask filtering).
     #[cfg(debug_assertions)]
     if n_eq > 0 && !free.is_empty() && eqs.debug_check_jacobian() {
-        let mut eval = |p: &[f64], f: &mut [f64]| {
-            f.copy_from_slice(&eval_residuals(eqs, group, p));
-        };
-        let mut j_analytic = vec![vec![0.0_f64; free.len()]; n_eq];
-        build(params, &mut j_analytic);
-        let mut j_fd = vec![vec![0.0_f64; free.len()]; n_eq];
-        numerics::numerical_jacobian_for(params, &*space, n_eq, &mut eval, &mut j_fd);
-        for (ri, (ra, rf)) in j_analytic.iter().zip(j_fd.iter()).enumerate() {
-            for (ci, (va, vf)) in ra.iter().zip(rf.iter()).enumerate() {
-                assert!(
-                    (va - vf).abs() <= 1.0e-4 * (1.0 + vf.abs()),
-                    "analytic Jacobian drifts from finite differences at row {ri} col {ci}: {va} vs {vf}"
-                );
-            }
-        }
+        debug_check_jacobian(eqs, group, params, &free, &*space, &mut build);
     }
 
+    let mut columns = |p: &[f64], out: &mut [f64]| {
+        for (magnitude, &column) in out.iter_mut().zip(&free) {
+            *magnitude = eqs.column_magnitude(column, p);
+        }
+    };
+    let mut rows = |p: &[f64], out: &mut [f64]| row_magnitudes(eqs, group, p, out);
     let result = numerics::newton_solve_in(
         params,
         &*space,
@@ -352,9 +378,96 @@ fn solve_one<E: Equations + ?Sized>(
             f.copy_from_slice(&eval_residuals(eqs, group, p));
         },
         numerics::Jacobian::Analytic(&mut build),
+        Some(numerics::Magnitudes {
+            columns: &mut columns,
+            rows: &mut rows,
+        }),
         options,
     );
     (result, touched)
+}
+
+/// The debug-build cross-check of [`solve_one`]: the analytic Jacobian of a
+/// component against central differences of its residuals.
+///
+/// A difference is only evidence where it can be trusted, and it cannot
+/// always: a step of 1e-7 is a tenth of a feature one micron across
+/// (truncation), and it is a single float spacing a billion units from the
+/// origin (rounding). So a mismatch is put to a second difference at half
+/// the step. The two extrapolate to a better estimate (the truncation error
+/// falls by four when the step halves); an analytic entry that agrees with
+/// that is right. Otherwise, if the two differences agree closely with each
+/// other, they are resolving the derivative and the analytic entry is what
+/// is wrong: this panics. If they do not, the entry is left unjudged.
+#[cfg(debug_assertions)]
+fn debug_check_jacobian<E: Equations + ?Sized>(
+    eqs: &E,
+    group: &[usize],
+    params: &mut [f64],
+    free: &[usize],
+    space: &dyn StepSpace,
+    build: &mut numerics::JacobianBuilder<'_>,
+) {
+    let n_eq = equation_total(eqs, group);
+    let mut eval = |p: &[f64], f: &mut [f64]| {
+        f.copy_from_slice(&eval_residuals(eqs, group, p));
+    };
+    let mut j_analytic = vec![vec![0.0_f64; free.len()]; n_eq];
+    build(params, &mut j_analytic);
+    let mut j_fd = vec![vec![0.0_f64; free.len()]; n_eq];
+    numerics::numerical_jacobian_for(params, space, n_eq, &mut eval, &mut j_fd);
+
+    // Rounding of the residuals, blown up by the division by the step.
+    let mut size = vec![0.0_f64; n_eq];
+    row_magnitudes(eqs, group, params, &mut size);
+    let allowed = |row: usize, fd: f64| {
+        1.0e-4 * (1.0 + fd.abs()) + 4.0 * f64::EPSILON * size[row] / (2.0 * numerics::FD_H)
+    };
+    let additive = space.additive_params().is_some();
+
+    for ci in 0..free.len() {
+        let off: Vec<usize> = (0..n_eq)
+            .filter(|&ri| (j_analytic[ri][ci] - j_fd[ri][ci]).abs() > allowed(ri, j_fd[ri][ci]))
+            .collect();
+        if off.is_empty() {
+            continue;
+        }
+        // A second opinion at half the step, for plain parameters. (The
+        // rigid-pose family, whose columns are not parameters, does not run
+        // this check.)
+        let second: Option<Vec<f64>> = additive.then(|| {
+            let gi = free[ci];
+            let orig = params[gi];
+            let h = 0.5 * numerics::fd_step(orig);
+            params[gi] = orig + h;
+            let above = params[gi];
+            let f_plus = eval_residuals(eqs, group, params);
+            params[gi] = orig - h;
+            let below = params[gi];
+            let f_minus = eval_residuals(eqs, group, params);
+            params[gi] = orig;
+            f_plus
+                .iter()
+                .zip(&f_minus)
+                .map(|(a, b)| (a - b) / (above - below))
+                .collect()
+        });
+        for ri in off {
+            let (va, vf) = (j_analytic[ri][ci], j_fd[ri][ci]);
+            let wrong = match &second {
+                None => true,
+                Some(half) => {
+                    let extrapolated = (4.0 * half[ri] - vf) / 3.0;
+                    let limit = allowed(ri, vf);
+                    (va - extrapolated).abs() > limit && (half[ri] - vf).abs() <= 0.25 * limit
+                }
+            };
+            assert!(
+                !wrong,
+                "analytic Jacobian drifts from finite differences at row {ri} col {ci}: {va} vs {vf}"
+            );
+        }
+    }
 }
 
 /// Storage parameters that are not physical freedoms.

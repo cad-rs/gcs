@@ -49,6 +49,27 @@ through them from a host's side.
   points (`tests/hard_cases.rs`). The constants
   `numerics::LINE_SEARCH_RELAX` and `LINE_SEARCH_STEPS` are gone with the
   line search.
+- **A model far from the origin solves.** The tolerance is an absolute
+  number (1e-10 by default), and a coordinate of a billion is only stored
+  to about 1e-7: no equation on it can be met to 1e-10. Such a solve used
+  to end as `Stalled` and put the geometry back. Now each equation is
+  weighed by what its own numbers resolve: it is held to the tolerance or
+  to four rounding units of the terms it is computed from
+  (`numerics::PRECISION_ULPS`), whichever is larger, and the least-squares
+  step works in those units, so the rounding of an equation on large
+  coordinates is not traded against one that is exact. A solve that ends
+  this way reports the new status `SolveStatus::ConvergedToPrecision`,
+  counts as converged, and returns a `residual` that can be above the
+  tolerance. Near the origin every weight is one and nothing changes: the
+  2D corpus is identical. The assembly corpus, which asks for 1e-12 at
+  coordinates of some tens, is within reach of the allowance: its worst
+  round-trip drift went from 1.0e-13 to 1.6e-13. A contradiction is still
+  a failed solve wherever it is larger than that rounding
+  (`tests/scale.rs`).
+- `SolveStatus` has the new variant `ConvergedToPrecision`, between
+  `Converged` and `MaxIterations`; a `match` over the statuses needs an arm
+  for it. The same status is how a tolerance below what double precision
+  holds at all (1e-18 at unit scale, say) now ends, instead of failing.
 - **A system that cannot be solved ends as `Stalled`, and soon.** A
   conflict used to wander near its least-squares compromise until the
   iteration limit and report `MaxIterations`. It now stops when no step of
@@ -246,6 +267,16 @@ through them from a host's side.
   body it was mated to on the redundant list. The spare rows of those mates
   were the cause; with as many rows as freedoms the reports are gone, and a
   genuinely repeated mate is still found (`tests/assembly_rank.rs`).
+- **Debug builds panicked on large coordinates and on small geometry.**
+  The Jacobian cross-check that debug builds run at the start of a solve
+  differenced with a fixed step of 1e-7. That is a single float spacing at
+  a coordinate of 1e9 and a tenth of a feature 1e-6 across, and in both
+  cases the difference disagreed with a correct Jacobian and the check
+  panicked. The check now allows for the rounding of the residuals, puts a
+  mismatch to a second difference at half the step, and only panics when
+  the two differences agree with each other against the analytic value.
+  The finite-difference Jacobian of `numerics::newton_solve` widens its
+  step where 1e-7 is too few float spacings to difference across.
 - **The orientation error of `Fixed` and `Lock` depended on the sign of a
   quaternion.** A quaternion and its negative are the same rotation, but
   the rotation vector was read off as it came: a part 0.001 rad from where

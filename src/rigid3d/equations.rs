@@ -288,6 +288,19 @@ impl Equations for RigidEquations<'_> {
         Box::new(PoseSpace::new(free))
     }
 
+    /// A translation column steps a coordinate of the body's position. A
+    /// rotation column steps an angle, of order one: its Jacobian entries
+    /// are lever arms, and a rounding of the orientation moves a point by
+    /// about `ε` times its lever arm.
+    fn column_magnitude(&self, column: usize, params: &[f64]) -> f64 {
+        let (body, coordinate) = (column / COLUMNS_PER_BODY, column % COLUMNS_PER_BODY);
+        if coordinate < 3 {
+            params[body * STORED_PER_BODY + coordinate].abs()
+        } else {
+            1.0
+        }
+    }
+
     /// The family has its own analytic-vs-finite-difference gate test, and
     /// the per-solve check would cost two whole-cluster residual
     /// evaluations per column here.

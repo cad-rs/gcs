@@ -20,14 +20,27 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   `benches/BASELINE.md` for where it sits today). Going through the normal
   equations also squares the condition number; a QR-based minimum-norm step
   would not.
-- **Scaling and hard starts.** The step control is a dogleg trust region,
-  but the radius is measured in the raw parameter vector, where a length
-  and an angle weigh the same. Automatic scaling/equilibration, scale-aware
-  tolerances, and a homotopy/continuation path for hard starts would raise
-  the convergence rate on badly conditioned systems. A long serial chain
-  from a large perturbation still runs out of iterations
-  (`tests/hard_cases.rs` prints the table); solving such a chain block by
-  block is the better answer there.
+- **Small geometry.** Large coordinates are handled: an equation is held
+  to the tolerance or to a few rounding units of its own numbers, whichever
+  is larger. The other direction is not. The tolerance is absolute, and
+  several 2D relations (angle, parallel, perpendicular, equal length) are
+  written as products of two lengths, so for small geometry they fall under the
+  tolerance before they hold: a triangle 1e-5 across is reported converged
+  with its third corner 0.1% of its size out of place, and with a tighter
+  tolerance the fixed regularisation swamps those rows instead (27
+  iterations at 1e-5, none that work at 1e-6;
+  `cargo test --test scale -- --ignored report_small_geometry`). Until this
+  is fixed a host should keep features above about 1e-4 units. The fix is
+  to state those relations on unit directions, so that every equation is
+  either a length or an angle, and to scale the tolerance by the size of
+  the component.
+- **Hard starts.** The step control is a dogleg trust region, but the
+  radius is measured in the raw parameter vector, where a length and an
+  angle weigh the same, and there is no homotopy/continuation path for
+  starts far from any solution. A long serial chain from a large
+  perturbation still runs out of iterations (`tests/hard_cases.rs` prints
+  the table); solving such a chain block by block is the better answer
+  there.
 - **Parallel residual / Jacobian evaluation.** The residual closure is pure;
   `rayon` could parallelise the FD column sweep and the per-constraint
   residuals behind an opt-in feature.

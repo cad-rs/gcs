@@ -29,10 +29,12 @@ use std::cmp::Ordering;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct SolveResult {
-    /// `true` if the RMS constraint residual of every solved component is
-    /// below the tolerance ([`SolveOptions::tolerance`], [`RESIDUAL_TOL`]
-    /// by default). A component with no free parameter is judged on the
-    /// residual it has.
+    /// `true` if every solved component ended with its RMS constraint
+    /// residual below the tolerance ([`SolveOptions::tolerance`],
+    /// [`RESIDUAL_TOL`] by default), or with every equation as exact as the
+    /// numbers it is computed from allow
+    /// ([`SolveStatus::ConvergedToPrecision`]). A component with no free
+    /// parameter is judged on the residual it has.
     pub converged: bool,
     /// RMS residual of the parameters the solve left behind. After a failed
     /// solve under [`FailurePolicy::Restore`] this is the residual of the
@@ -40,8 +42,9 @@ pub struct SolveResult {
     pub residual: f64,
     /// Number of Newton iterations performed.
     pub iterations: usize,
-    /// Why the solve ended. [`SolveStatus::Converged`] exactly when
-    /// `converged` is `true`.
+    /// Why the solve ended: [`SolveStatus::Converged`] or
+    /// [`SolveStatus::ConvergedToPrecision`] exactly when `converged` is
+    /// `true`.
     pub status: SolveStatus,
 }
 
@@ -55,6 +58,14 @@ pub struct SolveResult {
 pub enum SolveStatus {
     /// The residual is below the tolerance.
     Converged,
+    /// The residual is above the tolerance, but every equation holds to
+    /// within the rounding of the numbers it is computed from: at this
+    /// model's coordinates the tolerance asks for more than double
+    /// precision can represent. (A point a billion units from the origin is
+    /// stored to about 1e-7; no equation on it can be met to 1e-10.) The
+    /// solve counts as converged. To see this status less often, keep
+    /// coordinates near the origin or pass a tolerance that fits the model.
+    ConvergedToPrecision,
     /// The iteration limit was reached while the residual was still above
     /// the tolerance and still falling.
     MaxIterations,
@@ -188,6 +199,23 @@ pub const LAMBDA: f64 = 1e-10;
 pub const PIVOT_TOL: f64 = 1e-14;
 /// Normalization guard threshold — prevents division by near-zero vectors.
 pub const SOLVER_NORM_TOL: f64 = 1e-10;
+/// How many rounding units of its own numbers an equation is allowed
+/// before it counts as unmet, when the tolerance is finer than that: an
+/// equation whose terms have magnitude `size = Σ|∂f/∂q|·|q|` is held to
+/// `max(tolerance, PRECISION_ULPS · ε · size)`.
+///
+/// One rounding of the terms is worth `ε·size`. About two of them is what
+/// can be reached at best: each parameter is stored to half a unit, and
+/// evaluating the equation rounds a few more times. Four leaves a factor
+/// of two over that. A larger allowance gives accuracy away where a tight
+/// tolerance is still reachable (with 8, the assembly corpus, which asks
+/// for 1e-12 at coordinates of some tens, came back five times less
+/// exactly from its round trips; with 4, half again as loosely as with no
+/// allowance at all); a smaller one risks never settling.
+pub const PRECISION_ULPS: f64 = 4.0;
+/// How often the equation weights are taken afresh when a solve ends
+/// without converging (the geometry may have moved to larger numbers).
+const REWEIGH_PASSES: usize = 2;
 /// A step whose gain (achieved over promised reduction of the squared
 /// residual) is above this widens the trust radius.
 const TRUST_WIDEN_ABOVE: f64 = 0.75;
@@ -373,18 +401,184 @@ where
         n_eq,
         eval_residuals,
         jacobian,
+        None,
         &CoreOptions::from(options),
     )
 }
 
-/// The damped Newton loop over the free coordinates of `space`, with an
-/// explicit Jacobian source.
+/// How large the numbers of a system are, for judging what a rounding of
+/// them is worth (see [`PRECISION_ULPS`]).
+pub(crate) struct Magnitudes<'a> {
+    /// Per free coordinate of the step space: the size of the quantity it
+    /// moves.
+    pub(crate) columns: &'a mut dyn FnMut(&[f64], &mut [f64]),
+    /// Per equation: `Σ|∂f/∂q|·|q|` over everything the equation touches,
+    /// held or free.
+    pub(crate) rows: &'a mut dyn FnMut(&[f64], &mut [f64]),
+}
+
+/// The weight of an equation whose terms have magnitude `size`: one, unless
+/// the tolerance is finer than those terms resolve, in which case the
+/// equation is measured in units of that resolution instead. One rounding
+/// of the terms is worth `ε·size`; the weight is
+/// `PRECISION_ULPS·ε·size / tolerance` once that exceeds one.
+fn weight_of(size: f64, tolerance: f64) -> f64 {
+    let weight = PRECISION_ULPS * f64::EPSILON * size / tolerance;
+    // A tolerance of zero, or a size that is not a number, weighs nothing.
+    if weight.is_finite() {
+        weight.max(1.0)
+    } else {
+        1.0
+    }
+}
+
+/// The non-zero entries of each row of a dense Jacobian, as
+/// `(column, value)`. A constraint touches a handful of parameters, so
+/// products with `J` cost far less over these than over the dense rows.
+fn sparse_rows(j: &[Vec<f64>]) -> Vec<Vec<(usize, f64)>> {
+    j.iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .filter(|(_, v)| **v != 0.0)
+                .map(|(col, v)| (col, *v))
+                .collect()
+        })
+        .collect()
+}
+
+/// The weights from the Jacobian the loop has just built: `size` is taken
+/// over the free columns only, from rows the loop needs anyway, so an
+/// ordinary solve pays nothing for it. (What the held columns add is found
+/// by [`fresh_weights`] if the solve turns out to need it.) Returns
+/// whether any weight is not one.
+fn weights_from_rows(
+    weights: &mut [f64],
+    rows: &[Vec<(usize, f64)>],
+    column: &[f64],
+    tolerance: f64,
+) -> bool {
+    let mut any = false;
+    for (weight, row) in weights.iter_mut().zip(rows) {
+        let size: f64 = row.iter().map(|&(col, v)| v.abs() * column[col]).sum();
+        *weight = weight_of(size, tolerance);
+        any |= *weight != 1.0;
+    }
+    any
+}
+
+/// The weights at `params`, from the full magnitudes of the equations — if
+/// they differ enough from `weights` to be worth another pass: some weight
+/// at least twice what it was.
+fn fresh_weights(
+    weights: &[f64],
+    params: &[f64],
+    magnitudes: &mut Option<Magnitudes<'_>>,
+    tolerance: f64,
+) -> Option<Vec<f64>> {
+    let magnitudes = magnitudes.as_mut()?;
+    let mut size = vec![0.0_f64; weights.len()];
+    (magnitudes.rows)(params, &mut size);
+    let fresh: Vec<f64> = size.iter().map(|s| weight_of(*s, tolerance)).collect();
+    fresh
+        .iter()
+        .zip(weights)
+        .any(|(new, old)| *new >= 2.0 * old)
+        .then_some(fresh)
+}
+
+/// Divide each residual by the weight of its equation.
+fn weigh(f: &mut [f64], weights: &[f64]) {
+    for (fi, weight) in f.iter_mut().zip(weights) {
+        *fi /= weight;
+    }
+}
+
+/// Divide each Jacobian row by the weight of its equation.
+fn weigh_rows(j: &mut [Vec<f64>], weights: &[f64]) {
+    for (row, weight) in j.iter_mut().zip(weights) {
+        if *weight != 1.0 {
+            for v in row.iter_mut() {
+                *v /= weight;
+            }
+        }
+    }
+}
+
+/// Per column, the scale the step is computed in when the equations are
+/// weighted.
+///
+/// Dividing a row by a weight of 1e7 divides its share of `JᵀJ` by 1e14. A
+/// column that only such rows touch is left with entries of that size,
+/// while the regularisation `λ` and the pivot threshold of the elimination
+/// are small absolute numbers sized for entries of order one: the column
+/// would read as singular, or `λ` would swallow it and its step vanish. So
+/// each column is scaled back up by the smallest weight among the rows
+/// that touch it ([`scale_columns`]), the step is found in those scaled
+/// coordinates, and scaled back before it is applied. A column touched by
+/// an unweighted row has scale one.
+fn column_scales(j: &[Vec<f64>], weights: &[f64], n: usize) -> Vec<f64> {
+    let mut scales = vec![f64::INFINITY; n];
+    for (row, weight) in j.iter().zip(weights) {
+        for (scale, v) in scales.iter_mut().zip(row) {
+            if *v != 0.0 && *weight < *scale {
+                *scale = *weight;
+            }
+        }
+    }
+    // A column no row touches is left alone.
+    for scale in scales.iter_mut() {
+        if !scale.is_finite() {
+            *scale = 1.0;
+        }
+    }
+    scales
+}
+
+/// Multiply each column of the Jacobian by its scale: the Jacobian with
+/// respect to the scaled coordinates `y`, where the step is `h = scale·y`.
+fn scale_columns(j: &mut [Vec<f64>], scales: &[f64]) {
+    for row in j.iter_mut() {
+        for (v, scale) in row.iter_mut().zip(scales) {
+            *v *= scale;
+        }
+    }
+}
+
+/// The step in the parameters for a step `y` in scaled coordinates.
+fn unscaled(y: &[f64], scales: &[f64]) -> Vec<f64> {
+    y.iter().zip(scales).map(|(y, scale)| y * scale).collect()
+}
+
+/// RMS of the residuals as the equations state them, from the weighted
+/// ones.
+fn unweighted_rms(f: &[f64], weights: &[f64]) -> f64 {
+    let sum: f64 = f
+        .iter()
+        .zip(weights)
+        .map(|(fi, weight)| (fi * weight) * (fi * weight))
+        .sum();
+    (sum / f.len().max(1) as f64).sqrt()
+}
+
+/// The trust-region Newton loop over the free coordinates of `space`, with
+/// an explicit Jacobian source.
+///
+/// With `magnitudes`, every equation is weighed by what its numbers can
+/// resolve (see [`weight_of`]). Near the origin every weight is one, and
+/// the weighting is skipped altogether. Far from it, an equation on
+/// coordinates of a billion cannot be met to 1e-10, and neither should the
+/// least-squares step trade the rounding of such an equation against one
+/// that is exact: the weights put both in the same units, and a solve whose
+/// equations are all as exact as their numbers allow ends as
+/// [`SolveStatus::ConvergedToPrecision`].
 pub(crate) fn newton_solve_in<F>(
     params: &mut [f64],
     space: &dyn StepSpace,
     n_eq: usize,
     mut eval_residuals: F,
     jacobian: Jacobian<'_>,
+    mut magnitudes: Option<Magnitudes<'_>>,
     options: &CoreOptions,
 ) -> SolveResult
 where
@@ -408,22 +602,37 @@ where
         ResidualNorm::Rms => options.tolerance,
         ResidualNorm::L2 => options.tolerance / (n_eq as f64).sqrt(),
     };
+
+    // One per equation; `weighted` says whether any is not one.
+    let mut weights = vec![1.0_f64; n_eq];
+    let mut weighted = false;
+
     if n_free == 0 {
         // Equations but nothing that may move: the state is what it is,
         // satisfied or not. Report which (0.1.0 called both converged).
-        let residual = rms(&eval_vec(&mut eval_residuals, params, n_eq));
-        let converged = residual < tolerance;
+        let f = eval_vec(&mut eval_residuals, params, n_eq);
+        let residual = rms(&f);
+        let status = if residual < tolerance {
+            SolveStatus::Converged
+        } else if !residual.is_finite() {
+            SolveStatus::Diverged
+        } else {
+            // Unmet as stated; perhaps met as far as the numbers go.
+            let mut weighed = f;
+            if let Some(fresh) = fresh_weights(&weights, params, &mut magnitudes, tolerance) {
+                weigh(&mut weighed, &fresh);
+            }
+            if rms(&weighed) < tolerance {
+                SolveStatus::ConvergedToPrecision
+            } else {
+                SolveStatus::Stalled
+            }
+        };
         return SolveResult {
-            converged,
+            converged: status <= SolveStatus::ConvergedToPrecision,
             residual,
             iterations: 0,
-            status: if converged {
-                SolveStatus::Converged
-            } else if residual.is_finite() {
-                SolveStatus::Stalled
-            } else {
-                SolveStatus::Diverged
-            },
+            status,
         };
     }
 
@@ -445,74 +654,131 @@ where
         Jacobian::Analytic(build) => Some(build),
     };
 
-    // The residual vector at the current iterate. An accepted trial step
-    // hands its residuals over, so each point is evaluated once.
+    // The residual vector at the current iterate (weighted, once there are
+    // weights). An accepted trial step hands its residuals over, so each
+    // point is evaluated once.
     let mut f = eval_vec(&mut eval_residuals, params, n_eq);
 
     // The trust radius, in the norm of the step vector. Unbounded until a
     // step has been judged poor.
     let mut radius = f64::INFINITY;
 
-    for _ in 0..options.max_iterations {
+    // The weights are taken from the first Jacobian and then held while the
+    // loop runs, so that the residuals it compares are in the same units.
+    // If it ends without converging, the geometry may have travelled to
+    // where its numbers are larger than they were at the start, or the
+    // held parameters may be the large ones; the weights are then taken
+    // afresh, in full, and the loop goes on from where it stands.
+    let mut primed = false;
+    let mut reweighs = 0;
+    loop {
+        while iters < options.max_iterations {
+            residual = rms(&f);
+            if residual < tolerance {
+                break;
+            }
+            if !residual.is_finite() {
+                failure = SolveStatus::Diverged;
+                break;
+            }
+
+            // Jacobian J (n_eq × n_free).
+            if let Some(build) = analytic.as_mut() {
+                for row in j.iter_mut() {
+                    row.fill(0.0);
+                }
+                build(params, &mut j);
+            } else {
+                numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
+            }
+
+            let mut rows = sparse_rows(&j);
+            if !primed {
+                primed = true;
+                if let Some(magnitudes) = magnitudes.as_mut() {
+                    let mut column = vec![0.0_f64; n_free];
+                    (magnitudes.columns)(params, &mut column);
+                    weighted = weights_from_rows(&mut weights, &rows, &column, tolerance);
+                    if weighted {
+                        weigh(&mut f, &weights);
+                        if rms(&f) < tolerance {
+                            break;
+                        }
+                    }
+                }
+            }
+            let scales = weighted.then(|| column_scales(&j, &weights, n_free));
+            if let Some(scales) = &scales {
+                weigh_rows(&mut j, &weights);
+                scale_columns(&mut j, scales);
+                rows = sparse_rows(&j);
+            }
+
+            // The linear model f + J·h at this iterate, and a dogleg step
+            // inside the trust radius. A trial that gains nothing is undone
+            // and the radius halved; the next one is shorter and closer to
+            // the steepest-descent direction. The model is not rebuilt for
+            // it. (With weights, the model, its steps and the radius are in
+            // the scaled coordinates.)
+            let saved = save(params, storage);
+            let model = LinearModel::new(&j, rows, &f, n_free, options);
+            // The residuals of the trial step that was accepted, if one was.
+            let mut accepted: Option<Vec<f64>> = None;
+            for _ in 0..TRUST_ATTEMPTS {
+                let Some(step) = model.step(radius) else {
+                    break;
+                };
+                let length = norm(&step);
+                match &scales {
+                    None => space.apply(params, &saved, &step),
+                    Some(scales) => space.apply(params, &saved, &unscaled(&step, scales)),
+                }
+                let mut f_new = eval_vec(&mut eval_residuals, params, n_eq);
+                if weighted {
+                    weigh(&mut f_new, &weights);
+                }
+                let gain = model.gain(&step, &f_new);
+                if gt(gain, TRUST_WIDEN_ABOVE) {
+                    radius = radius.max(TRUST_GROWTH * length);
+                } else if !gt(gain, TRUST_NARROW_BELOW) {
+                    radius = 0.5 * radius.min(length);
+                }
+                if gt(gain, 0.0) {
+                    accepted = Some(f_new);
+                    break;
+                }
+            }
+            let stuck = model.failure();
+            match accepted {
+                Some(f_new) => f = f_new,
+                None => {
+                    // No step of any length lowered the residual: put the
+                    // iterate back and stop — the next iteration would
+                    // rebuild the same model.
+                    restore(params, storage, &saved);
+                    failure = stuck;
+                    break;
+                }
+            }
+
+            iters += 1;
+        }
+
         residual = rms(&f);
-        if residual < tolerance {
-            break;
-        }
-        if !residual.is_finite() {
-            failure = SolveStatus::Diverged;
-            break;
-        }
-
-        // Jacobian J (n_eq × n_free).
-        if let Some(build) = analytic.as_mut() {
-            for row in j.iter_mut() {
-                row.fill(0.0);
-            }
-            build(params, &mut j);
-        } else {
-            numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
-        }
-
-        // The linear model f + J·h at this iterate, and a dogleg step
-        // inside the trust radius. A trial that gains nothing is undone and
-        // the radius halved; the next one is shorter and closer to the
-        // steepest-descent direction. The model is not rebuilt for it.
-        let saved = save(params, storage);
-        let model = LinearModel::new(&j, &f, n_free, options);
-        // The residuals of the trial step that was accepted, if one was.
-        let mut accepted: Option<Vec<f64>> = None;
-        for _ in 0..TRUST_ATTEMPTS {
-            let Some(step) = model.step(radius) else {
-                break;
-            };
-            let length = norm(&step);
-            space.apply(params, &saved, &step);
-            let f_new = eval_vec(&mut eval_residuals, params, n_eq);
-            let gain = model.gain(&step, &f_new);
-            if gt(gain, TRUST_WIDEN_ABOVE) {
-                radius = radius.max(TRUST_GROWTH * length);
-            } else if !gt(gain, TRUST_NARROW_BELOW) {
-                radius = 0.5 * radius.min(length);
-            }
-            if gt(gain, 0.0) {
-                accepted = Some(f_new);
-                break;
+        if residual.is_finite() && residual >= tolerance && reweighs < REWEIGH_PASSES {
+            if let Some(fresh) = fresh_weights(&weights, params, &mut magnitudes, tolerance) {
+                reweighs += 1;
+                weights = fresh;
+                weighted = true;
+                primed = true;
+                f = eval_vec(&mut eval_residuals, params, n_eq);
+                weigh(&mut f, &weights);
+                radius = f64::INFINITY;
+                failure = SolveStatus::MaxIterations;
+                continue;
             }
         }
-        let stuck = model.failure();
-        match accepted {
-            Some(f_new) => f = f_new,
-            None => {
-                // No step of any length lowered the residual: put the
-                // iterate back and stop — the next iteration would rebuild
-                // the same model.
-                restore(params, storage, &saved);
-                failure = stuck;
-                break;
-            }
-        }
-
-        iters += 1;
+        break;
     }
 
     // `f` belongs to the iterate the loop left: an accepted step handed its
@@ -545,6 +811,11 @@ where
         } else {
             numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
         }
+        let scales = weighted.then(|| column_scales(&j, &weights, n_free));
+        if let Some(scales) = &scales {
+            weigh_rows(&mut j, &weights);
+            scale_columns(&mut j, scales);
+        }
         // Unregularised step: see the block comment above. A singular
         // system has none; a family that asks for it gets the regularised
         // step there instead, so an under-constrained component is polished
@@ -557,9 +828,16 @@ where
             }
             None => vec![0.0_f64; n_free],
         };
+        let delta = match &scales {
+            None => delta,
+            Some(scales) => unscaled(&delta, scales),
+        };
         let saved = save(params, storage);
         space.apply(params, &saved, &delta);
-        let f_polish = eval_vec(&mut eval_residuals, params, n_eq);
+        let mut f_polish = eval_vec(&mut eval_residuals, params, n_eq);
+        if weighted {
+            weigh(&mut f_polish, &weights);
+        }
         let residual_polish = rms(&f_polish);
         if residual_polish < residual {
             residual = residual_polish;
@@ -573,14 +851,25 @@ where
         }
     }
 
-    let converged = residual < tolerance;
-    let status = if converged {
-        SolveStatus::Converged
+    // What is reported is the residual of the equations as stated.
+    let stated = if weighted {
+        unweighted_rms(&f_final, &weights)
+    } else {
+        residual
+    };
+    let status = if residual < tolerance {
+        if stated < tolerance {
+            SolveStatus::Converged
+        } else {
+            SolveStatus::ConvergedToPrecision
+        }
     } else if !residual.is_finite() {
         SolveStatus::Diverged
     } else {
         failure
     };
+    let converged = status <= SolveStatus::ConvergedToPrecision;
+    residual = stated;
     if !converged && options.on_failure == FailurePolicy::Restore {
         restore(params, storage, &initial);
         residual = rms(&eval_vec(&mut eval_residuals, params, n_eq));
@@ -605,9 +894,7 @@ fn norm(v: &[f64]) -> f64 {
 /// The linear model `f + J·h` of the residuals around one iterate, with the
 /// two steps a dogleg is drawn between.
 struct LinearModel<'a> {
-    /// The non-zero entries of each row of `J`, as `(column, value)`. A
-    /// constraint touches a handful of parameters, so products with `J`
-    /// cost far less over these than over the dense rows.
+    /// The non-zero entries of each row of `J` (see [`sparse_rows`]).
     rows: Vec<Vec<(usize, f64)>>,
     f: &'a [f64],
     /// `‖f‖²`.
@@ -625,17 +912,14 @@ struct LinearModel<'a> {
 }
 
 impl<'a> LinearModel<'a> {
-    fn new(j: &'a [Vec<f64>], f: &'a [f64], n_free: usize, options: &CoreOptions) -> Self {
-        let rows: Vec<Vec<(usize, f64)>> = j
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .enumerate()
-                    .filter(|(_, v)| **v != 0.0)
-                    .map(|(col, v)| (col, *v))
-                    .collect()
-            })
-            .collect();
+    /// `rows` are the [`sparse_rows`] of `j`.
+    fn new(
+        j: &[Vec<f64>],
+        rows: Vec<Vec<(usize, f64)>>,
+        f: &'a [f64],
+        n_free: usize,
+        options: &CoreOptions,
+    ) -> Self {
         let mut g = vec![0.0_f64; n_free];
         for (row, fi) in rows.iter().zip(f) {
             for &(col, v) in row {
@@ -799,6 +1083,22 @@ pub(crate) fn numerical_jacobian_for<F>(
     restore(params, storage, &saved);
 }
 
+/// The spacing of floats near a parameter, in units of which a
+/// finite-difference step is kept at least this wide.
+const FD_MIN_ULPS: f64 = 4096.0;
+
+/// The finite-difference step for a parameter of value `x`: [`FD_H`], widened
+/// for a parameter so large that `FD_H` is only a few float spacings there
+/// (beyond about 1e5), where a difference taken with it would be rounding
+/// noise. The step is deliberately not made relative to `x`: geometry far
+/// from the origin is no larger for it, and a step that grows with the
+/// offset soon exceeds the features it is meant to resolve. Nor does it
+/// shrink for small geometry, which it cannot know about: a caller whose
+/// features are below about 1e-4 needs analytic rows.
+pub(crate) fn fd_step(x: f64) -> f64 {
+    FD_H.max(FD_MIN_ULPS * f64::EPSILON * x.abs())
+}
+
 /// Jacobian `j[row][col] = ∂F_row / ∂x_col` by central finite differences,
 /// one parameter column at a time, written into the caller's buffer.
 pub(crate) fn numerical_jacobian_into<F>(
@@ -814,17 +1114,22 @@ pub(crate) fn numerical_jacobian_into<F>(
 
     for (col, &gi) in free_params.iter().enumerate() {
         let orig = p[gi];
+        let h = fd_step(orig);
 
-        p[gi] = orig + FD_H;
+        p[gi] = orig + h;
+        let above = p[gi];
         let f_plus = eval_vec(eval_residuals, &p, n_eq);
 
-        p[gi] = orig - FD_H;
+        p[gi] = orig - h;
+        let below = p[gi];
         let f_minus = eval_vec(eval_residuals, &p, n_eq);
 
         p[gi] = orig;
 
+        // Divide by the step that was actually taken.
+        let taken = above - below;
         for (row, o) in out.iter_mut().enumerate() {
-            o[col] = (f_plus[row] - f_minus[row]) / (2.0 * FD_H);
+            o[col] = (f_plus[row] - f_minus[row]) / taken;
         }
     }
 }

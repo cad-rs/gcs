@@ -135,6 +135,29 @@ A first version of the dogleg multiplied by the dense Jacobian three times
 per iteration and made the 5-body chain 30% slower (132 µs). The products
 now run over the non-zero entries of each row.
 
+### After equations were weighed by their precision (P2.4)
+
+Same machine. Near the origin every weight is one and the solve takes the
+steps it took before, so this only asks what the bookkeeping costs. Two
+mid-size cold solves, the previous commit and this one run alternately,
+four rounds each (criterion medians, 6 s of measurement per run):
+
+| Benchmark | before, four runs | mean | after, four runs | mean |
+|---|---|---:|---|---:|
+| `assembly/solve_chain/40` | 4.35 / 4.33 / 4.21 / 4.42 ms | 4.33 ms | 4.49 / 4.51 / 4.31 / 4.46 ms | 4.44 ms |
+| `sketch/solve_chain/198` | 6.72 / 6.46 / 6.43 / 6.75 ms | 6.59 ms | 6.74 / 6.56 / 6.91 / 6.93 ms | 6.79 ms |
+
+About 3% slower, against a spread of about 5% between runs of one build:
+visible in the means, not in any single pair of runs. The small fixtures
+are level. The cause was not found. It is not the weighting: both builds
+do the same number of eliminations, normal-equation builds and residual
+evaluations on these fixtures (6 / 6 / 8 for the sketch, 2 / 2 / 5 for the
+assembly), and the difference stays when the weighting is switched off.
+What is left is how the rewritten loop compiles. (Forcing the elimination
+kernel inline made the solve 3.5× slower, so its code generation is
+sensitive to the surroundings.) Worth a look when the factorisation is
+replaced in P2.1 / P2.2, not before.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.

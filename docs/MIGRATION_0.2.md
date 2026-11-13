@@ -14,6 +14,7 @@
 | 手写 `PoseSolveResult { … }`、`SolveResult { … }`、`DofReport { … }`、`SpaceDofReport { … }` 字面量报缺字段 | 分别多了 `status`；`status`；`rank` 和 `structural_dof` | 补上字段。只读不建的代码不受影响 |
 | 闭包或 `()` 块以 `sk.add_constraint(…)` 结尾时报类型不匹配 | 三个容器的 `add_constraint` 现在返回约束下标 `usize` | 在调用后加分号 |
 | 用了 `numerics::newton_solve_with_jacobian` | 它的一个参数类型本来就是库内私有的，现在函数也改成私有 | 用 `newton_solve` / `newton_solve_with` |
+| 对 `SolveStatus` 做穷尽 `match` 的地方报缺少分支 | 新增了状态 `ConvergedToPrecision`（见 2.1） | 把它和 `Converged` 归为一类处理；判断成败请用 `converged` / `success` 字段 |
 | 用了常量 `numerics::LINE_SEARCH_RELAX`、`LINE_SEARCH_STEPS` | 减半线搜索换成了信赖域，这两个常量随之删除 | 没有对应物；它们只是内部步长控制的参数 |
 | 宿主自己的类型对 `glam` 向量派生 serde 时报 `Serialize` 未实现 | 0.1.0 无条件打开了 `glam/serde`，宿主可能在不知情的情况下依赖了它 | 打开本库的 `serde` 特性，或在宿主自己的 `Cargo.toml` 里给 `glam` 开 `serde` |
 | `-D warnings` 的构建在 `DOFAnalyzer` / `SolverDiagnostics` / `rigid3d::SolveOptions` 处报弃用 | 三者标了 `#[deprecated]` | 短期加 `#[allow(deprecated)]`，再按第 3 节换掉 |
@@ -30,6 +31,7 @@
 - `SolveResult::residual` 和 `PoseSolveResult::error` 是**留下来的那个状态**的残差：默认策略下，失败时它是起始状态的残差，不是迭代到最后的残差。
 - 失败原因在 `status` 里：`MaxIterations`、`Stalled`、`Singular`、`Diverged`。以前 NaN 会让消元 panic，现在报 `Diverged`。
 - **解不出来的系统现在很快结束，报 `Stalled`。** 冲突的约束组以前会在最小二乘折中点附近转到迭代上限（默认 100 次）才返回；现在一旦任何长度的步都不能再降低残差就停（测试里的冲突草图不到 20 次迭代）。交互中“加了一个矛盾约束”的反馈因此快得多。如果宿主用 `status == MaxIterations` 判断“这是个冲突”，要改成看 `Stalled`（更可靠的做法是看 `diagnose()` 的 `conflicting`）。`MaxIterations` 现在只表示“还在下降，但迭代次数用完了”。
+- **远离原点的模型现在能解，状态是 `ConvergedToPrecision`。** 容差是绝对数（默认 1e-10），而十亿量级的坐标只能存到约 1e-7，方程不可能满足到 1e-10；0.1.0 在这种模型上一律失败。现在每个方程按“容差”和“自身数值的 4 个舍入单位”中较大的一个来要求，达到后报 `ConvergedToPrecision`，`converged` 为真，但 `residual` 可能大于容差。宿主如果用 `residual < 某阈值` 自行判断成败，在大坐标模型上会误判，请改看 `converged`。原点附近的模型不受影响。**反方向没有解决**：特征尺寸小于约 1e-4 个单位的几何，目前可能在没有真正满足时就被报成收敛（1e-5 大小的三角形，第三个顶点偏差达到尺寸的 0.1%）；在修好之前，请宿主让特征尺寸保持在 1e-4 以上（例如用毫米而不是米做单位）。
 - **“没有自由参数”不再等于收敛。** 一个分量的参数全被固定而方程不成立时，0.1.0 报 `converged = true`，现在报 `false` / `Stalled`。如果宿主把“全固定”当成快速通过的路径，这里会开始报失败——这些失败是真的。
 
 ### 2.2 自由度的数字

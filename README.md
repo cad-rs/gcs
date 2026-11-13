@@ -27,7 +27,10 @@ Each family reduces to `F(x) = 0` over a parameter vector:
    it fits, otherwise bent toward steepest descent; a step that does not
    lower the residual is discarded and the radius shrunk;
 5. iterate until the RMS residual drops below `RESIDUAL_TOL = 1e-10`
-   (rigid-pose family: L2 norm < `tolerance`).
+   (rigid-pose family: L2 norm < `tolerance`). Far from the origin, where
+   that is finer than the coordinates are stored, each equation is held to
+   a few rounding units of its own numbers instead, and the solve reports
+   `ConvergedToPrecision`.
 
 A solve that does not converge reports why in `SolveResult::status`
 (`MaxIterations`, `Stalled`, `Singular`, `Diverged`) and, by default, puts
