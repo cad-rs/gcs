@@ -102,11 +102,10 @@ impl<'a> RigidEquations<'a> {
                 };
                 let local_index = |body: usize| usize::from(count == 2 && body == bodies[1]);
                 let local = Constraint::new(constraint.id, constraint.kind.map_bodies(local_index));
+                let mut alone = ConstraintSystem::with_components(count);
+                alone.add_constraint(local);
                 Alone {
-                    system: ConstraintSystem {
-                        constraints: vec![local],
-                        num_components: count,
-                    },
+                    system: alone,
                     bodies,
                     count,
                 }
@@ -144,7 +143,7 @@ impl<'a> RigidEquations<'a> {
     /// equation with nothing left to move: it holds or the solve fails.
     pub(crate) fn grounded(system: &'a ConstraintSystem) -> Self {
         let mut equations = Self::new(system);
-        for (index, constraint) in system.constraints.iter().enumerate() {
+        for (index, constraint) in system.active_constraints() {
             if let ConstraintKind::Fixed {
                 body,
                 orientation: Some(_),
@@ -187,7 +186,7 @@ impl<'a> RigidEquations<'a> {
     /// whichever view this is.
     pub(crate) fn residual_norm_of_every_constraint(&self, params: &[f64]) -> f64 {
         let mut sum = 0.0_f64;
-        for index in 0..self.system.constraints.len() {
+        for (index, _) in self.system.active_constraints() {
             self.with_evaluation(index, params, |rj, _| {
                 for r in &rj.r {
                     sum += r * r;
@@ -246,12 +245,17 @@ impl Equations for RigidEquations<'_> {
         self.system.constraints.len()
     }
 
+    /// A suppressed or removed constraint has no equation.
     fn equation_count(&self, index: usize) -> usize {
-        ConstraintSolver::equation_count_of(&self.system.constraints[index])
+        if self.system.is_active(index) {
+            ConstraintSolver::equation_count_of(&self.system.constraints[index])
+        } else {
+            0
+        }
     }
 
     fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]) {
-        if self.definition[index] {
+        if self.definition[index] || !self.system.is_active(index) {
             out.fill(0.0);
             return;
         }
@@ -259,7 +263,7 @@ impl Equations for RigidEquations<'_> {
     }
 
     fn jacobian(&self, index: usize, params: &[f64], out: &mut [SparseRow]) {
-        if self.definition[index] {
+        if self.definition[index] || !self.system.is_active(index) {
             return;
         }
         self.with_evaluation(index, params, |rj, alone| {

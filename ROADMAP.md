@@ -71,12 +71,12 @@ Phase P0 (baseline fixes) is done; see the changelog.
 
 ## 4. API and engineering
 
-- **An editable model for the rigid-pose family.** The 2D `Sketch` and the
-  3D `SpaceSketch` can remove and suppress constraints, remove entities,
-  change dimension values in place, measure, and validate, with stable
-  indices. The rigid-pose `ConstraintSystem` cannot yet. Removed slots are
-  never reclaimed; a `compact()` that returns the index remapping is
-  missing.
+- **Reclaim removed slots.** All three containers (`Sketch`, `SpaceSketch`,
+  the rigid-pose `ConstraintSystem`) can remove and suppress constraints,
+  remove entities or components, change dimension values in place, measure,
+  and validate, with stable indices. Removed slots are never reclaimed: a
+  `compact()` that returns the index remapping is missing, so a long
+  editing session only grows.
 - **Dimensions as objects.** A dimension's value lives inside its
   constraint. Sharing one value between several constraints, or binding it
   to a variable or an expression, needs a dimension table on top.

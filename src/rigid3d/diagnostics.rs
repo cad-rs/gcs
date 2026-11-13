@@ -104,9 +104,9 @@ pub struct SolverDiagnostics {
 /// Diagnostic statistics for the assembly.
 #[derive(Debug, Clone, Default)]
 pub struct DiagnosticStats {
-    /// Total number of components
+    /// Number of components (removed ones are not counted)
     pub total_components: usize,
-    /// Total number of constraints
+    /// Number of enforced constraints
     pub total_constraints: usize,
     /// Degrees of freedom the components have between them (six each)
     pub total_dof: usize,
@@ -146,7 +146,7 @@ impl SolverDiagnostics {
         let mut fixed = vec![false; system.num_components];
         let mut grounded = vec![false; system.num_components];
         let mut referenced = vec![false; system.num_components];
-        for constraint in &system.constraints {
+        for (_, constraint) in system.active_constraints() {
             let (first, second) = constraint.kind.bodies();
             for body in std::iter::once(first).chain(second) {
                 referenced[body] = true;
@@ -161,10 +161,11 @@ impl SolverDiagnostics {
         }
         let count = |flags: &[bool]| flags.iter().filter(|flag| **flag).count();
 
+        let enforced = system.active_constraints().count();
         self.stats = DiagnosticStats {
-            total_components: system.num_components,
-            total_constraints: system.constraints.len(),
-            total_dof: system.num_components * 6,
+            total_components: system.live_components(),
+            total_constraints: enforced,
+            total_dof: system.max_dof(),
             dof_removed: diagnosis.rank,
             dof_remaining: diagnosis.dof.max(0) as usize,
             fixed_components: count(&fixed),
@@ -174,8 +175,8 @@ impl SolverDiagnostics {
         // The components the constraints with these ids act on.
         let components_of = |ids: &[usize]| -> Vec<usize> {
             let mut out: Vec<usize> = system
-                .constraints
-                .iter()
+                .active_constraints()
+                .map(|(_, c)| c)
                 .filter(|c| ids.contains(&c.id))
                 .flat_map(|c| {
                     let (first, second) = c.kind.bodies();
@@ -260,7 +261,7 @@ impl SolverDiagnostics {
 
         // Remaining freedoms. An assembly without any constraint is not
         // reported: there is nothing to complete yet.
-        if diagnosis.dof > 0 && !system.constraints.is_empty() {
+        if diagnosis.dof > 0 && enforced > 0 {
             let moving: Vec<usize> = (0..system.num_components)
                 .filter(|&body| movable[body].iter().any(|can_move| *can_move))
                 .collect();
@@ -291,9 +292,9 @@ impl SolverDiagnostics {
         }
 
         // Components nothing refers to.
-        if !system.constraints.is_empty() {
+        if enforced > 0 {
             let isolated: Vec<usize> = (0..system.num_components)
-                .filter(|&body| !referenced[body])
+                .filter(|&body| !referenced[body] && !system.is_component_removed(body))
                 .collect();
             if !isolated.is_empty() {
                 self.issues.push(DiagnosticIssue {

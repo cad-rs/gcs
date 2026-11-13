@@ -20,7 +20,7 @@
 use glam::{DQuat, DVec3, EulerRot};
 
 use super::constraint::{Constraint, ConstraintKind, ConstraintSystem};
-use super::equations::{pack, unpack, RigidEquations, COLUMNS_PER_BODY};
+use super::equations::{pack, unpack, RigidEquations};
 use crate::numerics::{CoreOptions, FailurePolicy, ResidualNorm, SolveStatus};
 use crate::system;
 
@@ -123,7 +123,7 @@ impl ConstraintSolver {
         let n = system.num_components;
         let mut positions: Vec<DVec3> = (0..n).map(|_| DVec3::ZERO).collect();
         let mut rots: Vec<DQuat> = (0..n).map(|_| DQuat::IDENTITY).collect();
-        for constraint in &system.constraints {
+        for (_, constraint) in system.active_constraints() {
             if let ConstraintKind::Fixed {
                 body,
                 position,
@@ -142,6 +142,7 @@ impl ConstraintSolver {
     /// Connected components over the BODY graph: constraints join the
     /// bodies they reference (solver roadmap M3, assembly edition).
     /// Groups of constraint indices, ordered by first appearance.
+    /// Suppressed and removed constraints join nothing and are in no group.
     pub fn components(system: &ConstraintSystem) -> Vec<Vec<usize>> {
         let n = system.num_components;
         let mut parent: Vec<usize> = (0..n).collect();
@@ -152,7 +153,7 @@ impl ConstraintSolver {
             x
         }
         // Pass 1: union the bodies of every constraint.
-        for c in &system.constraints {
+        for (_, c) in system.active_constraints() {
             let (first, second) = c.kind.bodies();
             let a = find(&mut parent, first);
             if let Some(c2) = second {
@@ -168,7 +169,7 @@ impl ConstraintSolver {
         let mut groups: Vec<Vec<usize>> = Vec::new();
         let mut first_root: std::collections::HashMap<usize, usize> =
             std::collections::HashMap::new();
-        for (idx, c) in system.constraints.iter().enumerate() {
+        for (idx, c) in system.active_constraints() {
             let (first, second) = c.kind.bodies();
             let mut root = find(&mut parent, first);
             if let Some(c2) = second {
@@ -241,7 +242,7 @@ impl ConstraintSolver {
             clusters.extend(system::components_of(&eqs, group, &params));
         }
 
-        let fixed = vec![false; system.num_components * COLUMNS_PER_BODY];
+        let fixed = system.held_columns();
         let result = system::solve_components(
             &eqs,
             &mut params,
@@ -317,7 +318,10 @@ impl ConstraintSolver {
     }
 
     pub(crate) fn equation_count(system: &ConstraintSystem) -> usize {
-        system.constraints.iter().map(Self::equation_count_of).sum()
+        system
+            .active_constraints()
+            .map(|(_, c)| Self::equation_count_of(c))
+            .sum()
     }
 
     #[cfg(test)]
@@ -355,7 +359,7 @@ impl ConstraintSolver {
         }
 
         let mut row = 0usize;
-        for constraint in &system.constraints {
+        for (_, constraint) in system.active_constraints() {
             match constraint.kind {
                 ConstraintKind::Fixed {
                     body: c,

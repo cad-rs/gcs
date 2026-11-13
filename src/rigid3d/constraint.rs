@@ -3,6 +3,7 @@
 use glam::{DQuat, DVec3};
 
 use super::Point3;
+use crate::edit::ConstraintState;
 
 /// Unique identifier for a component in the assembly.
 pub type ComponentId = usize;
@@ -192,6 +193,128 @@ impl ConstraintKind {
             ConstraintKind::Concentric { .. } => 4,
             ConstraintKind::PointOnPlane { .. } => 1,
             ConstraintKind::Lock { .. } => 6,
+        }
+    }
+
+    /// The driving value of a dimensional constraint: the distance of a
+    /// `Distance`, the angle (radians) of an `Angle`. `None` for the kinds
+    /// without a single scalar value.
+    pub fn value(&self) -> Option<f64> {
+        match *self {
+            ConstraintKind::Distance { distance, .. } => Some(distance),
+            ConstraintKind::Angle { angle, .. } => Some(angle),
+            _ => None,
+        }
+    }
+
+    /// Set the driving value of a dimensional constraint (see
+    /// [`ConstraintKind::value`]). Returns `false`, changing nothing, for a
+    /// kind that has none.
+    pub fn set_value(&mut self, value: f64) -> bool {
+        match self {
+            ConstraintKind::Distance { distance, .. } => *distance = value,
+            ConstraintKind::Angle { angle, .. } => *angle = value,
+            _ => return false,
+        }
+        true
+    }
+
+    /// What a dimensional constraint measures at the given poses: the value
+    /// [`ConstraintKind::value`] would have to be for the constraint to
+    /// hold as the bodies stand. `None` for the kinds without a value.
+    ///
+    /// An angle is reported in `[0, π]`: the angle equation compares
+    /// cosines, so that is all it distinguishes.
+    pub fn measure(&self, positions: &[Point3], rotations: &[DQuat]) -> Option<f64> {
+        match *self {
+            ConstraintKind::Distance {
+                body1,
+                point1,
+                body2,
+                point2,
+                ..
+            } => {
+                let w1 = positions[body1] + rotations[body1] * point1;
+                let w2 = positions[body2] + rotations[body2] * point2;
+                Some((w1 - w2).length())
+            }
+            ConstraintKind::Angle {
+                body1,
+                dir1,
+                body2,
+                dir2,
+                ..
+            } => {
+                let d1 = (rotations[body1] * dir1).normalize_or_zero();
+                let d2 = (rotations[body2] * dir2).normalize_or_zero();
+                Some(d1.dot(d2).clamp(-1.0, 1.0).acos())
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether every number the constraint carries is finite: points,
+    /// directions, the distance or angle, the target pose.
+    pub fn has_finite_values(&self) -> bool {
+        match *self {
+            ConstraintKind::Fixed {
+                position,
+                orientation,
+                ..
+            } => position.is_finite() && orientation.is_none_or(|q| q.is_finite()),
+            ConstraintKind::Coincident { point1, point2, .. } => {
+                point1.is_finite() && point2.is_finite()
+            }
+            ConstraintKind::Distance {
+                point1,
+                point2,
+                distance,
+                ..
+            } => point1.is_finite() && point2.is_finite() && distance.is_finite(),
+            ConstraintKind::Angle {
+                dir1, dir2, angle, ..
+            } => dir1.is_finite() && dir2.is_finite() && angle.is_finite(),
+            ConstraintKind::Parallel { dir1, dir2, .. }
+            | ConstraintKind::Perpendicular { dir1, dir2, .. } => {
+                dir1.is_finite() && dir2.is_finite()
+            }
+            ConstraintKind::Concentric {
+                point1,
+                dir1,
+                point2,
+                dir2,
+                ..
+            } => point1.is_finite() && dir1.is_finite() && point2.is_finite() && dir2.is_finite(),
+            ConstraintKind::PointOnPlane {
+                plane_point,
+                plane_normal,
+                point,
+                ..
+            } => plane_point.is_finite() && plane_normal.is_finite() && point.is_finite(),
+            ConstraintKind::Lock {
+                translation,
+                rotation,
+                ..
+            } => translation.is_finite() && rotation.is_finite(),
+        }
+    }
+
+    /// Whether every direction and rotation the constraint carries has a
+    /// length: a zero direction does not say which way, and a zero
+    /// quaternion is no rotation.
+    pub fn has_usable_directions(&self) -> bool {
+        const TINY: f64 = 1.0e-14;
+        let direction = |v: DVec3| v.length() > TINY;
+        let rotation = |q: DQuat| q.length() > TINY;
+        match *self {
+            ConstraintKind::Fixed { orientation, .. } => orientation.is_none_or(rotation),
+            ConstraintKind::Angle { dir1, dir2, .. }
+            | ConstraintKind::Parallel { dir1, dir2, .. }
+            | ConstraintKind::Perpendicular { dir1, dir2, .. }
+            | ConstraintKind::Concentric { dir1, dir2, .. } => direction(dir1) && direction(dir2),
+            ConstraintKind::PointOnPlane { plane_normal, .. } => direction(plane_normal),
+            ConstraintKind::Lock { rotation: q, .. } => rotation(q),
+            ConstraintKind::Coincident { .. } | ConstraintKind::Distance { .. } => true,
         }
     }
 }
@@ -435,14 +558,94 @@ impl Constraint {
     }
 }
 
+/// A defect found by [`ConstraintSystem::validate`]. `constraint` is the
+/// index of the constraint in [`ConstraintSystem::constraints`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssemblyError {
+    /// A constraint refers to a component the system does not have.
+    ComponentOutOfRange {
+        constraint: usize,
+        component: ComponentId,
+    },
+    /// A constraint refers to a component that has been removed.
+    ComponentRemoved {
+        constraint: usize,
+        component: ComponentId,
+    },
+    /// A point, direction, distance, angle or rotation is NaN or infinite.
+    NonFiniteValue { constraint: usize },
+    /// A direction or a rotation of zero length.
+    ZeroLength { constraint: usize },
+    /// Both sides of the constraint are on one component, so moving the
+    /// component cannot change whether it holds.
+    SameComponent {
+        constraint: usize,
+        component: ComponentId,
+    },
+}
+
+impl std::fmt::Display for AssemblyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AssemblyError::ComponentOutOfRange {
+                constraint,
+                component,
+            } => write!(
+                f,
+                "constraint {constraint} refers to component {component}, which does not exist"
+            ),
+            AssemblyError::ComponentRemoved {
+                constraint,
+                component,
+            } => write!(
+                f,
+                "constraint {constraint} refers to component {component}, which has been removed"
+            ),
+            AssemblyError::NonFiniteValue { constraint } => {
+                write!(f, "constraint {constraint} has a value that is not finite")
+            }
+            AssemblyError::ZeroLength { constraint } => write!(
+                f,
+                "constraint {constraint} has a direction or rotation of zero length"
+            ),
+            AssemblyError::SameComponent {
+                constraint,
+                component,
+            } => write!(
+                f,
+                "constraint {constraint} has component {component} on both sides"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AssemblyError {}
+
 /// A system of constraints.
+///
+/// Constraints are addressed by their position in
+/// [`ConstraintSystem::constraints`], and components by their id; both stay
+/// put when something is removed (the slot is left behind, marked). Edit
+/// through the methods: pushing into or deleting from the public list
+/// directly goes unnoticed by [`ConstraintSystem::topology_revision`], and
+/// deleting from it shifts indices.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConstraintSystem {
-    /// All constraints in the system
+    /// Constraint slots, including suppressed and removed ones (see
+    /// [`ConstraintSystem::constraint_state`]).
     pub constraints: Vec<Constraint>,
-    /// Number of components
+    /// Number of component slots, removed ones included.
     pub num_components: usize,
+    /// The state of each constraint slot (a missing entry means active).
+    #[cfg_attr(feature = "serde", serde(default))]
+    states: Vec<ConstraintState>,
+    /// Per component: removed (a missing entry means present).
+    #[cfg_attr(feature = "serde", serde(default))]
+    removed: Vec<bool>,
+    /// See [`ConstraintSystem::topology_revision`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    revision: u64,
 }
 
 impl ConstraintSystem {
@@ -454,32 +657,243 @@ impl ConstraintSystem {
     /// Create a system with given number of components.
     pub fn with_components(num_components: usize) -> Self {
         Self {
-            constraints: Vec::new(),
             num_components,
+            ..Self::default()
         }
     }
 
-    /// Add a constraint.
-    pub fn add_constraint(&mut self, constraint: Constraint) {
-        self.constraints.push(constraint);
+    /// Add a component. Returns its id.
+    pub fn add_component(&mut self) -> ComponentId {
+        self.num_components += 1;
+        self.revision += 1;
+        self.num_components - 1
     }
 
-    /// Get constraints involving a specific component.
-    pub fn constraints_for_component(&self, component: ComponentId) -> Vec<&Constraint> {
+    /// Add a constraint. Returns its index, which stays valid for the life
+    /// of the system: removing other constraints does not shift it.
+    pub fn add_constraint(&mut self, constraint: Constraint) -> usize {
+        self.constraints.push(constraint);
+        self.states
+            .resize(self.constraints.len(), ConstraintState::Active);
+        self.revision += 1;
+        self.constraints.len() - 1
+    }
+
+    /// Whether constraint `index` is enforced, suppressed or removed.
+    pub fn constraint_state(&self, index: usize) -> ConstraintState {
+        self.states.get(index).copied().unwrap_or_default()
+    }
+
+    /// Whether constraint `index` is enforced.
+    pub fn is_active(&self, index: usize) -> bool {
+        self.constraint_state(index) == ConstraintState::Active
+    }
+
+    /// The enforced constraints, each with its index.
+    pub fn active_constraints(&self) -> impl Iterator<Item = (usize, &Constraint)> {
         self.constraints
             .iter()
+            .enumerate()
+            .filter(|(index, _)| self.is_active(*index))
+    }
+
+    /// Delete constraint `index`. Its slot stays (so other indices do not
+    /// shift) but it is never enforced again. Returns `false` if it was
+    /// already removed.
+    pub fn remove_constraint(&mut self, index: usize) -> bool {
+        self.set_state(index, ConstraintState::Removed)
+    }
+
+    /// Enforce constraint `index` (`true`) or keep it without enforcing it
+    /// (`false`). A suppressed dimension is a reference dimension: nothing
+    /// drives it, and [`ConstraintSystem::measure`] reads what it currently
+    /// is. Returns `false`, changing nothing, for a removed constraint.
+    pub fn set_constraint_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        if self.constraint_state(index) == ConstraintState::Removed {
+            return false;
+        }
+        self.set_state(
+            index,
+            if enabled {
+                ConstraintState::Active
+            } else {
+                ConstraintState::Suppressed
+            },
+        );
+        true
+    }
+
+    /// Put a different constraint in slot `index` and make it active.
+    pub fn replace_constraint(&mut self, index: usize, constraint: Constraint) {
+        self.constraints[index] = constraint;
+        self.states
+            .resize(self.constraints.len(), ConstraintState::Active);
+        self.states[index] = ConstraintState::Active;
+        self.revision += 1;
+    }
+
+    /// The driving value of dimensional constraint `index` (see
+    /// [`ConstraintKind::value`]).
+    pub fn constraint_value(&self, index: usize) -> Option<f64> {
+        self.constraints[index].kind.value()
+    }
+
+    /// Change the driving value of dimensional constraint `index` in place.
+    /// Nothing moves until the next solve; solving from the poses of the
+    /// last one ([`ConstraintSolver::solve_from`][crate::rigid3d::ConstraintSolver::solve_from])
+    /// continues from where the assembly stands. Returns `false` for a
+    /// constraint without a scalar value.
+    ///
+    /// This does not change which bodies any constraint joins, so
+    /// [`ConstraintSystem::topology_revision`] stays the same.
+    pub fn set_constraint_value(&mut self, index: usize, value: f64) -> bool {
+        self.constraints[index].kind.set_value(value)
+    }
+
+    /// What dimensional constraint `index` measures at the given poses,
+    /// whatever its state (see [`ConstraintKind::measure`]).
+    pub fn measure(&self, index: usize, positions: &[Point3], rotations: &[DQuat]) -> Option<f64> {
+        self.constraints[index].kind.measure(positions, rotations)
+    }
+
+    fn set_state(&mut self, index: usize, state: ConstraintState) -> bool {
+        assert!(
+            index < self.constraints.len(),
+            "constraint index {index} out of range"
+        );
+        self.states
+            .resize(self.constraints.len(), ConstraintState::Active);
+        if self.states[index] == state {
+            return false;
+        }
+        self.states[index] = state;
+        self.revision += 1;
+        true
+    }
+
+    /// Delete a component together with every constraint that refers to
+    /// it. Returns the indices of the constraints removed with it.
+    ///
+    /// The component's slot stays (so other ids do not shift, and the pose
+    /// arrays keep their length); it is no longer solved for and no longer
+    /// counts as six freedoms.
+    pub fn remove_component(&mut self, id: ComponentId) -> Vec<usize> {
+        assert!(id < self.num_components, "component {id} out of range");
+        self.removed.resize(self.num_components, false);
+        if self.removed[id] {
+            return Vec::new();
+        }
+        self.removed[id] = true;
+        self.revision += 1;
+
+        let dependents: Vec<usize> = (0..self.constraints.len())
+            .filter(|&index| self.constraint_state(index) != ConstraintState::Removed)
+            .filter(|&index| {
+                let (first, second) = self.constraints[index].kind.bodies();
+                first == id || second == Some(id)
+            })
+            .collect();
+        for &index in &dependents {
+            self.set_state(index, ConstraintState::Removed);
+        }
+        dependents
+    }
+
+    /// Whether component `id` has been removed.
+    pub fn is_component_removed(&self, id: ComponentId) -> bool {
+        self.removed.get(id).copied().unwrap_or(false)
+    }
+
+    /// A counter that changes whenever the structure of the system does: a
+    /// component or constraint added or removed, a constraint enabled,
+    /// suppressed or replaced. Changing a dimension value leaves it alone,
+    /// so anything derived from the structure alone (the clusters, for one)
+    /// can be kept while it holds.
+    pub fn topology_revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Check the model for defects that would make a solve meaningless or
+    /// panic: constraints referring to components that do not exist or
+    /// were removed, non-finite numbers, directions or rotations of zero
+    /// length, and constraints with one component on both sides. Removed
+    /// constraints are not checked.
+    pub fn validate(&self) -> Result<(), Vec<AssemblyError>> {
+        let mut errors = Vec::new();
+        for (constraint, c) in self.constraints.iter().enumerate() {
+            if self.constraint_state(constraint) == ConstraintState::Removed {
+                continue;
+            }
+            let (first, second) = c.kind.bodies();
+            for component in std::iter::once(first).chain(second) {
+                if component >= self.num_components {
+                    errors.push(AssemblyError::ComponentOutOfRange {
+                        constraint,
+                        component,
+                    });
+                } else if self.is_component_removed(component) {
+                    errors.push(AssemblyError::ComponentRemoved {
+                        constraint,
+                        component,
+                    });
+                }
+            }
+            if second == Some(first) {
+                errors.push(AssemblyError::SameComponent {
+                    constraint,
+                    component: first,
+                });
+            }
+            if !c.kind.has_finite_values() {
+                errors.push(AssemblyError::NonFiniteValue { constraint });
+            } else if !c.kind.has_usable_directions() {
+                errors.push(AssemblyError::ZeroLength { constraint });
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// The enforced constraints involving a specific component.
+    pub fn constraints_for_component(&self, component: ComponentId) -> Vec<&Constraint> {
+        self.active_constraints()
+            .map(|(_, c)| c)
             .filter(|c| c.component1() == component || c.component2() == Some(component))
             .collect()
     }
 
-    /// Get the total DOF removed by all constraints.
+    /// The freedoms the enforced constraints would remove if none of them
+    /// overlapped: a count, not a rank. The diagnosis
+    /// ([`diagnose_assembly`][crate::rigid3d::diagnose_assembly]) gives the
+    /// number actually removed.
     pub fn total_dof_removed(&self) -> usize {
-        self.constraints.iter().map(|c| c.dof_removed()).sum()
+        self.active_constraints()
+            .map(|(_, c)| c.dof_removed())
+            .sum()
     }
 
-    /// Get the maximum possible DOF (6 per component).
+    /// Get the maximum possible DOF (6 per component that has not been
+    /// removed).
     pub fn max_dof(&self) -> usize {
-        self.num_components * 6
+        self.live_components() * 6
+    }
+
+    /// Number of components that have not been removed.
+    pub fn live_components(&self) -> usize {
+        (0..self.num_components)
+            .filter(|&id| !self.is_component_removed(id))
+            .count()
+    }
+
+    /// Per column of the pose parameterization (six per component slot):
+    /// held, because its component has been removed.
+    pub(crate) fn held_columns(&self) -> Vec<bool> {
+        (0..self.num_components)
+            .flat_map(|id| [self.is_component_removed(id); 6])
+            .collect()
     }
 }
 

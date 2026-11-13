@@ -26,7 +26,9 @@ mod dof;
 mod equations;
 mod solver;
 
-pub use constraint::{ComponentId, Constraint, ConstraintKind, ConstraintSystem, ConstraintType};
+pub use constraint::{
+    AssemblyError, ComponentId, Constraint, ConstraintKind, ConstraintSystem, ConstraintType,
+};
 pub use diagnosis::{
     diagnose as diagnose_assembly, mobility as assembly_mobility, AssemblyDiagnosis, CONSIST_TOL,
     PARTIAL_TOL, RANK_REL_TOL,

@@ -103,7 +103,10 @@ sk.validate()?;                           // wrong kinds, dangling references
 added, removed, enabled, suppressed or fixed), not when a value or the
 geometry changes, so structure-derived data can be cached against it.
 
-The rigid-pose `ConstraintSystem` does not have this API yet.
+An assembly (`rigid3d::ConstraintSystem`) is edited the same way, with
+`remove_component` in place of `remove_entity`. It holds no poses, so
+`measure` takes them, and a re-solve continues from the last result through
+`ConstraintSolver::solve_from`.
 
 ## Degrees of freedom and diagnosis
 

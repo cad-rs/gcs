@@ -61,14 +61,16 @@ pub struct AssemblyDiagnosis {
 /// module docs).
 ///
 /// This is the shared diagnosis of the crate-internal `system` module run
-/// over the rigid-pose equations: six columns per body, nothing held.
+/// over the rigid-pose equations: six columns per body. Suppressed and
+/// removed constraints take no part, and a removed component counts no
+/// freedom.
 pub fn diagnose(
     system: &ConstraintSystem,
     positions: &[Point3],
     rots: &[DQuat],
 ) -> AssemblyDiagnosis {
     let params = pack(positions, rots);
-    let fixed = vec![false; system.num_components * COLUMNS_PER_BODY];
+    let fixed = system.held_columns();
     let d = system::diagnose(&RigidEquations::new(system), &params, &fixed, &NoGauge);
 
     // Constraint indices → mate ids, keeping the order and dropping repeats
@@ -108,7 +110,7 @@ pub fn diagnose(
 /// depends on the pose and is meant to be read at a solved one.
 pub fn mobility(system: &ConstraintSystem, positions: &[Point3], rots: &[DQuat]) -> Vec<[bool; 6]> {
     let params = pack(positions, rots);
-    let fixed = vec![false; system.num_components * COLUMNS_PER_BODY];
+    let fixed = system.held_columns();
     let movable = crate::mobility::mobility_of(&RigidEquations::new(system), &params, &fixed);
     movable.as_chunks::<COLUMNS_PER_BODY>().0.to_vec()
 }

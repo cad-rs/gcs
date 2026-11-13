@@ -108,9 +108,15 @@ minor version.
 - `solver::solve`, `solver::solve_components`, `space3d::solver::solve_space`,
   `space3d::solver::solve_components` and `numerics::newton_solve` take the
   parameters as `&mut [f64]` instead of `&mut Vec<f64>`.
-- `Sketch::add_constraint` and `SpaceSketch::add_constraint` return the
-  index of the new constraint instead of nothing. Code that used the call
-  as the last expression of a `()` block or closure needs a semicolon.
+- `Sketch::add_constraint`, `SpaceSketch::add_constraint` and
+  `rigid3d::ConstraintSystem::add_constraint` return the index of the new
+  constraint instead of nothing. Code that used the call as the last
+  expression of a `()` block or closure needs a semicolon.
+- `rigid3d::ConstraintSystem` has private fields besides `constraints` and
+  `num_components`, so it can no longer be built with a struct literal:
+  use `ConstraintSystem::with_components`. Its counting helpers
+  (`constraints_for_component`, `total_dof_removed`, `max_dof`) leave out
+  suppressed and removed constraints and removed components.
 - `components`, `diagnose`, `mobility` and the DOF accounts of `Sketch` and
   `SpaceSketch` ignore suppressed and removed constraints.
 - `SolveResult` has a new public field `status`, and `DofReport` /
@@ -164,6 +170,20 @@ minor version.
   - Angles are measured as principal values (`[0, π]` between two lines or
     two planes, `[0, π/2]` between a line and a plane), because that is all
     the angle equations themselves distinguish.
+- **Editing an assembly in place**, on `rigid3d::ConstraintSystem`, with
+  the methods of the two sketches: `remove_constraint`,
+  `set_constraint_enabled`, `replace_constraint`, `constraint_state`,
+  `set_constraint_value` / `constraint_value`, `measure` (given the poses),
+  `topology_revision` and `validate`, plus `add_component`,
+  `remove_component`, `is_component_removed`, `live_components`,
+  `is_active` and `active_constraints`. A suppressed or removed constraint
+  has no equation; a removed component is not solved for and counts no
+  freedom, while its slot in the pose arrays stays.
+  - `validate` reports `rigid3d::AssemblyError`: a component that does not
+    exist or was removed, a non-finite number, a direction or rotation of
+    zero length, one component on both sides of a constraint.
+  - on `ConstraintKind`: `value`, `set_value`, `measure`,
+    `has_finite_values`, `has_usable_directions`.
 - `rigid3d::assembly_mobility`: which of each body's six coordinates can
   still move at a pose.
 - `rigid3d::DiagnosticSeverity`, `DiagnosticRecommendation` and
