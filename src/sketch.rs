@@ -3,8 +3,11 @@
 use glam::DVec2;
 
 use crate::constraint::Constraint;
+use crate::edit::{ConstraintState, SketchError};
 use crate::entity::{Entity, EntityId, EntityKind, PointRef};
-use crate::solver::{self, SolveOptions, SolveResult};
+use crate::numerics::CoreOptions;
+use crate::solver::{SketchEquations, SolveOptions, SolveResult};
+use crate::system::{self, NoGauge};
 
 /// Detailed DOF analysis result.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -42,8 +45,17 @@ pub struct Sketch {
     pub(crate) fixed: Vec<bool>,
     /// Entity metadata.
     pub entities: Vec<Entity>,
-    /// Constraint list.
+    /// Constraint list. Slots are never reused: see `states`.
     pub(crate) constraints: Vec<Constraint>,
+    /// The state of each constraint slot (a missing entry means active).
+    #[cfg_attr(feature = "serde", serde(default))]
+    states: Vec<ConstraintState>,
+    /// Per entity: removed (a missing entry means present).
+    #[cfg_attr(feature = "serde", serde(default))]
+    removed: Vec<bool>,
+    /// See [`Sketch::topology_revision`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    revision: u64,
 }
 
 impl Sketch {
@@ -54,6 +66,9 @@ impl Sketch {
             fixed: Vec::new(),
             entities: Vec::new(),
             constraints: Vec::new(),
+            states: Vec::new(),
+            removed: Vec::new(),
+            revision: 0,
         }
     }
 
@@ -93,6 +108,7 @@ impl Sketch {
         self.params.extend_from_slice(init);
         self.fixed.resize(self.fixed.len() + init.len(), false);
         self.entities.push(Entity::new(kind, param_start));
+        self.revision += 1;
         id
     }
 
@@ -117,9 +133,10 @@ impl Sketch {
     }
 
     /// Per-parameter mobility at the current configuration (see
-    /// [`crate::mobility::mobility`]).
+    /// [`crate::mobility::mobility`]). Suppressed and removed constraints
+    /// hold nothing.
     pub fn mobility(&self) -> Vec<bool> {
-        crate::mobility::mobility(&self.params, &self.fixed, &self.entities, &self.constraints)
+        crate::mobility::mobility_of(&self.equations(), &self.params, &self.fixed)
     }
 
     /// Copy of the full flat parameter vector (persistence-contract and
@@ -162,6 +179,7 @@ impl Sketch {
     /// Fix a single parameter (by absolute index) so the solver won't move it.
     pub fn fix_param(&mut self, param_idx: usize) {
         self.fixed[param_idx] = true;
+        self.revision += 1;
     }
 
     /// Fix all parameters of an entity (equivalent to a rigid body constraint).
@@ -170,24 +188,210 @@ impl Sketch {
         for i in e.param_start..e.param_start + e.kind.param_count() {
             self.fixed[i] = true;
         }
+        self.revision += 1;
     }
 
     // ── Constraint management ─────────────────────────────────────────────────
 
-    /// Add a constraint.
-    pub fn add_constraint(&mut self, c: Constraint) {
+    /// Add a constraint. Returns its index, which stays valid for the life
+    /// of the sketch: removing other constraints does not shift it.
+    pub fn add_constraint(&mut self, c: Constraint) -> usize {
         self.constraints.push(c);
+        self.states
+            .resize(self.constraints.len(), ConstraintState::Active);
+        self.revision += 1;
+        self.constraints.len() - 1
     }
 
-    /// The constraint list.
+    /// Every constraint slot, in index order — including suppressed and
+    /// removed ones, whose state [`Sketch::constraint_state`] tells.
     pub fn constraints(&self) -> &[Constraint] {
         &self.constraints
     }
 
-    /// Number of constraints (their gcs indices are the positions here —
-    /// the mapping target for callers that track edited constraints).
+    /// Number of constraint slots (their indices are the positions in
+    /// [`Sketch::constraints`]; removed slots are counted).
     pub fn constraints_len(&self) -> usize {
         self.constraints.len()
+    }
+
+    /// Whether constraint `index` is enforced, suppressed or removed.
+    pub fn constraint_state(&self, index: usize) -> ConstraintState {
+        self.states.get(index).copied().unwrap_or_default()
+    }
+
+    /// Delete constraint `index`. Its slot stays (so other indices do not
+    /// shift) but it is never enforced again. Returns `false` if it was
+    /// already removed.
+    pub fn remove_constraint(&mut self, index: usize) -> bool {
+        self.set_state(index, ConstraintState::Removed)
+    }
+
+    /// Enforce constraint `index` (`true`) or keep it without enforcing it
+    /// (`false`). A suppressed dimension is a reference dimension: nothing
+    /// drives it, and [`Sketch::measure`] reads what it currently is.
+    /// Returns `false`, changing nothing, for a removed constraint.
+    pub fn set_constraint_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        if self.constraint_state(index) == ConstraintState::Removed {
+            return false;
+        }
+        self.set_state(
+            index,
+            if enabled {
+                ConstraintState::Active
+            } else {
+                ConstraintState::Suppressed
+            },
+        );
+        true
+    }
+
+    /// Put a different constraint in slot `index` and make it active.
+    pub fn replace_constraint(&mut self, index: usize, c: Constraint) {
+        self.constraints[index] = c;
+        self.states
+            .resize(self.constraints.len(), ConstraintState::Active);
+        self.states[index] = ConstraintState::Active;
+        self.revision += 1;
+    }
+
+    /// The driving value of dimensional constraint `index` (see
+    /// [`Constraint::value`]).
+    pub fn constraint_value(&self, index: usize) -> Option<f64> {
+        self.constraints[index].value()
+    }
+
+    /// Change the driving value of dimensional constraint `index` in place.
+    /// The geometry is not touched until the next solve, which starts from
+    /// where the sketch stands. Returns `false` for a constraint without a
+    /// scalar value.
+    ///
+    /// This does not change which parameters any constraint touches, so
+    /// [`Sketch::topology_revision`] stays the same.
+    pub fn set_constraint_value(&mut self, index: usize, value: f64) -> bool {
+        self.constraints[index].set_value(value)
+    }
+
+    /// What dimensional constraint `index` measures in the current
+    /// geometry, whatever its state (see [`Constraint::measure`]).
+    pub fn measure(&self, index: usize) -> Option<f64> {
+        self.constraints[index].measure(&self.params, &self.entities)
+    }
+
+    fn set_state(&mut self, index: usize, state: ConstraintState) -> bool {
+        self.states
+            .resize(self.constraints.len(), ConstraintState::Active);
+        if self.states[index] == state {
+            return false;
+        }
+        self.states[index] = state;
+        self.revision += 1;
+        true
+    }
+
+    // ── Entity removal ───────────────────────────────────────────────────────
+
+    /// Delete an entity together with every constraint that refers to it.
+    /// Returns the indices of the constraints removed with it.
+    ///
+    /// The slot and the parameters of the entity stay in place (so other
+    /// ids and parameter indices do not shift); the parameters are held and
+    /// no longer count as freedoms.
+    pub fn remove_entity(&mut self, id: EntityId) -> Vec<usize> {
+        self.removed.resize(self.entities.len(), false);
+        if self.removed[id] {
+            return Vec::new();
+        }
+        self.removed[id] = true;
+        for i in self.entity_param_range(id) {
+            self.fixed[i] = true;
+        }
+        self.revision += 1;
+
+        let dependents: Vec<usize> = (0..self.constraints.len())
+            .filter(|&index| self.constraint_state(index) != ConstraintState::Removed)
+            .filter(|&index| {
+                self.constraints[index]
+                    .references()
+                    .iter()
+                    .any(|&(entity, _)| entity == id)
+            })
+            .collect();
+        for &index in &dependents {
+            self.set_state(index, ConstraintState::Removed);
+        }
+        dependents
+    }
+
+    /// Whether entity `id` has been removed.
+    pub fn is_entity_removed(&self, id: EntityId) -> bool {
+        self.removed.get(id).copied().unwrap_or(false)
+    }
+
+    /// A counter that changes whenever the structure of the system does:
+    /// an entity or constraint added or removed, a constraint enabled,
+    /// suppressed or replaced, a parameter fixed. Changing a dimension value
+    /// or moving geometry leaves it alone, so anything derived from the
+    /// structure alone (the components, for one) can be kept while it holds.
+    pub fn topology_revision(&self) -> u64 {
+        self.revision
+    }
+
+    // ── Model check ──────────────────────────────────────────────────────────
+
+    /// Check the model for defects that would make a solve meaningless or
+    /// panic: constraints referring to entities that do not exist, were
+    /// removed, or are of the wrong kind, and values or parameters that are
+    /// not finite. Removed constraints are not checked.
+    pub fn validate(&self) -> Result<(), Vec<SketchError>> {
+        let mut errors = Vec::new();
+        for (index, value) in self.params.iter().enumerate() {
+            if !value.is_finite() && !self.is_param_of_removed_entity(index) {
+                errors.push(SketchError::NonFiniteParameter { index });
+            }
+        }
+        for (constraint, c) in self.constraints.iter().enumerate() {
+            if self.constraint_state(constraint) == ConstraintState::Removed {
+                continue;
+            }
+            for (entity, expected) in c.references() {
+                match self.entities.get(entity) {
+                    None => errors.push(SketchError::EntityOutOfRange { constraint, entity }),
+                    Some(_) if self.is_entity_removed(entity) => {
+                        errors.push(SketchError::EntityRemoved { constraint, entity })
+                    }
+                    Some(found) if !expected.contains(&found.kind) => {
+                        errors.push(SketchError::WrongEntityKind {
+                            constraint,
+                            entity,
+                            found: found.kind,
+                            expected,
+                        })
+                    }
+                    Some(_) => {}
+                }
+            }
+            if c.value().is_some_and(|value| !value.is_finite()) {
+                errors.push(SketchError::NonFiniteValue { constraint });
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn is_param_of_removed_entity(&self, index: usize) -> bool {
+        self.entities.iter().enumerate().any(|(id, e)| {
+            self.is_entity_removed(id)
+                && (e.param_start..e.param_start + e.kind.param_count()).contains(&index)
+        })
+    }
+
+    /// The enforced constraints of this sketch, as the pipeline sees them.
+    fn equations(&self) -> SketchEquations<'_> {
+        SketchEquations::with_states(&self.entities, &self.constraints, &self.states)
     }
 
     // ── DOF analysis ─────────────────────────────────────────────────────────
@@ -208,7 +412,8 @@ impl Sketch {
         self.diagnose().dof
     }
 
-    /// Count-based estimate: (free parameters) − (constraint equations).
+    /// Count-based estimate: (free parameters) − (equations of the active
+    /// constraints).
     ///
     /// No factorisation, but only an estimate: it is exact when every
     /// equation is independent, too low when some are redundant, and it
@@ -217,12 +422,12 @@ impl Sketch {
     /// redundant or conflicting equations.
     pub fn structural_dof_estimate(&self) -> i64 {
         let free = self.fixed.iter().filter(|&&f| !f).count() as i64;
-        let eqs: i64 = self
-            .constraints
-            .iter()
-            .map(|c| c.equation_count() as i64)
-            .sum();
-        free - eqs
+        free - self.active_equation_count() as i64
+    }
+
+    fn active_equation_count(&self) -> usize {
+        let eqs = self.equations();
+        system::equation_total(&eqs, &system::all_indices(&eqs))
     }
 
     /// Detailed DOF analysis: free parameters, equations, Jacobian rank,
@@ -231,7 +436,7 @@ impl Sketch {
     pub fn dof_analysis(&self) -> DofReport {
         let free_param_indices: Vec<usize> =
             (0..self.params.len()).filter(|&i| !self.fixed[i]).collect();
-        let equations: usize = self.constraints.iter().map(|c| c.equation_count()).sum();
+        let equations = self.active_equation_count();
         let diagnosis = self.diagnose();
         DofReport {
             free_params: free_param_indices.len(),
@@ -258,28 +463,24 @@ impl Sketch {
     /// [`Sketch::solve`] with explicit [`SolveOptions`] (tolerance,
     /// iteration limit, what a failed solve leaves behind).
     pub fn solve_with(&mut self, options: &SolveOptions) -> SolveResult {
-        solver::solve_with(
-            &mut self.params,
-            &self.fixed,
-            &self.entities,
-            &self.constraints,
-            options,
-        )
+        self.solve_selected_with(None, options)
     }
 
     /// Rank-revealing diagnosis of the constraint system at the current
     /// parameters (true DOF, redundant / conflicting constraint indices).
-    /// See [`crate::diagnosis`].
+    /// Suppressed and removed constraints take no part. See
+    /// [`crate::diagnosis`].
     pub fn diagnose(&self) -> crate::diagnosis::Diagnosis {
-        crate::diagnosis::diagnose(&self.params, &self.fixed, &self.entities, &self.constraints)
+        system::diagnose(&self.equations(), &self.params, &self.fixed, &NoGauge)
     }
 
-    /// Connected components of this sketch's constraint graph: groups of
-    /// constraint indices that share parameters (see [`crate::graph`]).
-    /// The solver runs per component; localized re-solve = solving only
-    /// the components an edit landed in.
+    /// Connected components of the constraint graph: groups of constraint
+    /// indices that share parameters (see [`crate::graph`]). The solver
+    /// runs per component; localized re-solve = solving only the components
+    /// an edit landed in. Suppressed and removed constraints belong to no
+    /// component.
     pub fn components(&self) -> Vec<Vec<usize>> {
-        crate::graph::constraint_components(&self.params, &self.entities, &self.constraints)
+        system::components(&self.equations(), &self.params)
     }
 
     /// Localized solve: run Newton only on the selected components
@@ -296,15 +497,16 @@ impl Sketch {
         only: Option<&[usize]>,
         options: &SolveOptions,
     ) -> SolveResult {
-        let components = self.components();
-        crate::solver::solve_components_with(
+        let eqs = SketchEquations::with_states(&self.entities, &self.constraints, &self.states);
+        let components = system::components(&eqs, &self.params);
+        system::solve_components(
+            &eqs,
             &mut self.params,
             &self.fixed,
-            &self.entities,
-            &self.constraints,
             &components,
             only,
-            options,
+            &CoreOptions::from(options),
+            |_, _| {},
         )
     }
 

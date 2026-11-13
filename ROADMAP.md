@@ -69,9 +69,14 @@ Phase P0 (baseline fixes) is done; see the changelog.
 
 ## 4. API and engineering
 
-- **An editable model.** `Sketch` can only add: there are no stable ids, no
-  removal of entities or constraints, and no way to change a dimension value
-  without rebuilding the sketch.
+- **An editable model for the other families.** The 2D `Sketch` can remove
+  and suppress constraints, remove entities, change dimension values in
+  place, measure, and validate, with stable indices. `SpaceSketch` and the
+  rigid-pose `ConstraintSystem` cannot yet. Removed slots are never
+  reclaimed; a `compact()` that returns the index remapping is missing.
+- **Dimensions as objects.** A dimension's value lives inside its
+  constraint. Sharing one value between several constraints, or binding it
+  to a variable or an expression, needs a dimension table on top.
 - **Warm start as a first-class API** across all three families (rigid-pose
   already has `solve_from`; 2D/3D geometric solve from the current
   parameters).

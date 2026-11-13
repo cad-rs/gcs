@@ -72,6 +72,33 @@ let result = sk.solve();
 assert!(result.converged);
 ```
 
+## Editing a sketch
+
+A 2D sketch is edited in place; nothing has to be rebuilt between solves.
+Entity ids and constraint indices are stable: removing something leaves its
+slot behind instead of shifting what comes after it.
+
+```rust
+let width = sk.add_constraint(Constraint::LineLength { line, length: 40.0 });
+
+sk.set_constraint_value(width, 55.0);     // drive the dimension
+sk.solve();                               // warm start from where it stands
+
+sk.set_constraint_enabled(width, false);  // now a reference dimension
+let current = sk.measure(width);          // what the length is right now
+
+sk.remove_constraint(width);
+let gone = sk.remove_entity(line);        // and every constraint on it
+
+sk.validate()?;                           // wrong kinds, dangling references
+```
+
+`sk.topology_revision()` changes only when the structure does (something
+added, removed, enabled, suppressed or fixed), not when a value or the
+geometry changes, so structure-derived data can be cached against it.
+
+The 3D-geometric and rigid-pose families do not have this API yet.
+
 ## Degrees of freedom and diagnosis
 
 `sk.diagnose()` runs a rank-revealing QR per connected component and

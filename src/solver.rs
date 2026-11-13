@@ -7,6 +7,7 @@
 //! the crate-internal `system` module over the Newton core of [`crate::numerics`].
 
 use crate::constraint::Constraint;
+use crate::edit::ConstraintState;
 use crate::entity::Entity;
 use crate::numerics::CoreOptions;
 use crate::system::{self, Equations, SparseRow};
@@ -18,8 +19,43 @@ pub use crate::numerics::{
 
 /// The 2D constraint list as the pipeline's [`Equations`].
 pub(crate) struct SketchEquations<'a> {
-    pub(crate) entities: &'a [Entity],
-    pub(crate) constraints: &'a [Constraint],
+    entities: &'a [Entity],
+    constraints: &'a [Constraint],
+    /// The state of each constraint slot; a slot beyond the end of this
+    /// list, or no list at all, counts as active.
+    states: Option<&'a [ConstraintState]>,
+}
+
+impl<'a> SketchEquations<'a> {
+    /// Every constraint in the list is enforced.
+    pub(crate) fn new(entities: &'a [Entity], constraints: &'a [Constraint]) -> Self {
+        Self {
+            entities,
+            constraints,
+            states: None,
+        }
+    }
+
+    /// Only the constraints whose slot is [`ConstraintState::Active`] are
+    /// enforced. A suppressed or removed one contributes no equation and
+    /// keeps its index.
+    pub(crate) fn with_states(
+        entities: &'a [Entity],
+        constraints: &'a [Constraint],
+        states: &'a [ConstraintState],
+    ) -> Self {
+        Self {
+            entities,
+            constraints,
+            states: Some(states),
+        }
+    }
+
+    fn is_active(&self, index: usize) -> bool {
+        self.states
+            .and_then(|states| states.get(index))
+            .is_none_or(|state| *state == ConstraintState::Active)
+    }
 }
 
 impl Equations for SketchEquations<'_> {
@@ -28,15 +64,23 @@ impl Equations for SketchEquations<'_> {
     }
 
     fn equation_count(&self, index: usize) -> usize {
-        self.constraints[index].equation_count()
+        if self.is_active(index) {
+            self.constraints[index].equation_count()
+        } else {
+            0
+        }
     }
 
     fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]) {
-        self.constraints[index].residuals(params, self.entities, out);
+        if self.is_active(index) {
+            self.constraints[index].residuals(params, self.entities, out);
+        }
     }
 
     fn jacobian(&self, index: usize, params: &[f64], out: &mut [SparseRow]) {
-        self.constraints[index].jacobian(params, self.entities, out);
+        if self.is_active(index) {
+            self.constraints[index].jacobian(params, self.entities, out);
+        }
     }
 }
 
@@ -48,10 +92,7 @@ pub(crate) fn eval_residuals(
     constraints: &[Constraint],
     n_eq: usize,
 ) -> Vec<f64> {
-    let eqs = SketchEquations {
-        entities,
-        constraints,
-    };
+    let eqs = SketchEquations::new(entities, constraints);
     let f = system::eval_residuals(&eqs, &system::all_indices(&eqs), params);
     debug_assert_eq!(f.len(), n_eq);
     f
@@ -67,10 +108,7 @@ pub(crate) fn analytic_jacobian(
     constraints: &[Constraint],
     out: &mut [Vec<f64>],
 ) {
-    let eqs = SketchEquations {
-        entities,
-        constraints,
-    };
+    let eqs = SketchEquations::new(entities, constraints);
     system::analytic_jacobian(&eqs, &system::all_indices(&eqs), params, col_of, out);
 }
 
@@ -158,10 +196,7 @@ pub fn solve_components_with(
     only: Option<&[usize]>,
     options: &SolveOptions,
 ) -> SolveResult {
-    let eqs = SketchEquations {
-        entities,
-        constraints,
-    };
+    let eqs = SketchEquations::new(entities, constraints);
     system::solve_components(
         &eqs,
         params,

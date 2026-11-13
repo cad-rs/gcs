@@ -28,13 +28,7 @@ pub fn constraint_components(
     entities: &[Entity],
     constraints: &[Constraint],
 ) -> Vec<Vec<usize>> {
-    system::components(
-        &SketchEquations {
-            entities,
-            constraints,
-        },
-        params,
-    )
+    system::components(&SketchEquations::new(entities, constraints), params)
 }
 
 #[cfg(test)]

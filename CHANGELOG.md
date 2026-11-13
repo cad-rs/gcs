@@ -60,6 +60,11 @@ minor version.
 - `solver::solve`, `solver::solve_components`, `space3d::solver::solve_space`,
   `space3d::solver::solve_components` and `numerics::newton_solve` take the
   parameters as `&mut [f64]` instead of `&mut Vec<f64>`.
+- `Sketch::add_constraint` returns the index of the new constraint instead
+  of nothing. Code that used the call as the last expression of a `()`
+  block or closure needs a semicolon.
+- `Sketch::components`, `diagnose`, `mobility` and the DOF accounts ignore
+  suppressed and removed constraints.
 - `SolveResult` has a new public field `status`, and `DofReport` /
   `SpaceDofReport` have new fields `rank` and `structural_dof` (code that
   builds these structs by literal needs the new fields).
@@ -81,6 +86,20 @@ minor version.
   `SpaceSketch::solve_incremental_with`, `solver::solve_with`,
   `solver::solve_components_with`, `space3d::solver::solve_space_with`,
   `space3d::solver::solve_components_with` and `numerics::newton_solve_with`.
+- **Editing a 2D sketch in place.** Entity ids and constraint indices are
+  stable (a removed slot is left behind, nothing shifts):
+  - `Sketch::remove_constraint`, `Sketch::set_constraint_enabled` (a
+    suppressed dimension is a reference dimension), `Sketch::replace_constraint`,
+    `Sketch::constraint_state` and the `ConstraintState` enum;
+  - `Sketch::remove_entity`, which removes the constraints on the entity
+    with it, and `Sketch::is_entity_removed`;
+  - `Sketch::set_constraint_value` / `constraint_value` to drive a dimension
+    without rebuilding, and `Sketch::measure` to read one;
+  - `Sketch::topology_revision`, which changes only on structural edits;
+  - `Sketch::validate` and `SketchError` for dangling references, wrong
+    entity kinds and non-finite values;
+  - on `Constraint`: `references`, `value`, `set_value`, `measure`; on
+    `PointRef`: `entity`, `expected_kinds`.
 - `Sketch::structural_dof_estimate` and `SpaceSketch::structural_dof_estimate`.
 - `rigid3d::AssemblyDiagnosis::rank` and `dependency_groups` (by mate id):
   the assembly diagnosis now reports what the 2D and 3D ones do.

@@ -51,12 +51,11 @@ fn push_rectangle(sk: &mut Sketch, ox: f64, oy: f64, anchor: Anchor) -> EntityId
     let top = sk.add_line(ox + WIDTH, oy + HEIGHT, ox, oy + HEIGHT);
     let left = sk.add_line(ox, oy + HEIGHT, ox, oy);
 
-    match anchor {
-        Anchor::Fixed => sk.add_constraint(Constraint::fix_point(origin, ox, oy)),
-        Anchor::At(point) => {
-            sk.add_constraint(Constraint::coincident(PointRef::Point(origin), point))
-        }
-    }
+    let anchored = match anchor {
+        Anchor::Fixed => Constraint::fix_point(origin, ox, oy),
+        Anchor::At(point) => Constraint::coincident(PointRef::Point(origin), point),
+    };
+    sk.add_constraint(anchored);
     sk.add_constraint(Constraint::coincident(
         PointRef::LineStart(bottom),
         PointRef::Point(origin),

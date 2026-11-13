@@ -77,6 +77,28 @@ pub enum PointRef {
 }
 
 impl PointRef {
+    /// The entity this point belongs to.
+    pub fn entity(&self) -> EntityId {
+        match *self {
+            PointRef::Point(id)
+            | PointRef::LineStart(id)
+            | PointRef::LineEnd(id)
+            | PointRef::Center(id)
+            | PointRef::ArcStart(id)
+            | PointRef::ArcEnd(id) => id,
+        }
+    }
+
+    /// The entity kinds this kind of reference may point into.
+    pub fn expected_kinds(&self) -> &'static [EntityKind] {
+        match self {
+            PointRef::Point(_) => &[EntityKind::Point],
+            PointRef::LineStart(_) | PointRef::LineEnd(_) => &[EntityKind::Line],
+            PointRef::Center(_) => &[EntityKind::Circle, EntityKind::Arc],
+            PointRef::ArcStart(_) | PointRef::ArcEnd(_) => &[EntityKind::Arc],
+        }
+    }
+
     /// Return the (x_param_idx, y_param_idx) absolute indices into the sketch
     /// parameter vector. For derived points (arc endpoints), returns the center
     /// indices as a fallback; use `point_coords()` for the actual coordinates.

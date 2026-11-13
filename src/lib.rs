@@ -50,6 +50,7 @@
 
 pub mod constraint;
 pub mod diagnosis;
+pub mod edit;
 pub mod entity;
 pub mod graph;
 pub mod mobility;
@@ -62,6 +63,7 @@ mod system;
 
 pub use constraint::Constraint;
 pub use diagnosis::Diagnosis;
+pub use edit::{ConstraintState, SketchError};
 pub use entity::{Entity, EntityId, EntityKind, PointRef};
 pub use numerics::{FailurePolicy, SolveOptions, SolveResult, SolveStatus};
 pub use sketch::{DofReport, Sketch};

@@ -24,7 +24,7 @@ use crate::constraint::Constraint;
 use crate::diagnosis::RANK_REL_TOL;
 use crate::entity::Entity;
 use crate::solver::SketchEquations;
-use crate::system;
+use crate::system::{self, Equations};
 use std::collections::HashMap;
 
 /// Marks every parameter that can move at the current configuration.
@@ -43,24 +43,30 @@ pub fn mobility(
     entities: &[Entity],
     constraints: &[Constraint],
 ) -> Vec<bool> {
+    mobility_of(&SketchEquations::new(entities, constraints), params, fixed)
+}
+
+/// [`mobility`] of any set of equations over plain (additively stepped)
+/// parameters.
+pub(crate) fn mobility_of<E: Equations + ?Sized>(
+    eqs: &E,
+    params: &[f64],
+    fixed: &[bool],
+) -> Vec<bool> {
     let mut movable: Vec<bool> = fixed.iter().map(|fixed| !fixed).collect();
     if params.is_empty() {
         return movable;
     }
 
-    let eqs = SketchEquations {
-        entities,
-        constraints,
-    };
-    for group in system::components(&eqs, params) {
-        let n_eq = system::equation_total(&eqs, &group);
+    for group in system::components(eqs, params) {
+        let n_eq = system::equation_total(eqs, &group);
         if n_eq == 0 {
             continue;
         }
 
         // Touched free parameters of this component, in ascending index
         // order (the Jacobian touch set includes structural zeros).
-        let mut touched = system::touched_params(&eqs, &group, params);
+        let mut touched = system::touched_params(eqs, &group, params);
         touched.retain(|&param| !fixed[param]);
         if touched.is_empty() {
             continue;
@@ -72,7 +78,7 @@ pub fn mobility(
             .map(|(col, &param)| (param, col))
             .collect();
         let mut jacobian = vec![vec![0.0_f64; touched.len()]; n_eq];
-        system::analytic_jacobian(&eqs, &group, params, &col_of, &mut jacobian);
+        system::analytic_jacobian(eqs, &group, params, &col_of, &mut jacobian);
 
         // Convert to sparse representation: each row stores only non-zero
         // entries as (column, value) pairs.

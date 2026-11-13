@@ -88,10 +88,7 @@ pub fn diagnose(
     constraints: &[Constraint],
 ) -> Diagnosis {
     system::diagnose(
-        &SketchEquations {
-            entities,
-            constraints,
-        },
+        &SketchEquations::new(entities, constraints),
         params,
         fixed,
         &NoGauge,

@@ -5,7 +5,7 @@
 //! current parameter vector, and [`Constraint::equation_count`] returns how
 //! many equations the constraint contributes.
 
-use crate::entity::{Entity, EntityId, PointRef};
+use crate::entity::{Entity, EntityId, EntityKind, PointRef};
 use crate::solver::SOLVER_NORM_TOL;
 
 /// A geometric constraint between sketch entities.
@@ -913,6 +913,127 @@ fn accumulate_point_jacobian(
             entry.1 += deriv;
         } else {
             row.push((pidx, deriv));
+        }
+    }
+}
+
+const LINE: &[EntityKind] = &[EntityKind::Line];
+const CIRCULAR: &[EntityKind] = &[EntityKind::Circle, EntityKind::Arc];
+
+impl Constraint {
+    /// Every entity this constraint refers to, each with the entity kinds
+    /// that reference is valid for. An entity referred to twice is listed
+    /// twice.
+    pub fn references(&self) -> Vec<(EntityId, &'static [EntityKind])> {
+        let point = |p: &PointRef| (p.entity(), p.expected_kinds());
+        match self {
+            Constraint::Coincident(p1, p2) => vec![point(p1), point(p2)],
+            Constraint::Fixed { point: p, .. } => vec![point(p)],
+            Constraint::PointDistance { p1, p2, .. }
+            | Constraint::DistanceX { p1, p2, .. }
+            | Constraint::DistanceY { p1, p2, .. } => vec![point(p1), point(p2)],
+            Constraint::LineLength { line, .. } => vec![(*line, LINE)],
+            Constraint::Horizontal(line) | Constraint::Vertical(line) => vec![(*line, LINE)],
+            Constraint::Parallel(l1, l2)
+            | Constraint::Perpendicular(l1, l2)
+            | Constraint::EqualLength(l1, l2)
+            | Constraint::Angle { l1, l2, .. } => vec![(*l1, LINE), (*l2, LINE)],
+            Constraint::EqualRadius(c1, c2)
+            | Constraint::Concentric(c1, c2)
+            | Constraint::CircleCircleTangent { c1, c2, .. } => {
+                vec![(*c1, CIRCULAR), (*c2, CIRCULAR)]
+            }
+            Constraint::ArcArcTangent { a1, a2, .. } => vec![(*a1, CIRCULAR), (*a2, CIRCULAR)],
+            Constraint::PointOnCircle { point: p, circle } => {
+                vec![point(p), (*circle, CIRCULAR)]
+            }
+            Constraint::PointOnLine { point: p, line }
+            | Constraint::Midpoint { point: p, line } => {
+                vec![point(p), (*line, LINE)]
+            }
+            Constraint::Tangent { circle, line } => vec![(*circle, CIRCULAR), (*line, LINE)],
+            Constraint::Radius { circle, .. } | Constraint::Diameter { circle, .. } => {
+                vec![(*circle, CIRCULAR)]
+            }
+            Constraint::Symmetric { p1, p2, line } => vec![point(p1), point(p2), (*line, LINE)],
+            Constraint::SymmetricPoint { p1, p2, about } => {
+                vec![point(p1), point(p2), point(about)]
+            }
+        }
+    }
+
+    /// The driving value of a dimensional constraint: the distance, length,
+    /// angle (radians), radius or diameter it asks for. `None` for
+    /// constraints without a single scalar value (`Fixed` has two; the
+    /// geometric relations have none).
+    pub fn value(&self) -> Option<f64> {
+        match self {
+            Constraint::PointDistance { distance, .. }
+            | Constraint::DistanceX { distance, .. }
+            | Constraint::DistanceY { distance, .. } => Some(*distance),
+            Constraint::LineLength { length, .. } => Some(*length),
+            Constraint::Angle { angle_rad, .. } => Some(*angle_rad),
+            Constraint::Radius { radius, .. } => Some(*radius),
+            Constraint::Diameter { diameter, .. } => Some(*diameter),
+            _ => None,
+        }
+    }
+
+    /// Set the driving value of a dimensional constraint (see
+    /// [`Constraint::value`]). Returns `false`, changing nothing, for a
+    /// constraint that has none.
+    pub fn set_value(&mut self, value: f64) -> bool {
+        match self {
+            Constraint::PointDistance { distance, .. }
+            | Constraint::DistanceX { distance, .. }
+            | Constraint::DistanceY { distance, .. } => *distance = value,
+            Constraint::LineLength { length, .. } => *length = value,
+            Constraint::Angle { angle_rad, .. } => *angle_rad = value,
+            Constraint::Radius { radius, .. } => *radius = value,
+            Constraint::Diameter { diameter, .. } => *diameter = value,
+            _ => return false,
+        }
+        true
+    }
+
+    /// What a dimensional constraint measures in the current geometry: the
+    /// value that [`Constraint::value`] would have to be for the constraint
+    /// to hold as things stand. This is how a dimension is read without
+    /// driving anything. `None` for constraints without a scalar value.
+    ///
+    /// An angle is reported from `l1` to `l2` in `(-π, π]`.
+    pub fn measure(&self, params: &[f64], entities: &[Entity]) -> Option<f64> {
+        let direction = |line: EntityId| {
+            let e = &entities[line];
+            (
+                params[e.param(2)] - params[e.param(0)],
+                params[e.param(3)] - params[e.param(1)],
+            )
+        };
+        match self {
+            Constraint::PointDistance { p1, p2, .. } => {
+                let (x1, y1) = p1.point_coords(params, entities);
+                let (x2, y2) = p2.point_coords(params, entities);
+                Some(((x1 - x2).powi(2) + (y1 - y2).powi(2)).sqrt())
+            }
+            Constraint::DistanceX { p1, p2, .. } => {
+                Some(p1.point_coords(params, entities).0 - p2.point_coords(params, entities).0)
+            }
+            Constraint::DistanceY { p1, p2, .. } => {
+                Some(p1.point_coords(params, entities).1 - p2.point_coords(params, entities).1)
+            }
+            Constraint::LineLength { line, .. } => {
+                let (dx, dy) = direction(*line);
+                Some((dx * dx + dy * dy).sqrt())
+            }
+            Constraint::Angle { l1, l2, .. } => {
+                let (dx1, dy1) = direction(*l1);
+                let (dx2, dy2) = direction(*l2);
+                Some((dx1 * dy2 - dy1 * dx2).atan2(dx1 * dx2 + dy1 * dy2))
+            }
+            Constraint::Radius { circle, .. } => Some(params[entities[*circle].param(2)]),
+            Constraint::Diameter { circle, .. } => Some(2.0 * params[entities[*circle].param(2)]),
+            _ => None,
         }
     }
 }

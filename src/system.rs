@@ -214,6 +214,11 @@ pub(crate) fn components_of<E: Equations + ?Sized>(
     let mut order: Vec<usize> = Vec::new();
     let mut by_root: HashMap<usize, Vec<usize>> = HashMap::new();
     for (&index, first) in indices.iter().zip(first_param) {
+        // A constraint with no equations (suppressed or removed) is not part
+        // of the system: it gets no group.
+        if eqs.equation_count(index) == 0 {
+            continue;
+        }
         match first {
             Some(param) => {
                 let root = find(&mut parent, param);
