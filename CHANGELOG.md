@@ -60,11 +60,11 @@ minor version.
 - `solver::solve`, `solver::solve_components`, `space3d::solver::solve_space`,
   `space3d::solver::solve_components` and `numerics::newton_solve` take the
   parameters as `&mut [f64]` instead of `&mut Vec<f64>`.
-- `Sketch::add_constraint` returns the index of the new constraint instead
-  of nothing. Code that used the call as the last expression of a `()`
-  block or closure needs a semicolon.
-- `Sketch::components`, `diagnose`, `mobility` and the DOF accounts ignore
-  suppressed and removed constraints.
+- `Sketch::add_constraint` and `SpaceSketch::add_constraint` return the
+  index of the new constraint instead of nothing. Code that used the call
+  as the last expression of a `()` block or closure needs a semicolon.
+- `components`, `diagnose`, `mobility` and the DOF accounts of `Sketch` and
+  `SpaceSketch` ignore suppressed and removed constraints.
 - `SolveResult` has a new public field `status`, and `DofReport` /
   `SpaceDofReport` have new fields `rank` and `structural_dof` (code that
   builds these structs by literal needs the new fields).
@@ -98,8 +98,24 @@ minor version.
   - `Sketch::topology_revision`, which changes only on structural edits;
   - `Sketch::validate` and `SketchError` for dangling references, wrong
     entity kinds and non-finite values;
-  - on `Constraint`: `references`, `value`, `set_value`, `measure`; on
-    `PointRef`: `entity`, `expected_kinds`.
+  - on `Constraint`: `references`, `value`, `set_value`, `measure`,
+    `has_finite_values`; on `PointRef`: `entity`, `expected_kinds`.
+- **Editing a 3D sketch in place**, with the same methods on `SpaceSketch`:
+  `remove_constraint`, `set_constraint_enabled`, `replace_constraint`,
+  `constraint_state`, `remove_entity`, `is_entity_removed`,
+  `set_constraint_value` / `constraint_value`, `measure`,
+  `topology_revision` and `validate`. A removed plane or cylinder takes its
+  representation freedoms out of the DOF count with it.
+  - `SketchError` is generic over the entity-kind type, so both families
+    report through one enum; `space3d::SpaceSketchError` is the 3D
+    instance. `validate` also reports a spline control point that does not
+    exist (`ControlPointOutOfRange`).
+  - on `SpaceConstraint`: `references`, `control_point_indices`, `value`,
+    `set_value`, `measure`, `has_finite_values`; on `SpacePointRef`:
+    `entity`, `expected_kinds`, `point_coords`.
+  - Angles are measured as principal values (`[0, π]` between two lines or
+    two planes, `[0, π/2]` between a line and a plane), because that is all
+    the angle equations themselves distinguish.
 - `Sketch::structural_dof_estimate` and `SpaceSketch::structural_dof_estimate`.
 - `rigid3d::AssemblyDiagnosis::rank` and `dependency_groups` (by mate id):
   the assembly diagnosis now reports what the 2D and 3D ones do.

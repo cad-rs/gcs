@@ -63,14 +63,23 @@ pub fn diagnose(
     entities: &[SpaceEntity],
     constraints: &[SpaceConstraint],
 ) -> SpaceDiagnosis {
+    diagnose_equations(&SpaceEquations::new(entities, constraints), params, fixed)
+}
+
+/// [`diagnose`] over an equation view, which is how a sketch leaves its
+/// suppressed and removed constraints out.
+pub(crate) fn diagnose_equations(
+    eqs: &SpaceEquations<'_>,
+    params: &[f64],
+    fixed: &[bool],
+) -> SpaceDiagnosis {
     system::diagnose(
-        &SpaceEquations {
-            entities,
-            constraints,
-        },
+        eqs,
         params,
         fixed,
-        &SpaceGauge { entities },
+        &SpaceGauge {
+            entities: eqs.entities,
+        },
     )
 }
 

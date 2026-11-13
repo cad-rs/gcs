@@ -354,6 +354,20 @@ fn validate_reports_what_is_wrong_with_the_model() {
     );
 }
 
+/// A `Fixed` has no single value, but its target is checked all the same.
+#[test]
+fn validate_reports_a_fixed_target_that_is_not_finite() {
+    let mut sk = Sketch::new();
+    let point = sk.add_point(0.0, 0.0);
+    let good = sk.add_constraint(Constraint::fix_point(point, 1.0, 2.0));
+    let bad = sk.add_constraint(Constraint::fix_point(point, 1.0, f64::NAN));
+    assert!(sk.constraints()[good].has_finite_values());
+    assert_eq!(
+        sk.validate(),
+        Err(vec![SketchError::NonFiniteValue { constraint: bad }])
+    );
+}
+
 #[cfg(feature = "serde")]
 #[test]
 fn sketches_saved_before_the_edit_state_existed_still_load() {

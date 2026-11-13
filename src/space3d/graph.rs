@@ -26,13 +26,7 @@ pub fn constraint_components(
     entities: &[SpaceEntity],
     constraints: &[SpaceConstraint],
 ) -> Vec<Vec<usize>> {
-    system::components(
-        &SpaceEquations {
-            entities,
-            constraints,
-        },
-        params,
-    )
+    system::components(&SpaceEquations::new(entities, constraints), params)
 }
 
 #[cfg(test)]

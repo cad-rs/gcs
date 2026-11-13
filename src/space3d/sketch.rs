@@ -4,10 +4,15 @@
 //! entity kinds of [`SpaceEntityKind`]: points, lines, planes, spheres,
 //! cylinders, circles, arcs and Bezier splines.
 
+use crate::edit::{ConstraintState, SketchError};
 use crate::numerics::{SolveOptions, SolveResult};
 use crate::space3d::constraint::SpaceConstraint;
 use crate::space3d::entity::{SpaceEntity, SpaceEntityId, SpaceEntityKind, SpaceFrame3};
-use crate::space3d::solver::solve_space_with;
+use crate::space3d::solver::SpaceEquations;
+use crate::system;
+
+/// A defect found by [`SpaceSketch::validate`].
+pub type SpaceSketchError = SketchError<SpaceEntityKind>;
 
 /// Detailed DOF analysis result for 3D sketches.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -35,13 +40,32 @@ pub struct SpaceDofReport {
 ///
 /// Holds a flat parameter vector and a list of 3D entities and constraints.
 /// Call [`SpaceSketch::solve`] to run the Newton-Raphson solver.
+///
+/// Entity ids and constraint indices are stable: removing something leaves
+/// its slot behind instead of shifting what comes after it. Edit through
+/// the methods ([`SpaceSketch::add_constraint`],
+/// [`SpaceSketch::remove_constraint`], [`SpaceSketch::remove_entity`], …);
+/// pushing into or deleting from the public lists directly goes unnoticed
+/// by [`SpaceSketch::topology_revision`], and deleting from them shifts
+/// indices.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct SpaceSketch {
     pub params: Vec<f64>,
     pub entities: Vec<SpaceEntity>,
+    /// Constraint slots, including suppressed and removed ones (see
+    /// [`SpaceSketch::constraint_state`]).
     pub constraints: Vec<SpaceConstraint>,
     fixed: Vec<bool>,
+    /// The state of each constraint slot (a missing entry means active).
+    #[cfg_attr(feature = "serde", serde(default))]
+    states: Vec<ConstraintState>,
+    /// Per entity: removed (a missing entry means present).
+    #[cfg_attr(feature = "serde", serde(default))]
+    removed: Vec<bool>,
+    /// See [`SpaceSketch::topology_revision`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    revision: u64,
 }
 
 impl Default for SpaceSketch {
@@ -58,6 +82,9 @@ impl SpaceSketch {
             entities: Vec::new(),
             constraints: Vec::new(),
             fixed: Vec::new(),
+            states: Vec::new(),
+            removed: Vec::new(),
+            revision: 0,
         }
     }
 
@@ -65,6 +92,7 @@ impl SpaceSketch {
     pub fn add_point(&mut self, x: f64, y: f64, z: f64) -> SpaceEntityId {
         let id = self.entities.len();
         let param_start = self.params.len();
+        self.revision += 1;
         self.params.push(x);
         self.params.push(y);
         self.params.push(z);
@@ -88,6 +116,7 @@ impl SpaceSketch {
     ) -> SpaceEntityId {
         let id = self.entities.len();
         let param_start = self.params.len();
+        self.revision += 1;
         for &v in &[x1, y1, z1, x2, y2, z2] {
             self.params.push(v);
             self.fixed.push(false);
@@ -107,6 +136,7 @@ impl SpaceSketch {
     pub fn add_plane(&mut self, nx: f64, ny: f64, nz: f64, d: f64) -> SpaceEntityId {
         let id = self.entities.len();
         let param_start = self.params.len();
+        self.revision += 1;
         let len = (nx * nx + ny * ny + nz * nz).sqrt();
         let inv = if len > crate::numerics::SOLVER_NORM_TOL {
             1.0 / len
@@ -126,6 +156,7 @@ impl SpaceSketch {
     pub fn add_sphere(&mut self, cx: f64, cy: f64, cz: f64, r: f64) -> SpaceEntityId {
         let id = self.entities.len();
         let param_start = self.params.len();
+        self.revision += 1;
         for &v in &[cx, cy, cz, r] {
             self.params.push(v);
             self.fixed.push(false);
@@ -149,6 +180,7 @@ impl SpaceSketch {
     ) -> SpaceEntityId {
         let id = self.entities.len();
         let param_start = self.params.len();
+        self.revision += 1;
         for &v in &[cx, cy, cz, ax, ay, az, r] {
             self.params.push(v);
             self.fixed.push(false);
@@ -213,6 +245,7 @@ impl SpaceSketch {
         );
         let id = self.entities.len();
         let param_start = self.params.len();
+        self.revision += 1;
         let center = if cx.is_finite() && cy.is_finite() && cz.is_finite() {
             [cx, cy, cz]
         } else {
@@ -262,6 +295,7 @@ impl SpaceSketch {
     pub fn add_spline(&mut self, control_points: &[(f64, f64, f64)]) -> SpaceEntityId {
         let id = self.entities.len();
         let param_start = self.params.len();
+        self.revision += 1;
         let n = control_points.len();
         for &(x, y, z) in control_points {
             self.params.push(x);
@@ -299,15 +333,233 @@ impl SpaceSketch {
         )
     }
 
-    /// Add a constraint.
-    pub fn add_constraint(&mut self, constraint: SpaceConstraint) {
+    // ── Constraint management ─────────────────────────────────────────────────
+
+    /// Add a constraint. Returns its index, which stays valid for the life
+    /// of the sketch: removing other constraints does not shift it.
+    pub fn add_constraint(&mut self, constraint: SpaceConstraint) -> usize {
         self.constraints.push(constraint);
+        self.states
+            .resize(self.constraints.len(), ConstraintState::Active);
+        self.revision += 1;
+        self.constraints.len() - 1
     }
+
+    /// Whether constraint `index` is enforced, suppressed or removed.
+    pub fn constraint_state(&self, index: usize) -> ConstraintState {
+        self.states.get(index).copied().unwrap_or_default()
+    }
+
+    /// Delete constraint `index`. Its slot stays (so other indices do not
+    /// shift) but it is never enforced again. Returns `false` if it was
+    /// already removed.
+    pub fn remove_constraint(&mut self, index: usize) -> bool {
+        self.set_state(index, ConstraintState::Removed)
+    }
+
+    /// Enforce constraint `index` (`true`) or keep it without enforcing it
+    /// (`false`). A suppressed dimension is a reference dimension: nothing
+    /// drives it, and [`SpaceSketch::measure`] reads what it currently is.
+    /// Returns `false`, changing nothing, for a removed constraint.
+    pub fn set_constraint_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        if self.constraint_state(index) == ConstraintState::Removed {
+            return false;
+        }
+        self.set_state(
+            index,
+            if enabled {
+                ConstraintState::Active
+            } else {
+                ConstraintState::Suppressed
+            },
+        );
+        true
+    }
+
+    /// Put a different constraint in slot `index` and make it active.
+    pub fn replace_constraint(&mut self, index: usize, constraint: SpaceConstraint) {
+        self.constraints[index] = constraint;
+        self.states
+            .resize(self.constraints.len(), ConstraintState::Active);
+        self.states[index] = ConstraintState::Active;
+        self.revision += 1;
+    }
+
+    /// The driving value of dimensional constraint `index` (see
+    /// [`SpaceConstraint::value`]).
+    pub fn constraint_value(&self, index: usize) -> Option<f64> {
+        self.constraints[index].value()
+    }
+
+    /// Change the driving value of dimensional constraint `index` in place.
+    /// The geometry is not touched until the next solve, which starts from
+    /// where the sketch stands. Returns `false` for a constraint without a
+    /// scalar value.
+    ///
+    /// This does not change which parameters any constraint touches, so
+    /// [`SpaceSketch::topology_revision`] stays the same.
+    pub fn set_constraint_value(&mut self, index: usize, value: f64) -> bool {
+        self.constraints[index].set_value(value)
+    }
+
+    /// What dimensional constraint `index` measures in the current
+    /// geometry, whatever its state (see [`SpaceConstraint::measure`]).
+    pub fn measure(&self, index: usize) -> Option<f64> {
+        self.constraints[index].measure(&self.params, &self.entities)
+    }
+
+    fn set_state(&mut self, index: usize, state: ConstraintState) -> bool {
+        assert!(
+            index < self.constraints.len(),
+            "constraint index {index} out of range"
+        );
+        self.states
+            .resize(self.constraints.len(), ConstraintState::Active);
+        if self.states[index] == state {
+            return false;
+        }
+        self.states[index] = state;
+        self.revision += 1;
+        true
+    }
+
+    // ── Entity removal ───────────────────────────────────────────────────────
+
+    /// Delete an entity together with every constraint that refers to it.
+    /// Returns the indices of the constraints removed with it.
+    ///
+    /// The slot and the parameters of the entity stay in place (so other
+    /// ids and parameter indices do not shift); the parameters are held and
+    /// no longer count as freedoms.
+    pub fn remove_entity(&mut self, id: SpaceEntityId) -> Vec<usize> {
+        self.removed.resize(self.entities.len(), false);
+        if self.removed[id] {
+            return Vec::new();
+        }
+        self.removed[id] = true;
+        let entity = &self.entities[id];
+        for i in entity.param_start..entity.param_start + entity.param_count() {
+            self.fixed[i] = true;
+        }
+        self.revision += 1;
+
+        let dependents: Vec<usize> = (0..self.constraints.len())
+            .filter(|&index| self.constraint_state(index) != ConstraintState::Removed)
+            .filter(|&index| {
+                self.constraints[index]
+                    .references()
+                    .iter()
+                    .any(|&(entity, _)| entity == id)
+            })
+            .collect();
+        for &index in &dependents {
+            self.set_state(index, ConstraintState::Removed);
+        }
+        dependents
+    }
+
+    /// Whether entity `id` has been removed.
+    pub fn is_entity_removed(&self, id: SpaceEntityId) -> bool {
+        self.removed.get(id).copied().unwrap_or(false)
+    }
+
+    /// A counter that changes whenever the structure of the system does:
+    /// an entity or constraint added or removed, a constraint enabled,
+    /// suppressed or replaced, a parameter fixed. Changing a dimension value
+    /// or moving geometry leaves it alone, so anything derived from the
+    /// structure alone (the components, for one) can be kept while it holds.
+    pub fn topology_revision(&self) -> u64 {
+        self.revision
+    }
+
+    // ── Model check ──────────────────────────────────────────────────────────
+
+    /// Check the model for defects that would make a solve meaningless or
+    /// panic: constraints referring to entities that do not exist, were
+    /// removed, or are of the wrong kind; spline control points that do not
+    /// exist; and values or parameters that are not finite. Removed
+    /// constraints are not checked.
+    pub fn validate(&self) -> Result<(), Vec<SpaceSketchError>> {
+        let mut errors = Vec::new();
+        for (index, value) in self.params.iter().enumerate() {
+            if !value.is_finite() && !self.is_param_of_removed_entity(index) {
+                errors.push(SketchError::NonFiniteParameter { index });
+            }
+        }
+        for (constraint, c) in self.constraints.iter().enumerate() {
+            if self.constraint_state(constraint) == ConstraintState::Removed {
+                continue;
+            }
+            for (entity, expected) in c.references() {
+                match self.entities.get(entity) {
+                    None => errors.push(SketchError::EntityOutOfRange { constraint, entity }),
+                    Some(_) if self.is_entity_removed(entity) => {
+                        errors.push(SketchError::EntityRemoved { constraint, entity })
+                    }
+                    Some(found) if !expected.contains(&found.kind) => {
+                        errors.push(SketchError::WrongEntityKind {
+                            constraint,
+                            entity,
+                            found: found.kind,
+                            expected,
+                        })
+                    }
+                    Some(_) => {}
+                }
+            }
+            if let Some((entity, indices)) = c.control_point_indices() {
+                // A reference that is not a spline was reported above.
+                let spline = self
+                    .entities
+                    .get(entity)
+                    .filter(|e| e.kind == SpaceEntityKind::SpaceSpline);
+                if let Some(spline) = spline {
+                    let count = spline.control_point_count;
+                    for index in indices.into_iter().filter(|&index| index >= count) {
+                        errors.push(SketchError::ControlPointOutOfRange {
+                            constraint,
+                            entity,
+                            index,
+                            count,
+                        });
+                    }
+                }
+            }
+            if !c.has_finite_values() {
+                errors.push(SketchError::NonFiniteValue { constraint });
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn is_param_of_removed_entity(&self, index: usize) -> bool {
+        self.entities.iter().enumerate().any(|(id, e)| {
+            self.is_entity_removed(id)
+                && (e.param_start..e.param_start + e.param_count()).contains(&index)
+        })
+    }
+
+    /// The enforced constraints of this sketch, as the pipeline sees them.
+    fn equations(&self) -> SpaceEquations<'_> {
+        SpaceEquations::with_states(&self.entities, &self.constraints, &self.states)
+    }
+
+    fn active_equation_count(&self) -> usize {
+        let eqs = self.equations();
+        system::equation_total(&eqs, &system::all_indices(&eqs))
+    }
+
+    // ── Fixing ────────────────────────────────────────────────────────────────
 
     /// Fix a specific parameter so the solver won't change it.
     pub fn fix_param(&mut self, param_idx: usize) {
         if param_idx < self.fixed.len() {
             self.fixed[param_idx] = true;
+            self.revision += 1;
         }
     }
 
@@ -323,6 +575,7 @@ impl SpaceSketch {
                     self.fixed[idx] = true;
                 }
             }
+            self.revision += 1;
         }
     }
 
@@ -410,25 +663,18 @@ impl SpaceSketch {
     /// Connected components of this sketch's constraint graph: groups of
     /// constraint indices that share parameters (see
     /// [`crate::space3d::graph`]). The solver runs per component; localized
-    /// re-solve = solving only the components an edit landed in.
+    /// re-solve = solving only the components an edit landed in. Suppressed
+    /// and removed constraints belong to no component.
     pub fn components(&self) -> Vec<Vec<usize>> {
-        crate::space3d::graph::constraint_components(
-            &self.params,
-            &self.entities,
-            &self.constraints,
-        )
+        system::components(&self.equations(), &self.params)
     }
 
     /// Rank-revealing diagnosis of the constraint system at the current
     /// parameters (true DOF, redundant / conflicting constraint indices,
-    /// dependency groups). See [`crate::space3d::diagnosis`].
+    /// dependency groups). Suppressed and removed constraints take no
+    /// part. See [`crate::space3d::diagnosis`].
     pub fn diagnose(&self) -> crate::space3d::diagnosis::SpaceDiagnosis {
-        crate::space3d::diagnosis::diagnose(
-            &self.params,
-            &self.fixed,
-            &self.entities,
-            &self.constraints,
-        )
+        crate::space3d::diagnosis::diagnose_equations(&self.equations(), &self.params, &self.fixed)
     }
 
     // ── Solver ────────────────────────────────────────────────────────────────
@@ -446,13 +692,10 @@ impl SpaceSketch {
     /// [`SpaceSketch::solve`] with explicit [`SolveOptions`] (tolerance,
     /// iteration limit, what a failed solve leaves behind).
     pub fn solve_with(&mut self, options: &SolveOptions) -> SolveResult {
-        solve_space_with(
-            &mut self.params,
-            &self.fixed,
-            &self.entities,
-            &self.constraints,
-            options,
-        )
+        // Gauge fix before iterating: the solver's variable space is the
+        // (unit normal, offset) representation.
+        self.normalize_planes();
+        self.solve_selected_with(None, options)
     }
 
     /// Localized solve: run Newton only on the selected components
@@ -469,12 +712,12 @@ impl SpaceSketch {
         only: Option<&[usize]>,
         options: &SolveOptions,
     ) -> SolveResult {
-        let components = self.components();
-        crate::space3d::solver::solve_components_with(
+        let eqs = SpaceEquations::with_states(&self.entities, &self.constraints, &self.states);
+        let components = system::components(&eqs, &self.params);
+        crate::space3d::solver::solve_equations(
+            &eqs,
             &mut self.params,
             &self.fixed,
-            &self.entities,
-            &self.constraints,
             &components,
             only,
             options,
@@ -497,7 +740,8 @@ impl SpaceSketch {
         changed_constraints: &[usize],
         options: &SolveOptions,
     ) -> SolveResult {
-        let components = self.components();
+        let eqs = SpaceEquations::with_states(&self.entities, &self.constraints, &self.states);
+        let components = system::components(&eqs, &self.params);
         let selected: Vec<usize> = components
             .iter()
             .enumerate()
@@ -505,18 +749,12 @@ impl SpaceSketch {
             .map(|(ordinal, _)| ordinal)
             .collect();
         if selected.is_empty() {
-            return crate::space3d::solver::residual_report(
-                &self.params,
-                &self.entities,
-                &self.constraints,
-                options.tolerance,
-            );
+            return crate::space3d::solver::residual_report(&eqs, &self.params, options.tolerance);
         }
-        crate::space3d::solver::solve_components_with(
+        crate::space3d::solver::solve_equations(
+            &eqs,
             &mut self.params,
             &self.fixed,
-            &self.entities,
-            &self.constraints,
             &components,
             Some(&selected),
             options,
@@ -536,19 +774,15 @@ impl SpaceSketch {
         self.diagnose().dof
     }
 
-    /// Count-based estimate: (free parameters) − (constraint equations).
+    /// Count-based estimate: (free parameters) − (equations of the active
+    /// constraints).
     ///
     /// No factorisation, but only an estimate: it counts raw storage
     /// parameters (a plane has four for three physical freedoms, a cylinder
     /// seven for five) and treats every equation as independent.
     pub fn structural_dof_estimate(&self) -> i64 {
         let free = self.fixed.iter().filter(|&&f| !f).count() as i64;
-        let eqs: i64 = self
-            .constraints
-            .iter()
-            .map(|c| c.equation_count() as i64)
-            .sum();
-        free - eqs
+        free - self.active_equation_count() as i64
     }
 
     /// Detailed DOF analysis: free parameters, equations, Jacobian rank,
@@ -557,7 +791,7 @@ impl SpaceSketch {
     pub fn dof_analysis(&self) -> SpaceDofReport {
         let free_param_indices: Vec<usize> =
             (0..self.params.len()).filter(|&i| !self.fixed[i]).collect();
-        let equations: usize = self.constraints.iter().map(|c| c.equation_count()).sum();
+        let equations = self.active_equation_count();
         let diagnosis = self.diagnose();
         SpaceDofReport {
             free_params: free_param_indices.len(),

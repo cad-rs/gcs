@@ -13,6 +13,7 @@
 //! iterates only the components an edit landed in — untouched components
 //! keep their parameters bitwise.
 
+use crate::edit::ConstraintState;
 use crate::numerics::{self, CoreOptions, SolveOptions, SolveResult, SolveStatus};
 use crate::space3d::constraint::SpaceConstraint;
 use crate::space3d::entity::{SpaceEntity, SpaceEntityKind};
@@ -23,7 +24,42 @@ pub use crate::numerics::{FD_H, LAMBDA, MAX_ITER, PIVOT_TOL, RESIDUAL_TOL, SOLVE
 /// The 3D constraint list as the pipeline's [`Equations`].
 pub(crate) struct SpaceEquations<'a> {
     pub(crate) entities: &'a [SpaceEntity],
-    pub(crate) constraints: &'a [SpaceConstraint],
+    constraints: &'a [SpaceConstraint],
+    /// The state of each constraint slot; a slot beyond the end of this
+    /// list, or no list at all, counts as active.
+    states: Option<&'a [ConstraintState]>,
+}
+
+impl<'a> SpaceEquations<'a> {
+    /// Every constraint in the list is enforced.
+    pub(crate) fn new(entities: &'a [SpaceEntity], constraints: &'a [SpaceConstraint]) -> Self {
+        Self {
+            entities,
+            constraints,
+            states: None,
+        }
+    }
+
+    /// Only the constraints whose slot is [`ConstraintState::Active`] are
+    /// enforced. A suppressed or removed one contributes no equation and
+    /// keeps its index.
+    pub(crate) fn with_states(
+        entities: &'a [SpaceEntity],
+        constraints: &'a [SpaceConstraint],
+        states: &'a [ConstraintState],
+    ) -> Self {
+        Self {
+            entities,
+            constraints,
+            states: Some(states),
+        }
+    }
+
+    fn is_active(&self, index: usize) -> bool {
+        self.states
+            .and_then(|states| states.get(index))
+            .is_none_or(|state| *state == ConstraintState::Active)
+    }
 }
 
 impl Equations for SpaceEquations<'_> {
@@ -32,15 +68,23 @@ impl Equations for SpaceEquations<'_> {
     }
 
     fn equation_count(&self, index: usize) -> usize {
-        self.constraints[index].equation_count()
+        if self.is_active(index) {
+            self.constraints[index].equation_count()
+        } else {
+            0
+        }
     }
 
     fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]) {
-        self.constraints[index].residuals(params, self.entities, out);
+        if self.is_active(index) {
+            self.constraints[index].residuals(params, self.entities, out);
+        }
     }
 
     fn jacobian(&self, index: usize, params: &[f64], out: &mut [SparseRow]) {
-        self.constraints[index].jacobian(params, self.entities, out);
+        if self.is_active(index) {
+            self.constraints[index].jacobian(params, self.entities, out);
+        }
     }
 }
 
@@ -52,10 +96,7 @@ pub(crate) fn eval_residuals(
     constraints: &[SpaceConstraint],
     n_eq: usize,
 ) -> Vec<f64> {
-    let eqs = SpaceEquations {
-        entities,
-        constraints,
-    };
+    let eqs = SpaceEquations::new(entities, constraints);
     let f = system::eval_residuals(&eqs, &system::all_indices(&eqs), params);
     debug_assert_eq!(f.len(), n_eq);
     f
@@ -71,10 +112,7 @@ pub(crate) fn analytic_jacobian(
     constraints: &[SpaceConstraint],
     out: &mut [Vec<f64>],
 ) {
-    let eqs = SpaceEquations {
-        entities,
-        constraints,
-    };
+    let eqs = SpaceEquations::new(entities, constraints);
     system::analytic_jacobian(&eqs, &system::all_indices(&eqs), params, col_of, out);
 }
 
@@ -241,14 +279,31 @@ pub fn solve_components_with(
     only: Option<&[usize]>,
     options: &SolveOptions,
 ) -> SolveResult {
-    let eqs = SpaceEquations {
-        entities,
-        constraints,
-    };
+    solve_equations(
+        &SpaceEquations::new(entities, constraints),
+        params,
+        fixed,
+        components,
+        only,
+        options,
+    )
+}
+
+/// [`solve_components_with`] over an equation view, which is how a sketch
+/// leaves its suppressed and removed constraints out.
+pub(crate) fn solve_equations(
+    eqs: &SpaceEquations<'_>,
+    params: &mut [f64],
+    fixed: &[bool],
+    components: &[Vec<usize>],
+    only: Option<&[usize]>,
+    options: &SolveOptions,
+) -> SolveResult {
+    let entities = eqs.entities;
     // Plane representation is pinned only for the planes the solved
     // components touched (bitwise guarantee for untouched components).
     system::solve_components(
-        &eqs,
+        eqs,
         params,
         fixed,
         components,
@@ -264,16 +319,11 @@ pub fn solve_components_with(
 /// With nothing iterated, an unsatisfied state reports
 /// [`SolveStatus::MaxIterations`] (a budget of zero iterations).
 pub(crate) fn residual_report(
+    eqs: &SpaceEquations<'_>,
     params: &[f64],
-    entities: &[SpaceEntity],
-    constraints: &[SpaceConstraint],
     tolerance: f64,
 ) -> SolveResult {
-    let eqs = SpaceEquations {
-        entities,
-        constraints,
-    };
-    let f = system::eval_residuals(&eqs, &system::all_indices(&eqs), params);
+    let f = system::eval_residuals(eqs, &system::all_indices(eqs), params);
     let residual = numerics::rms(&f);
     let converged = residual < tolerance;
     SolveResult {

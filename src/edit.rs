@@ -24,9 +24,14 @@ pub enum ConstraintState {
     Removed,
 }
 
-/// A defect found by [`Sketch::validate`][crate::Sketch::validate].
+/// A defect found by a model check: [`Sketch::validate`][crate::Sketch::validate]
+/// or [`SpaceSketch::validate`][crate::space3d::SpaceSketch::validate].
+///
+/// `K` is the entity-kind type of the family: [`EntityKind`] for the 2D
+/// sketch (the default), `SpaceEntityKind` for the 3D one (see
+/// [`SpaceSketchError`][crate::space3d::SpaceSketchError]).
 #[derive(Debug, Clone, PartialEq)]
-pub enum SketchError {
+pub enum SketchError<K: 'static = EntityKind> {
     /// A constraint refers to an entity index beyond the entity list.
     EntityOutOfRange {
         /// Index of the constraint.
@@ -49,11 +54,12 @@ pub enum SketchError {
         /// The entity referred to.
         entity: usize,
         /// The kind that entity has.
-        found: EntityKind,
+        found: K,
         /// The kinds the reference accepts.
-        expected: &'static [EntityKind],
+        expected: &'static [K],
     },
-    /// A dimensional constraint whose value is NaN or infinite.
+    /// A constraint that carries a number which is NaN or infinite: a
+    /// dimension value, a target position or a direction.
     NonFiniteValue {
         /// Index of the constraint.
         constraint: usize,
@@ -63,9 +69,21 @@ pub enum SketchError {
         /// Index into the parameter vector.
         index: usize,
     },
+    /// A constraint addresses a control point its spline does not have.
+    /// Only the 3D family has splines.
+    ControlPointOutOfRange {
+        /// Index of the constraint.
+        constraint: usize,
+        /// The spline entity.
+        entity: usize,
+        /// The control point asked for.
+        index: usize,
+        /// How many control points the spline has.
+        count: usize,
+    },
 }
 
-impl std::fmt::Display for SketchError {
+impl<K: std::fmt::Debug> std::fmt::Display for SketchError<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SketchError::EntityOutOfRange { constraint, entity } => write!(
@@ -91,8 +109,17 @@ impl std::fmt::Display for SketchError {
             SketchError::NonFiniteParameter { index } => {
                 write!(f, "parameter {index} is not finite")
             }
+            SketchError::ControlPointOutOfRange {
+                constraint,
+                entity,
+                index,
+                count,
+            } => write!(
+                f,
+                "constraint {constraint} addresses control point {index} of spline {entity}, which has {count}"
+            ),
         }
     }
 }
 
-impl std::error::Error for SketchError {}
+impl<K: std::fmt::Debug> std::error::Error for SketchError<K> {}

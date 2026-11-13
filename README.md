@@ -74,9 +74,10 @@ assert!(result.converged);
 
 ## Editing a sketch
 
-A 2D sketch is edited in place; nothing has to be rebuilt between solves.
-Entity ids and constraint indices are stable: removing something leaves its
-slot behind instead of shifting what comes after it.
+A sketch is edited in place; nothing has to be rebuilt between solves. The
+2D `Sketch` and the 3D `SpaceSketch` have the same editing methods. Entity
+ids and constraint indices are stable: removing something leaves its slot
+behind instead of shifting what comes after it.
 
 ```rust
 let width = sk.add_constraint(Constraint::LineLength { line, length: 40.0 });
@@ -97,7 +98,7 @@ sk.validate()?;                           // wrong kinds, dangling references
 added, removed, enabled, suppressed or fixed), not when a value or the
 geometry changes, so structure-derived data can be cached against it.
 
-The 3D-geometric and rigid-pose families do not have this API yet.
+The rigid-pose `ConstraintSystem` does not have this API yet.
 
 ## Degrees of freedom and diagnosis
 

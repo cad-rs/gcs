@@ -996,6 +996,15 @@ impl Constraint {
         true
     }
 
+    /// Whether every number the constraint carries is finite: its driving
+    /// value, or the target position of a `Fixed`.
+    pub fn has_finite_values(&self) -> bool {
+        match self {
+            Constraint::Fixed { x, y, .. } => x.is_finite() && y.is_finite(),
+            other => other.value().is_none_or(f64::is_finite),
+        }
+    }
+
     /// What a dimensional constraint measures in the current geometry: the
     /// value that [`Constraint::value`] would have to be for the constraint
     /// to hold as things stand. This is how a dimension is read without

@@ -371,7 +371,7 @@ impl Sketch {
                     Some(_) => {}
                 }
             }
-            if c.value().is_some_and(|value| !value.is_finite()) {
+            if !c.has_finite_values() {
                 errors.push(SketchError::NonFiniteValue { constraint });
             }
         }

@@ -6,7 +6,7 @@
 //! many equations the constraint contributes.
 
 use crate::solver::SOLVER_NORM_TOL;
-use crate::space3d::entity::{SpaceEntity, SpaceEntityId, SpacePointRef};
+use crate::space3d::entity::{SpaceEntity, SpaceEntityId, SpaceEntityKind, SpacePointRef};
 
 /// A geometric constraint between 3D space entities.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -2277,6 +2277,280 @@ impl SpaceConstraint {
     }
 }
 
+const LINE: &[SpaceEntityKind] = &[SpaceEntityKind::SpaceLine];
+const PLANE: &[SpaceEntityKind] = &[SpaceEntityKind::Plane];
+const SPHERE: &[SpaceEntityKind] = &[SpaceEntityKind::Sphere];
+const CYLINDER: &[SpaceEntityKind] = &[SpaceEntityKind::Cylinder];
+const CURVE: &[SpaceEntityKind] = &[SpaceEntityKind::SpaceCircle, SpaceEntityKind::SpaceArc];
+const ARC: &[SpaceEntityKind] = &[SpaceEntityKind::SpaceArc];
+const SPLINE: &[SpaceEntityKind] = &[SpaceEntityKind::SpaceSpline];
+/// What `Concentric3D` accepts: every kind whose first three parameters are
+/// a centre (or, for the cylinder, the axis point it uses as one).
+const CENTERED: &[SpaceEntityKind] = &[
+    SpaceEntityKind::Sphere,
+    SpaceEntityKind::Cylinder,
+    SpaceEntityKind::SpaceCircle,
+    SpaceEntityKind::SpaceArc,
+];
+
+impl SpaceConstraint {
+    /// Every entity this constraint refers to, each with the entity kinds
+    /// that reference is valid for. An entity referred to twice is listed
+    /// twice.
+    pub fn references(&self) -> Vec<(SpaceEntityId, &'static [SpaceEntityKind])> {
+        let point = |p: &SpacePointRef| (p.entity(), p.expected_kinds());
+        match self {
+            SpaceConstraint::Coincident(p1, p2) => vec![point(p1), point(p2)],
+            SpaceConstraint::Fixed { point: p, .. } => vec![point(p)],
+            SpaceConstraint::PointDistance { p1, p2, .. }
+            | SpaceConstraint::PointDistanceAlongDir { p1, p2, .. } => {
+                vec![point(p1), point(p2)]
+            }
+            SpaceConstraint::LineLength { line, .. }
+            | SpaceConstraint::LineParallelToDir { line, .. } => vec![(*line, LINE)],
+            SpaceConstraint::PointOnLine { point: p, line }
+            | SpaceConstraint::Midpoint { point: p, line } => vec![point(p), (*line, LINE)],
+            SpaceConstraint::PointOnPlane { point: p, plane }
+            | SpaceConstraint::PointPlaneDistance {
+                point: p, plane, ..
+            } => vec![point(p), (*plane, PLANE)],
+            SpaceConstraint::PointOnSphere { point: p, sphere } => {
+                vec![point(p), (*sphere, SPHERE)]
+            }
+            SpaceConstraint::LineParallelLine(l1, l2)
+            | SpaceConstraint::LinePerpendicularLine(l1, l2)
+            | SpaceConstraint::EqualLineLength(l1, l2)
+            | SpaceConstraint::AngleLineLine { l1, l2, .. } => vec![(*l1, LINE), (*l2, LINE)],
+            SpaceConstraint::PlaneNormal { plane, .. } => vec![(*plane, PLANE)],
+            SpaceConstraint::PlaneParallel(p1, p2)
+            | SpaceConstraint::PlanePerpendicular(p1, p2)
+            | SpaceConstraint::AnglePlanePlane { p1, p2, .. } => {
+                vec![(*p1, PLANE), (*p2, PLANE)]
+            }
+            SpaceConstraint::LineInPlane { line, plane }
+            | SpaceConstraint::LinePerpendicularPlane { line, plane }
+            | SpaceConstraint::LineParallelPlane { line, plane }
+            | SpaceConstraint::AngleLinePlane { line, plane, .. } => {
+                vec![(*line, LINE), (*plane, PLANE)]
+            }
+            SpaceConstraint::SphereRadius { sphere, .. } => vec![(*sphere, SPHERE)],
+            SpaceConstraint::SphereTangent { s1, s2, .. }
+            | SpaceConstraint::EqualSphereRadius(s1, s2) => vec![(*s1, SPHERE), (*s2, SPHERE)],
+            SpaceConstraint::Concentric3D(e1, e2) => vec![(*e1, CENTERED), (*e2, CENTERED)],
+            SpaceConstraint::CylinderRadius { cylinder, .. } => vec![(*cylinder, CYLINDER)],
+            SpaceConstraint::PointOnCylinder { point: p, cylinder } => {
+                vec![point(p), (*cylinder, CYLINDER)]
+            }
+            SpaceConstraint::CylinderTangent { c1, c2, .. } => {
+                vec![(*c1, CYLINDER), (*c2, CYLINDER)]
+            }
+            SpaceConstraint::PlaneTangentToSphere { plane, sphere } => {
+                vec![(*plane, PLANE), (*sphere, SPHERE)]
+            }
+            SpaceConstraint::PointOnCircle { point: p, circle }
+            | SpaceConstraint::PointOnArc {
+                point: p,
+                arc: circle,
+            } => vec![point(p), (*circle, CURVE)],
+            SpaceConstraint::LineTangentCircle { line, circle } => {
+                vec![(*line, LINE), (*circle, CURVE)]
+            }
+            SpaceConstraint::CircleCircleTangent { c1, c2, .. }
+            | SpaceConstraint::EqualRadius(c1, c2) => vec![(*c1, CURVE), (*c2, CURVE)],
+            SpaceConstraint::CircleRadius { circle, .. } => vec![(*circle, CURVE)],
+            SpaceConstraint::Symmetric { p1, p2, line } => {
+                vec![point(p1), point(p2), (*line, LINE)]
+            }
+            SpaceConstraint::PointAtArcEndpoint { point: p, arc, .. } => {
+                vec![point(p), (*arc, ARC)]
+            }
+            SpaceConstraint::PointOnSpline { point: p, spline }
+            | SpaceConstraint::SplineEndpoint {
+                point: p, spline, ..
+            } => vec![point(p), (*spline, SPLINE)],
+            SpaceConstraint::SplineControlPointMidpoint { spline, .. } => {
+                vec![(*spline, SPLINE)]
+            }
+            SpaceConstraint::SplineControlPointSymmetric { spline, line, .. } => {
+                vec![(*spline, SPLINE), (*line, LINE)]
+            }
+        }
+    }
+
+    /// The control points of a spline that this constraint addresses by
+    /// index, as `(spline, indices)`; `None` for a constraint that addresses
+    /// none. `SplineEndpoint` needs its spline to have a control point at
+    /// all, which is reported here as index 0.
+    pub fn control_point_indices(&self) -> Option<(SpaceEntityId, Vec<usize>)> {
+        match self {
+            SpaceConstraint::SplineEndpoint { spline, .. } => Some((*spline, vec![0])),
+            SpaceConstraint::SplineControlPointMidpoint {
+                spline,
+                midpoint_index,
+                first_index,
+                second_index,
+            } => Some((*spline, vec![*midpoint_index, *first_index, *second_index])),
+            SpaceConstraint::SplineControlPointSymmetric {
+                spline,
+                first_index,
+                second_index,
+                ..
+            } => Some((*spline, vec![*first_index, *second_index])),
+            _ => None,
+        }
+    }
+
+    /// The driving value of a dimensional constraint: the distance, length,
+    /// radius or angle (radians) it asks for. `None` for constraints without
+    /// a single scalar value (`Fixed` has three, the direction constraints
+    /// carry a vector, the geometric relations have none).
+    pub fn value(&self) -> Option<f64> {
+        match self {
+            SpaceConstraint::PointDistance { distance, .. }
+            | SpaceConstraint::PointDistanceAlongDir { distance, .. }
+            | SpaceConstraint::PointPlaneDistance { distance, .. } => Some(*distance),
+            SpaceConstraint::LineLength { length, .. } => Some(*length),
+            SpaceConstraint::SphereRadius { radius, .. }
+            | SpaceConstraint::CylinderRadius { radius, .. }
+            | SpaceConstraint::CircleRadius { radius, .. } => Some(*radius),
+            SpaceConstraint::AngleLineLine { angle_rad, .. }
+            | SpaceConstraint::AnglePlanePlane { angle_rad, .. }
+            | SpaceConstraint::AngleLinePlane { angle_rad, .. } => Some(*angle_rad),
+            _ => None,
+        }
+    }
+
+    /// Set the driving value of a dimensional constraint (see
+    /// [`SpaceConstraint::value`]). Returns `false`, changing nothing, for a
+    /// constraint that has none.
+    pub fn set_value(&mut self, value: f64) -> bool {
+        match self {
+            SpaceConstraint::PointDistance { distance, .. }
+            | SpaceConstraint::PointDistanceAlongDir { distance, .. }
+            | SpaceConstraint::PointPlaneDistance { distance, .. } => *distance = value,
+            SpaceConstraint::LineLength { length, .. } => *length = value,
+            SpaceConstraint::SphereRadius { radius, .. }
+            | SpaceConstraint::CylinderRadius { radius, .. }
+            | SpaceConstraint::CircleRadius { radius, .. } => *radius = value,
+            SpaceConstraint::AngleLineLine { angle_rad, .. }
+            | SpaceConstraint::AnglePlanePlane { angle_rad, .. }
+            | SpaceConstraint::AngleLinePlane { angle_rad, .. } => *angle_rad = value,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Whether every number the constraint carries is finite: its driving
+    /// value, the target position of a `Fixed`, the vector of a direction
+    /// constraint.
+    pub fn has_finite_values(&self) -> bool {
+        let vector_is_finite = match self {
+            SpaceConstraint::Fixed {
+                x: a, y: b, z: c, ..
+            }
+            | SpaceConstraint::PointDistanceAlongDir {
+                dx: a,
+                dy: b,
+                dz: c,
+                ..
+            }
+            | SpaceConstraint::LineParallelToDir {
+                dx: a,
+                dy: b,
+                dz: c,
+                ..
+            }
+            | SpaceConstraint::PlaneNormal {
+                nx: a,
+                ny: b,
+                nz: c,
+                ..
+            } => a.is_finite() && b.is_finite() && c.is_finite(),
+            _ => true,
+        };
+        vector_is_finite && self.value().is_none_or(f64::is_finite)
+    }
+
+    /// What a dimensional constraint measures in the current geometry: the
+    /// value that [`SpaceConstraint::value`] would have to be for the
+    /// constraint to hold as things stand. This is how a dimension is read
+    /// without driving anything. `None` for constraints without a scalar
+    /// value.
+    ///
+    /// The angle constraints compare cosines (sines for line–plane), so
+    /// they cannot tell an angle from its mirror image; the measurement is
+    /// the principal value — `[0, π]` between two lines or two planes,
+    /// `[0, π/2]` between a line and a plane. `PointPlaneDistance` is
+    /// unsigned; `PointDistanceAlongDir` is signed, from `p2` to `p1`.
+    pub fn measure(&self, params: &[f64], entities: &[SpaceEntity]) -> Option<f64> {
+        type V = (f64, f64, f64);
+        let dot = |a: V, b: V| a.0 * b.0 + a.1 * b.1 + a.2 * b.2;
+        let norm = |a: V| dot(a, a).sqrt();
+        // Cosine of the angle between two vectors, with the same guard
+        // against a zero-length vector that the residuals use.
+        let cosine =
+            |a: V, b: V| dot(a, b) / (norm(a).max(SOLVER_NORM_TOL) * norm(b).max(SOLVER_NORM_TOL));
+        let between = |p1: &SpacePointRef, p2: &SpacePointRef| {
+            let a = p1.point_coords(params, entities);
+            let b = p2.point_coords(params, entities);
+            (a.0 - b.0, a.1 - b.1, a.2 - b.2)
+        };
+        match self {
+            SpaceConstraint::PointDistance { p1, p2, .. } => Some(norm(between(p1, p2))),
+            SpaceConstraint::PointDistanceAlongDir {
+                p1, p2, dx, dy, dz, ..
+            } => {
+                let dir = (*dx, *dy, *dz);
+                Some(dot(between(p1, p2), dir) / norm(dir).max(SOLVER_NORM_TOL))
+            }
+            SpaceConstraint::LineLength { line, .. } => {
+                Some(norm(line_dir(params, &entities[*line])))
+            }
+            SpaceConstraint::SphereRadius { sphere, .. } => {
+                Some(params[entities[*sphere].param(3)])
+            }
+            SpaceConstraint::CylinderRadius { cylinder, .. } => {
+                Some(params[entities[*cylinder].param(6)])
+            }
+            SpaceConstraint::CircleRadius { circle, .. } => {
+                Some(params[entities[*circle].param(3)])
+            }
+            SpaceConstraint::AngleLineLine { l1, l2, .. } => Some(
+                cosine(
+                    line_dir(params, &entities[*l1]),
+                    line_dir(params, &entities[*l2]),
+                )
+                .clamp(-1.0, 1.0)
+                .acos(),
+            ),
+            SpaceConstraint::AnglePlanePlane { p1, p2, .. } => Some(
+                cosine(
+                    plane_normal(params, &entities[*p1]),
+                    plane_normal(params, &entities[*p2]),
+                )
+                .clamp(-1.0, 1.0)
+                .acos(),
+            ),
+            SpaceConstraint::AngleLinePlane { line, plane, .. } => Some(
+                cosine(
+                    line_dir(params, &entities[*line]),
+                    plane_normal(params, &entities[*plane]),
+                )
+                .abs()
+                .clamp(0.0, 1.0)
+                .asin(),
+            ),
+            SpaceConstraint::PointPlaneDistance { point, plane, .. } => {
+                let e = &entities[*plane];
+                let normal = plane_normal(params, e);
+                let offset = dot(normal, point.point_coords(params, entities)) - params[e.param(3)];
+                Some(offset.abs() / norm(normal).max(SOLVER_NORM_TOL))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Reflexive `AsRef` so the solver's residual/Jacobian helpers accept both
 /// owned and borrowed constraint slices.
 impl AsRef<SpaceConstraint> for SpaceConstraint {
@@ -2607,7 +2881,7 @@ fn nearest_on_bezier(cp: &[(f64, f64, f64)], p: (f64, f64, f64)) -> (f64, f64) {
 #[cfg(test)]
 mod jacobian_tests {
     use super::*;
-    use crate::space3d::entity::{SpaceEntityKind, SpaceFrame3};
+    use crate::space3d::entity::SpaceFrame3;
 
     /// Fixture entities: index 0/1 points, 2/3 lines, 4/5 planes,
     /// 6/7 spheres, 8/9 cylinders, 10/11 circles, 12/13 arcs, 14 a cubic
@@ -3098,6 +3372,68 @@ mod jacobian_tests {
                 assert!(!row.is_empty(), "row {r} of {c:?} touches no parameter");
             }
         }
+    }
+
+    /// `references()` names exactly the entities whose parameters the
+    /// Jacobian touches, and accepts the kind each of them has in the
+    /// fixture. A variant whose reference list drifts from its equations
+    /// fails here.
+    #[test]
+    fn references_agree_with_the_jacobian() {
+        let (params, entities) = fixture();
+        let owner = |param: usize| {
+            entities
+                .iter()
+                .position(|e| (e.param_start..e.param_start + e.param_count()).contains(&param))
+                .expect("every parameter belongs to an entity")
+        };
+        for c in all_variants() {
+            let mut rows: Vec<Vec<(usize, f64)>> = vec![Vec::new(); c.equation_count()];
+            c.jacobian(&params, &entities, &mut rows);
+            let mut touched: Vec<usize> = rows.iter().flatten().map(|&(p, _)| owner(p)).collect();
+            touched.sort_unstable();
+            touched.dedup();
+
+            let references = c.references();
+            let mut named: Vec<usize> = references.iter().map(|&(entity, _)| entity).collect();
+            named.sort_unstable();
+            named.dedup();
+            assert_eq!(named, touched, "{c:?}");
+            for (entity, expected) in references {
+                assert!(
+                    expected.contains(&entities[entity].kind),
+                    "{c:?} rejects entity {entity}, a {:?}",
+                    entities[entity].kind
+                );
+            }
+        }
+    }
+
+    /// A dimension that holds measures its own value: for every variant
+    /// with a value, setting the value to the measurement makes the
+    /// residual vanish.
+    #[test]
+    fn a_dimension_set_to_its_measurement_holds() {
+        let (params, entities) = fixture();
+        let mut dimensions = 0;
+        for mut c in all_variants() {
+            let Some(measured) = c.measure(&params, &entities) else {
+                assert_eq!(c.value(), None, "{c:?} has a value but no measurement");
+                assert!(!c.set_value(1.0), "{c:?}");
+                continue;
+            };
+            assert!(c.value().is_some(), "{c:?} measures but has no value");
+            assert!(c.set_value(measured));
+            assert_eq!(c.value(), Some(measured));
+            let mut f = vec![0.0_f64; c.equation_count()];
+            c.residuals(&params, &entities, &mut f);
+            assert!(
+                f.iter().all(|r| r.abs() < 1e-12),
+                "{c:?} measured {measured} but leaves {f:?}"
+            );
+            dimensions += 1;
+        }
+        assert!(dimensions >= 10, "only {dimensions} dimensional variants");
     }
 
     /// The PointOnLine rows select their cross-product pair from the line

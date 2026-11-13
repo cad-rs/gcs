@@ -316,6 +316,40 @@ pub enum SpacePointRef {
 }
 
 impl SpacePointRef {
+    /// The entity this reference points into.
+    pub fn entity(&self) -> SpaceEntityId {
+        match *self {
+            SpacePointRef::Point(id)
+            | SpacePointRef::LineStart(id)
+            | SpacePointRef::LineEnd(id)
+            | SpacePointRef::SphereCenter(id)
+            | SpacePointRef::CircleCenter(id)
+            | SpacePointRef::ArcCenter(id) => id,
+        }
+    }
+
+    /// The entity kinds this reference is valid for. The two curve centres
+    /// accept a circle or an arc alike: both store the centre in the same
+    /// place and every curve constraint treats them the same way.
+    pub fn expected_kinds(&self) -> &'static [SpaceEntityKind] {
+        match self {
+            SpacePointRef::Point(_) => &[SpaceEntityKind::SpacePoint],
+            SpacePointRef::LineStart(_) | SpacePointRef::LineEnd(_) => {
+                &[SpaceEntityKind::SpaceLine]
+            }
+            SpacePointRef::SphereCenter(_) => &[SpaceEntityKind::Sphere],
+            SpacePointRef::CircleCenter(_) | SpacePointRef::ArcCenter(_) => {
+                &[SpaceEntityKind::SpaceCircle, SpaceEntityKind::SpaceArc]
+            }
+        }
+    }
+
+    /// The current coordinates of the referenced point.
+    pub fn point_coords(&self, params: &[f64], entities: &[SpaceEntity]) -> (f64, f64, f64) {
+        let (x, y, z) = self.param_indices(entities);
+        (params[x], params[y], params[z])
+    }
+
     /// Return the (x_param_idx, y_param_idx, z_param_idx) absolute indices
     /// into the sketch parameter vector.
     pub fn param_indices(&self, entities: &[SpaceEntity]) -> (usize, usize, usize) {

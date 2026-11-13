@@ -39,5 +39,5 @@ pub use constraint::SpaceConstraint;
 pub use diagnosis::{diagnose as diagnose_space, SpaceDiagnosis};
 pub use entity::{SpaceEntity, SpaceEntityId, SpaceEntityKind, SpaceFrame3, SpacePointRef};
 pub use graph::constraint_components;
-pub use sketch::{SpaceDofReport, SpaceSketch};
+pub use sketch::{SpaceDofReport, SpaceSketch, SpaceSketchError};
 pub use solver::{solve_components, solve_space};
