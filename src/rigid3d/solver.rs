@@ -21,7 +21,7 @@ use glam::{DQuat, DVec3, EulerRot};
 
 use super::constraint::{Constraint, ConstraintKind, ConstraintSystem};
 use super::equations::{pack, unpack, RigidEquations, COLUMNS_PER_BODY};
-use crate::numerics::{CoreOptions, FailurePolicy, ResidualNorm};
+use crate::numerics::{CoreOptions, FailurePolicy, ResidualNorm, SolveStatus};
 use crate::system;
 
 /// Finite-difference step for direction-mate Jacobian rows.
@@ -30,23 +30,28 @@ const FD_EPS: f64 = 1e-7;
 /// Result of solving.
 #[derive(Debug, Clone)]
 pub struct PoseSolveResult {
-    /// Whether solving succeeded
+    /// Whether every cluster that was solved converged.
     pub success: bool,
-    /// Final error value
+    /// Why the solve ended: the most severe status among the clusters that
+    /// were solved ([`SolveStatus::Converged`] exactly when `success`).
+    pub status: SolveStatus,
+    /// L2 norm of the residuals of the whole system at the returned poses.
     pub error: f64,
-    /// Number of iterations
+    /// Number of iterations, summed over the clusters.
     pub iterations: usize,
-    /// Solved positions per component (translation)
+    /// Positions per component (translation). The bodies of a cluster that
+    /// did not converge are where the solve started, unless the options ask
+    /// for [`FailurePolicy::KeepLast`].
     pub positions: Vec<DVec3>,
-    /// Solved orientations as normalized quaternions (same order as [`Self::positions`])
+    /// Orientations as normalized quaternions (same order as [`Self::positions`])
     pub rotations: Vec<DQuat>,
-    /// Solved orientations per component (Euler XYZ in radians, from the internal quaternion)
+    /// Orientations per component (Euler XYZ in radians, from the internal quaternion)
     pub orientations: Vec<DVec3>,
 }
 
-/// Solver options.
+/// Options of the rigid-pose solve.
 #[derive(Debug, Clone)]
-pub struct SolveOptions {
+pub struct PoseSolveOptions {
     /// Maximum iterations
     pub max_iterations: usize,
     /// Convergence tolerance (L2 norm of residual vector)
@@ -55,23 +60,35 @@ pub struct SolveOptions {
     pub damping: f64,
     /// Ridge added to the diagonal of `JᵀJ` for Levenberg–Marquardt-style stability.
     pub lm_lambda: f64,
+    /// What a cluster that does not converge leaves behind: the poses it
+    /// started from (the default, as in the other families) or the last
+    /// iterate.
+    pub on_failure: FailurePolicy,
 }
 
-impl Default for SolveOptions {
+impl Default for PoseSolveOptions {
     fn default() -> Self {
         Self {
             max_iterations: 100,
             tolerance: 1e-6,
             damping: 1.0,
             lm_lambda: 1e-10,
+            on_failure: FailurePolicy::default(),
         }
     }
 }
 
+/// The former name of [`PoseSolveOptions`].
+#[deprecated(
+    since = "0.2.0",
+    note = "renamed to `PoseSolveOptions`; `rcad_gcs::SolveOptions` is the options type of the 2D and 3D-geometric families"
+)]
+pub type SolveOptions = PoseSolveOptions;
+
 /// Constraint solver.
 #[derive(Debug, Clone)]
 pub struct ConstraintSolver {
-    options: SolveOptions,
+    options: PoseSolveOptions,
 }
 
 /// Dense residual/Jacobian containers: `j[row][col]` with one column per
@@ -85,12 +102,12 @@ impl ConstraintSolver {
     /// Create a new solver with default options.
     pub fn new() -> Self {
         Self {
-            options: SolveOptions::default(),
+            options: PoseSolveOptions::default(),
         }
     }
 
     /// Create solver with custom options.
-    pub fn with_options(options: SolveOptions) -> Self {
+    pub fn with_options(options: PoseSolveOptions) -> Self {
         Self { options }
     }
 
@@ -197,6 +214,12 @@ impl ConstraintSolver {
     /// of its own residuals is below the tolerance; `success` says that
     /// every one did, and `error` is the L2 norm of the whole system's
     /// residuals at the returned poses.
+    ///
+    /// A sub-cluster that does not converge gets the poses it started from
+    /// back, so a failed solve does not scatter the parts; the ones that
+    /// did converge keep their solution. Grounded bodies stay at their
+    /// fixed pose either way. [`PoseSolveOptions::on_failure`] can ask for
+    /// the last iterate instead.
     pub fn solve_components_from(
         &self,
         system: &ConstraintSystem,
@@ -235,6 +258,7 @@ impl ConstraintSolver {
         let (positions, rots) = unpack(&params);
         PoseSolveResult {
             success: result.converged,
+            status: result.status,
             error,
             iterations: result.iterations,
             orientations: quats_to_euler_xyz(&rots),
@@ -259,14 +283,13 @@ impl ConstraintSolver {
         self.solve_components_from(system, &components, None, positions, rots)
     }
 
-    /// This solver's options in the Newton core's terms. A solve that does
-    /// not converge returns the poses it reached, as it always has.
+    /// This solver's options in the Newton core's terms.
     fn core_options(&self) -> CoreOptions {
         CoreOptions {
             tolerance: self.options.tolerance,
             norm: ResidualNorm::L2,
             max_iterations: self.options.max_iterations,
-            on_failure: FailurePolicy::KeepLast,
+            on_failure: self.options.on_failure,
             lambda: self.options.lm_lambda.max(1e-16),
             initial_step: self.options.damping,
             // One polish step, as this family has always done.
@@ -1022,11 +1045,25 @@ mod tests {
         system.add_constraint(Constraint::fixed(0, 0, DVec3::ZERO));
         system.add_constraint(Constraint::fixed(1, 0, DVec3::new(1.0, 0.0, 0.0)));
 
-        let solver = ConstraintSolver::new();
-        let result = solver.solve(&system);
-
-        assert!((result.positions[0].x - 0.5).abs() < 0.01);
+        // Two pins that disagree cannot both hold. By default the body is
+        // left where the solve started: the seed, which is the last `Fixed`.
+        let start = ConstraintSolver::seed_fixed(&system);
+        let result = ConstraintSolver::new().solve(&system);
         assert!(!result.success);
+        assert_ne!(result.status, SolveStatus::Converged);
+        assert_eq!(result.positions, start.0);
+        assert_eq!(result.rotations, start.1);
+        assert!((result.error - 1.0).abs() < 1e-12, "one pin is 1 away");
+
+        // Asked to keep the last iterate, it reports the least-squares
+        // compromise halfway between the two.
+        let keep = ConstraintSolver::with_options(PoseSolveOptions {
+            on_failure: FailurePolicy::KeepLast,
+            ..PoseSolveOptions::default()
+        });
+        let result = keep.solve(&system);
+        assert!(!result.success);
+        assert!((result.positions[0].x - 0.5).abs() < 0.01);
     }
 
     #[test]
@@ -1077,11 +1114,11 @@ mod tests {
         system.add_constraint(Constraint::fixed(0, 0, DVec3::new(5.0, 5.0, 5.0)));
         system.add_constraint(Constraint::coincident(1, 0, DVec3::ZERO, 1, DVec3::ZERO));
 
-        let options = SolveOptions {
+        let options = PoseSolveOptions {
             max_iterations: 50,
             tolerance: 1e-8,
             damping: 0.8,
-            ..SolveOptions::default()
+            ..PoseSolveOptions::default()
         };
 
         let solver = ConstraintSolver::with_options(options);

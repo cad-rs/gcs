@@ -47,6 +47,11 @@ let options = SolveOptions {
 let result = sk.solve_with(&options);
 ```
 
+The rigid-pose family follows the same contract: `PoseSolveResult::status`
+says why a solve ended, the bodies of a cluster that did not converge are
+handed back where they started, and `PoseSolveOptions::on_failure` chooses
+otherwise.
+
 Known scaling limit: the linear algebra is dense. The normal equations are
 solved by Gaussian elimination, cubic in the number of free parameters of
 one connected component: on the reference machine a component of about 200

@@ -7,14 +7,14 @@
 use glam::{DQuat, DVec3};
 use rcad_gcs::rigid3d::{
     diagnose_assembly, AssemblyDiagnosis, Constraint, ConstraintSolver, ConstraintSystem,
-    SolveOptions,
+    PoseSolveOptions,
 };
 
 /// Solve tightly, then diagnose at the solved pose.
 fn solve_and_diagnose(system: &ConstraintSystem) -> AssemblyDiagnosis {
-    let solver = ConstraintSolver::with_options(SolveOptions {
+    let solver = ConstraintSolver::with_options(PoseSolveOptions {
         tolerance: 1.0e-12,
-        ..SolveOptions::default()
+        ..PoseSolveOptions::default()
     });
     let solved = solver.solve(system);
     assert!(solved.success, "error {:.3e}", solved.error);

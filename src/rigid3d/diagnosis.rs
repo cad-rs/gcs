@@ -102,9 +102,9 @@ mod tests {
     const TIGHT_TOL: f64 = 1.0e-12;
 
     fn tight_solver() -> ConstraintSolver {
-        ConstraintSolver::with_options(crate::rigid3d::SolveOptions {
+        ConstraintSolver::with_options(crate::rigid3d::PoseSolveOptions {
             tolerance: TIGHT_TOL,
-            ..crate::rigid3d::SolveOptions::default()
+            ..crate::rigid3d::PoseSolveOptions::default()
         })
     }
 

@@ -32,7 +32,9 @@ pub use diagnosis::{
 };
 pub use diagnostics::{DiagnosticIssue, DiagnosticType, SolverDiagnostics};
 pub use dof::{DOFAnalyzer, DOFResult, DegreeOfFreedom};
-pub use solver::{ConstraintSolver, PoseSolveResult, SolveOptions};
+#[allow(deprecated)]
+pub use solver::SolveOptions;
+pub use solver::{ConstraintSolver, PoseSolveOptions, PoseSolveResult};
 
 /// 3D point (alias for `glam::DVec3`).
 pub type Point3 = glam::DVec3;

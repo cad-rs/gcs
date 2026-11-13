@@ -14,7 +14,7 @@
 
 use glam::{DQuat, DVec3};
 use rcad_gcs::rigid3d::{
-    diagnose_assembly, Constraint, ConstraintSolver, ConstraintSystem, SolveOptions,
+    diagnose_assembly, Constraint, ConstraintSolver, ConstraintSystem, PoseSolveOptions,
 };
 use serde_json::json;
 
@@ -62,9 +62,9 @@ impl Case {
 }
 
 fn tight_solver() -> ConstraintSolver {
-    ConstraintSolver::with_options(SolveOptions {
+    ConstraintSolver::with_options(PoseSolveOptions {
         tolerance: 1.0e-12,
-        ..SolveOptions::default()
+        ..PoseSolveOptions::default()
     })
 }
 

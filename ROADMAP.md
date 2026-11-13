@@ -28,7 +28,7 @@ Phase P0 (baseline fixes) is done; see the changelog.
   Levenberg–Marquardt / dogleg trust region, automatic
   scaling/equilibration, scale-aware tolerances, and a homotopy/continuation
   path for hard starts would raise the convergence rate on badly conditioned
-  systems. The rigid-pose family has its own loop without a line search.
+  systems.
 - **Parallel residual / Jacobian evaluation.** The residual closure is pure;
   `rayon` could parallelise the FD column sweep and the per-constraint
   residuals behind an opt-in feature.
@@ -81,9 +81,12 @@ Phase P0 (baseline fixes) is done; see the changelog.
 - **Warm start as a first-class API** across all three families (rigid-pose
   already has `solve_from`; 2D/3D geometric solve from the current
   parameters).
-- **One options/result type.** The 2D and 3D-geometric families share
-  `SolveOptions` / `SolveResult` (with a `SolveStatus`); the rigid-pose
-  family has its own `SolveOptions` / `PoseSolveResult`.
+- **One options/result type.** All three families share the vocabulary
+  (`FailurePolicy`, `SolveStatus`, restore on failure by default), but not
+  the types: the 2D and 3D-geometric families use `SolveOptions` /
+  `SolveResult`, the rigid-pose family `PoseSolveOptions` /
+  `PoseSolveResult`, which measures its tolerance as an L2 norm instead of
+  an RMS and returns poses.
 - **A builder API** for constraints and failing constraint ids in the
   result (today `SolveStatus` says why a solve failed, not where).
 - **Serde coverage audit** under the `serde` feature: every public data type

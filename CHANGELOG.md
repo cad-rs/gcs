@@ -68,6 +68,19 @@ minor version.
   with them needs no change. Code that read the fields calls
   `constraint_type()`, `component1()` or `component2()`, or matches on
   `kind`. Results are the same to the last bit.
+- **A rigid-pose solve that does not converge puts the bodies back too.**
+  The bodies of a cluster that fails are returned where the solve started
+  (the warm start, or the seed for `solve`), while clusters that converged
+  keep their solution; grounded bodies stay at their fixed pose. It used to
+  return the last iterate, a least-squares compromise.
+  `PoseSolveOptions { on_failure: FailurePolicy::KeepLast, .. }` restores
+  that. `PoseSolveResult::error` is the error of the poses returned.
+- The rigid-pose options type is `rigid3d::PoseSolveOptions`. The old name
+  `rigid3d::SolveOptions` remains as a deprecated alias: it was easy to
+  confuse with `rcad_gcs::SolveOptions`, the options of the other two
+  families. It has a new field, `on_failure`, and `PoseSolveResult` a new
+  field, `status` (code that builds either by naming every field needs
+  them).
 - **A `Parallel` mate is two equations and a `Concentric` mate four**, the
   number of freedoms each removes. They were three and six: the cross
   product of two directions has three components but only two of them

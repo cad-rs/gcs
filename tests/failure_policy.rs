@@ -215,3 +215,113 @@ fn unsatisfied_equations_with_nothing_free_are_not_converged() {
     assert!(result.converged);
     assert_eq!(result.status, SolveStatus::Converged);
 }
+
+// ── Rigid-pose assemblies ───────────────────────────────────────────────────
+
+mod assembly {
+    use glam::{DQuat, DVec3};
+    use rcad_gcs::rigid3d::{Constraint, ConstraintSolver, ConstraintSystem, PoseSolveOptions};
+    use rcad_gcs::{FailurePolicy, SolveStatus};
+
+    /// A ground (body 0), a part that can be mated to it (body 1), and a
+    /// part pinned at two places at once (body 2), which cannot be solved.
+    /// The two parts share no mate, so they are separate clusters.
+    fn half_solvable() -> ConstraintSystem {
+        let mut system = ConstraintSystem::with_components(3);
+        system.add_constraint(Constraint::fixed_with_orientation(
+            0,
+            0,
+            DVec3::ZERO,
+            DQuat::IDENTITY,
+        ));
+        system.add_constraint(Constraint::coincident(
+            1,
+            0,
+            DVec3::new(2.0, 0.0, 0.0),
+            1,
+            DVec3::new(0.0, 1.0, 0.0),
+        ));
+        system.add_constraint(Constraint::fixed(2, 2, DVec3::new(5.0, 0.0, 0.0)));
+        system.add_constraint(Constraint::fixed(3, 2, DVec3::new(5.0, 4.0, 0.0)));
+        system
+    }
+
+    /// Where the parts are before the solve: nowhere in particular.
+    fn start() -> (Vec<DVec3>, Vec<DQuat>) {
+        (
+            vec![
+                DVec3::ZERO,
+                DVec3::new(0.3, -0.7, 1.1),
+                DVec3::new(4.0, 1.0, -2.0),
+            ],
+            vec![
+                DQuat::IDENTITY,
+                DQuat::from_rotation_x(0.4),
+                DQuat::from_rotation_z(-0.9),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_failed_cluster_is_put_back_and_a_solved_one_kept() {
+        let system = half_solvable();
+        let (positions, rotations) = start();
+        let result =
+            ConstraintSolver::new().solve_from(&system, positions.clone(), rotations.clone());
+
+        assert!(!result.success);
+        assert_ne!(result.status, SolveStatus::Converged);
+
+        // The part that cannot be solved is exactly where it was.
+        assert_eq!(result.positions[2], positions[2]);
+        assert_eq!(result.rotations[2], rotations[2]);
+
+        // The part that can be solved was: its mate point is on the ground's.
+        let mated = result.positions[1] + result.rotations[1] * DVec3::new(0.0, 1.0, 0.0);
+        assert!(
+            (mated - DVec3::new(2.0, 0.0, 0.0)).length() < 1e-6,
+            "{mated}"
+        );
+
+        // The error is that of the poses handed back: body 2 misses its two
+        // pins by what it missed them by at the start.
+        let miss = |pin: DVec3| (positions[2] - pin).length_squared();
+        let expected = (miss(DVec3::new(5.0, 0.0, 0.0)) + miss(DVec3::new(5.0, 4.0, 0.0))).sqrt();
+        assert!(
+            (result.error - expected).abs() < 1e-6,
+            "{} vs {expected}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn keep_last_leaves_the_compromise() {
+        let system = half_solvable();
+        let (positions, rotations) = start();
+        let solver = ConstraintSolver::with_options(PoseSolveOptions {
+            on_failure: FailurePolicy::KeepLast,
+            ..PoseSolveOptions::default()
+        });
+        let result = solver.solve_from(&system, positions, rotations);
+
+        assert!(!result.success);
+        // Halfway between the two pins is the best that can be done.
+        let midway = DVec3::new(5.0, 2.0, 0.0);
+        assert!(
+            (result.positions[2] - midway).length() < 1e-3,
+            "{}",
+            result.positions[2]
+        );
+    }
+
+    #[test]
+    fn a_solved_assembly_reports_converged() {
+        let mut system = half_solvable();
+        system.constraints.pop();
+        let (positions, rotations) = start();
+        let result = ConstraintSolver::new().solve_from(&system, positions, rotations);
+        assert!(result.success, "error {:.3e}", result.error);
+        assert_eq!(result.status, SolveStatus::Converged);
+        assert!((result.positions[2] - DVec3::new(5.0, 0.0, 0.0)).length() < 1e-9);
+    }
+}
