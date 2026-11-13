@@ -98,6 +98,15 @@ grounded (placed, not solved for). Same machine, same fixtures:
   the Newton loop no longer re-evaluates the residuals of a step it has
   just accepted.
 
+Re-measured at the end of P1 (typed constraints, two-row `Parallel` and
+four-row `Concentric`, restore on failure, the editing state): every
+assembly benchmark is within 10% of the P1.1 column, in both directions.
+That is no finding either way: these fixtures use coincident and angle
+mates only, so the row change does not reach them, and a successful solve
+never takes the restore path. A single run of `assembly/solve_chain/5`
+read 125 µs; three repeats of it alone read 104 µs each, which is the
+scatter to expect from one pass at 10 samples.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.
