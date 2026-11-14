@@ -595,6 +595,78 @@ impl Sketch {
         )
     }
 
+    /// The constraints that conflict, as minimal sets with a suggestion
+    /// each (see [`crate::conflict`]): for every connected component that
+    /// does not solve from where the sketch stands, sets of constraints
+    /// that cannot all hold while any one of them could go, newest first;
+    /// taking out the first constraint of every set lets the sketch solve.
+    /// A solve that only gets there by collapsing geometry (a line of no
+    /// length, a circle of no radius) counts as failing.
+    /// Empty when the sketch solves. Each test is a solve of a copy, so
+    /// this costs about as many solves as the sets have members; the
+    /// sketch is not touched.
+    pub fn conflicts(&self) -> Vec<crate::conflict::Conflict> {
+        let active: Vec<usize> = (0..self.constraints.len())
+            .filter(|&c| self.constraint_state(c) == ConstraintState::Active)
+            .collect();
+        let size = self.drawing_size();
+        let fails = |on: &[usize]| {
+            let mut t = self.clone();
+            for &c in &active {
+                if on.binary_search(&c).is_err() {
+                    t.set_constraint_enabled(c, false);
+                }
+            }
+            !t.solve().converged || t.has_degenerate_geometry(size)
+        };
+        let groups = crate::conflict::conflicting_groups(&self.diagnose());
+        crate::conflict::find_conflicts(&self.components(), &groups, &fails)
+    }
+
+    /// The size of the drawing: the mean of its active length dimensions
+    /// (distances, lengths, radii, diameters), else the extent of its
+    /// parameters, else one.
+    fn drawing_size(&self) -> f64 {
+        let sizes: Vec<f64> = (0..self.constraints.len())
+            .filter(|&c| self.constraint_state(c) == ConstraintState::Active)
+            .filter(|&c| !matches!(self.constraints[c], Constraint::Angle { .. }))
+            .filter_map(|c| self.constraints[c].value())
+            .map(f64::abs)
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .collect();
+        if !sizes.is_empty() {
+            return sizes.iter().sum::<f64>() / sizes.len() as f64;
+        }
+        let (lo, hi) = self
+            .params
+            .iter()
+            .filter(|v| v.is_finite())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                (lo.min(v), hi.max(v))
+            });
+        if hi > lo {
+            hi - lo
+        } else {
+            1.0
+        }
+    }
+
+    /// Whether some entity has collapsed — a line of no length, a circle
+    /// or arc of no radius — next to a drawing of size `size`.
+    fn has_degenerate_geometry(&self, size: f64) -> bool {
+        let tiny = 1.0e-6 * size;
+        (0..self.entities.len())
+            .filter(|&e| !self.is_entity_removed(e))
+            .any(|e| {
+                let p = self.entity_params(e);
+                match self.entities[e].kind {
+                    EntityKind::Line => (p[2] - p[0]).hypot(p[3] - p[1]) < tiny,
+                    EntityKind::Circle | EntityKind::Arc => p[2].abs() < tiny,
+                    EntityKind::Point => false,
+                }
+            })
+    }
+
     /// A witness configuration of the sketch (see [`Sketch::status`]): the
     /// same geometric relations holding at a generic place, every
     /// dimension (and every `Fixed` target) set to what it measures there.
@@ -609,30 +681,7 @@ impl Sketch {
                     || matches!(w.constraints[c], Constraint::Fixed { .. })
             })
             .collect();
-        // The size of the drawing: its dimensions, else its extent.
-        let sizes: Vec<f64> = dimensions
-            .iter()
-            .filter(|&&c| !matches!(w.constraints[c], Constraint::Angle { .. }))
-            .filter_map(|&c| w.constraints[c].value())
-            .map(f64::abs)
-            .filter(|v| v.is_finite() && *v > 0.0)
-            .collect();
-        let scale = if sizes.is_empty() {
-            let (lo, hi) = self
-                .params
-                .iter()
-                .filter(|v| v.is_finite())
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
-                    (lo.min(v), hi.max(v))
-                });
-            if hi > lo {
-                hi - lo
-            } else {
-                1.0
-            }
-        } else {
-            sizes.iter().sum::<f64>() / sizes.len() as f64
-        };
+        let scale = self.drawing_size();
         for &c in &dimensions {
             w.set_constraint_enabled(c, false);
         }
@@ -640,16 +689,7 @@ impl Sketch {
         if !w.solve().converged {
             return None;
         }
-        let degenerate = (0..w.entities.len()).any(|e| {
-            let p = w.entity_params(e);
-            let tiny = 1.0e-6 * scale;
-            match w.entities[e].kind {
-                EntityKind::Line => (p[2] - p[0]).hypot(p[3] - p[1]) < tiny,
-                EntityKind::Circle | EntityKind::Arc => p[2].abs() < tiny,
-                EntityKind::Point => false,
-            }
-        });
-        if degenerate {
+        if w.has_degenerate_geometry(scale) {
             return None;
         }
         for &c in &dimensions {

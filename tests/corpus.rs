@@ -1473,3 +1473,58 @@ fn only_the_exact_tangencies_are_singular() {
     }
     assert_eq!(singular_cases, 10);
 }
+
+/// The minimal conflicting set each conflicting case should report (P4.4),
+/// newest first, from how it is built.
+fn expected_conflict(id: &str) -> Vec<usize> {
+    if id.starts_with("conflict-radius-vs-diameter-") || id.starts_with("conflict-double-fixed-") {
+        // The two that disagree.
+        vec![1, 0]
+    } else if id.starts_with("conflict-distance-beyond-span-") {
+        // Both pins and the distance: any one off, the rest can hold.
+        vec![2, 1, 0]
+    } else if id.starts_with("conflict-margins-") {
+        // The line's start on the anchor (1), its length (3) and the two
+        // margins (4, 5): the anchor's pin (0) and the line being
+        // horizontal (2) take no part — free or tilted, the chain of x
+        // distances still disagrees.
+        vec![5, 4, 3, 1]
+    } else if id.starts_with("conflict-parallel-perpendicular-") {
+        // Parallel and perpendicular. Without the pin of the second line's
+        // start (0) only a line shrunk to nothing would meet both, and a
+        // solve that collapses geometry does not count.
+        vec![2, 1]
+    } else {
+        panic!("{id}: no conflict label")
+    }
+}
+
+#[test]
+fn conflicts_match_the_labels() {
+    use rcad_gcs::Conflict;
+    let mut checked = 0;
+    for case in generate_all() {
+        let mut sk = (case.build)();
+        if matches!(case.expect, Expect::Conflict) {
+            let before = sk.params_snapshot();
+            let found = sk.conflicts();
+            assert_eq!(
+                found,
+                vec![Conflict {
+                    constraints: expected_conflict(&case.id)
+                }],
+                "{}",
+                case.id
+            );
+            assert_eq!(sk.params_snapshot(), before, "{}: geometry moved", case.id);
+            // Taking out the suggestion lets the sketch solve.
+            sk.set_constraint_enabled(found[0].suggested(), false);
+            assert!(sk.solve().converged, "{}", case.id);
+            checked += 1;
+        } else {
+            assert!(sk.solve().converged, "{}", case.id);
+            assert_eq!(sk.conflicts(), Vec::new(), "{}", case.id);
+        }
+    }
+    assert_eq!(checked, 20);
+}

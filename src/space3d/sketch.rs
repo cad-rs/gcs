@@ -677,6 +677,62 @@ impl SpaceSketch {
         crate::space3d::diagnosis::diagnose_equations(&self.equations(), &self.params, &self.fixed)
     }
 
+    /// The constraints that conflict, as minimal sets with a suggestion
+    /// each (see [`crate::conflict`] and [`crate::Sketch::conflicts`]). A
+    /// solve that only gets there by collapsing geometry (a line of no
+    /// length, a plane normal or cylinder axis of no length, a radius of
+    /// zero) counts as failing.
+    pub fn conflicts(&self) -> Vec<crate::conflict::Conflict> {
+        let (lo, hi) = self
+            .params
+            .iter()
+            .filter(|v| v.is_finite())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                (lo.min(v), hi.max(v))
+            });
+        let extent = if hi > lo { hi - lo } else { 1.0 };
+        let active: Vec<usize> = (0..self.constraints.len())
+            .filter(|&c| self.constraint_state(c) == ConstraintState::Active)
+            .collect();
+        let fails = |on: &[usize]| {
+            let mut t = self.clone();
+            for &c in &active {
+                if on.binary_search(&c).is_err() {
+                    t.set_constraint_enabled(c, false);
+                }
+            }
+            !t.solve().converged || t.has_degenerate_geometry(extent)
+        };
+        let groups = crate::conflict::conflicting_groups(&self.diagnose());
+        crate::conflict::find_conflicts(&self.components(), &groups, &fails)
+    }
+
+    /// Whether some entity has collapsed — a line of no length, a plane
+    /// normal or cylinder axis of no length, a sphere, cylinder, circle or
+    /// arc of no radius — next to a drawing of extent `extent`.
+    fn has_degenerate_geometry(&self, extent: f64) -> bool {
+        let tiny = 1.0e-6 * extent;
+        (0..self.entities.len())
+            .filter(|&e| !self.is_entity_removed(e))
+            .any(|e| {
+                let entity = &self.entities[e];
+                let start = entity.param(0);
+                let p = &self.params[start..start + entity.param_count()];
+                let norm = |a: &[f64]| a.iter().map(|v| v * v).sum::<f64>().sqrt();
+                match entity.kind {
+                    SpaceEntityKind::SpaceLine => {
+                        norm(&[p[3] - p[0], p[4] - p[1], p[5] - p[2]]) < tiny
+                    }
+                    SpaceEntityKind::Plane => norm(&p[0..3]) < tiny,
+                    SpaceEntityKind::Sphere
+                    | SpaceEntityKind::SpaceCircle
+                    | SpaceEntityKind::SpaceArc => p[3].abs() < tiny,
+                    SpaceEntityKind::Cylinder => norm(&p[3..6]) < tiny || p[6].abs() < tiny,
+                    SpaceEntityKind::SpacePoint | SpaceEntityKind::SpaceSpline => false,
+                }
+            })
+    }
+
     /// How each entity can still move, in geometric terms (see
     /// [`crate::freedom`] and [`crate::Sketch::freedoms`]). A plane's
     /// normal length and a cylinder's axis point sliding along its axis are

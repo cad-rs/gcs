@@ -137,9 +137,20 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   the 3D sketch has no labelled corpus of freedoms beyond `tests/freedom.rs`;
   the conflicting cases of the assembly corpus are only checked against
   their status, not against labelled motions.
-- **Conflict localization.** Dependency groups name the constraints that
-  take part in a dependency; a minimal conflicting set and a "remove this
-  one" suggestion are not computed yet.
+- **Conflict localization.** `conflicts()` (all three families) gives
+  minimal conflicting sets with a suggestion each, by a deletion filter of
+  solves. Left: "fails" means a solve from the current geometry does not
+  converge, so a set the solver cannot reach from a degenerate start
+  counts as a conflict (two bodies at identity whose axes a concentric
+  mate must align are exactly perpendicular: no first-order slope, the
+  solve stalls); a retry from a perturbed start would tell the two apart.
+  The cost is a solve per member of each set, not measured on large
+  sketches; QuickXplain would need fewer solves for large components.
+- **The 3D solve accepts collapsed geometry.** Two plane-normal
+  constraints that disagree are "solved" in one iteration by shrinking the
+  normal to zero (both cross products vanish), and the solve reports
+  `Converged`. `SpaceSketch::conflicts` does not count such a solve, but
+  `solve()` itself still accepts it.
 - **Diagnosis away from the current point.** The analysis linearizes at the
   current parameters, so a configuration that is singular only where it
   stands (exact tangency) reads as redundant. The 2D `status()` tells the

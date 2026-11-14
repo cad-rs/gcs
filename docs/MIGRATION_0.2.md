@@ -126,6 +126,10 @@ let now = system.measure(index, &next.positions, &next.rotations);
 
 `status()` 说某个实体欠定义，`freedoms()` 说它还能怎么动：2D 的 `Sketch::freedoms()`、3D 的 `SpaceSketch::freedoms()`、装配的 `rigid3d::assembly_freedoms(system, positions, rotations)`，每个实体（刚体）一个 `Option<EntityFreedom>`（已删除的是 `None`）。`EntityFreedom` 有两组运动：`motions` 是其他几何可以跟着动时它的运动（零空间限制到它身上），**为空当且仅当 `status()` 不说它欠定义**；`own` 是其他几何全按住时它自己的运动——装配里就是它相对相邻零件剩下的关节（绕轴转、滑动、球铰），也是“只在它身上加约束”能去掉的东西。两者会不同：两个只用一个配合连起来的自由零件，`motions` 总是 6 个（整体漂浮），`own` 才是关节形态；2D 里一条弯曲的开放距离链，中间点有 `motions` 而 `own` 为空。每个运动是 `Motion2`（`Translate { direction }`、`Rotate { center }`、`Resize { what }`、`Other { velocity }`）或 `Motion3`（多了 `Rotate { axis, point }`、`Screw { axis, point, pitch }`）；`Measure` 是 `Length`（线长）、`Radius`（半径）、`Sweep`（2D 圆弧张角，终止角 − 起始角；单独的起止角在整体转动时也会变，所以不算形状量）。多维时按固定次序给一组基：先平移（全部可平移时就是世界坐标轴），再转动（共用一个点时都过这个点），再逐个形状量，剩下的给 `Other` 并附每个存储参数上的单位速度。方向没有正负之分。平面法向的长度、圆柱轴点沿轴滑动和轴向量缩放不算运动。和诊断一样是一阶的、在当前参数处算的：请在求解后调用；在奇异构形（恰好相切、拉直的链）上给的是线性化的运动，可能比有限运动多或不同。
 
+### 3.9 冲突定位
+
+草图解不出来时，`Sketch::conflicts()` 告诉宿主该去掉什么：对每个从当前位置解不出的连通分量，给出若干个 `Conflict`，每个是一个最小冲突集（这些约束不能同时成立，但去掉其中任何一个，其余的就能解），约束编号按添加顺序最新在前，`suggested()`（第一个）就是建议移除项；把每个冲突的建议项都去掉，草图就能解。做法是删除过滤：在草图的副本上从最新的约束开始逐个停用，停用后仍解不出的就不再放回（诊断里有冲突依赖组且它单独就解不出时，在组内做，少解几次）。草图本身不动。和 `diagnose().conflicting` 的区别：后者是当前点的线性代数，只点名一个代表，也看不到非线性的冲突（例如两段距离够不着两个固定点——在那里两行是独立的）；`conflicts()` 靠求解判断，所以代价是每个冲突大约“集合大小”次求解，请在用户要求时调用；“解不出”指从当前几何出发求解不收敛，所以从退化起点解不动的也算冲突（例如两个姿态都是单位阵的刚体，同心配合要对齐的两根轴恰好垂直）；只靠把线缩成零长度、半径或法向缩成零才“解出”的不算解出。3D 的 `SpaceSketch::conflicts()`、装配的 `rigid3d::assembly_conflicts(system, positions, rotations)`（约束按槽位，用默认求解选项）相同。`status()` 不变（非线性冲突在那里仍是 `Unmet` / `Unsolved`）。
+
 ## 4. 这一版没有动的
 
 以下已知问题仍在，迁移时不要指望它们已经解决（都在 [CATCHUP_PLAN.md](CATCHUP_PLAN.md) 里排了阶段）：

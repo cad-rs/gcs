@@ -30,8 +30,9 @@ pub use constraint::{
     AssemblyError, ComponentId, Constraint, ConstraintKind, ConstraintSystem, ConstraintType,
 };
 pub use diagnosis::{
-    diagnose as diagnose_assembly, freedoms as assembly_freedoms, mobility as assembly_mobility,
-    status as assembly_status, AssemblyDiagnosis, CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL,
+    conflicts as assembly_conflicts, diagnose as diagnose_assembly, freedoms as assembly_freedoms,
+    mobility as assembly_mobility, status as assembly_status, AssemblyDiagnosis, CONSIST_TOL,
+    PARTIAL_TOL, RANK_REL_TOL,
 };
 #[allow(deprecated)]
 pub use diagnostics::SolverDiagnostics;

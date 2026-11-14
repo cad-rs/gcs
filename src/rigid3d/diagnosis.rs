@@ -26,7 +26,7 @@
 //! discipline as the 2D diagnosis.
 
 use crate::rigid3d::equations::{pack, RigidEquations, COLUMNS_PER_BODY};
-use crate::rigid3d::{ConstraintSystem, Point3};
+use crate::rigid3d::{ConstraintSolver, ConstraintSystem, Point3};
 use crate::system::{self, NoGauge};
 use glam::DQuat;
 
@@ -169,6 +169,41 @@ pub fn freedoms(
         (!system.is_component_removed(b)).then(|| crate::freedom::frame_body(positions[b], rots[b]))
     };
     crate::freedom::freedoms_of(&spaces, &frame, crate::freedom::to_3d)
+}
+
+/// The constraints (by slot in `system.constraints`) that conflict, as
+/// minimal sets with a suggestion each (see [`crate::conflict`]): for every
+/// cluster that a solve with the default [`ConstraintSolver`] options from
+/// the given pose cannot satisfy, sets of constraints that cannot all hold
+/// while any one of them could go, newest first. Each test is a solve of
+/// a copy of the system.
+pub fn conflicts(
+    system: &ConstraintSystem,
+    positions: &[Point3],
+    rots: &[DQuat],
+) -> Vec<crate::conflict::Conflict> {
+    let params = pack(positions, rots);
+    let fixed = system.held_columns();
+    let eqs = RigidEquations::new(system);
+    let diagnosis = system::diagnose(&eqs, &params, &fixed, &NoGauge);
+    let components = system::components(&eqs, &params);
+    let active: Vec<usize> = (0..system.constraints.len())
+        .filter(|&c| system.constraint_state(c) == crate::edit::ConstraintState::Active)
+        .collect();
+    let solver = ConstraintSolver::default();
+    let fails = |on: &[usize]| {
+        let mut s = system.clone();
+        for &c in &active {
+            if on.binary_search(&c).is_err() {
+                s.set_constraint_enabled(c, false);
+            }
+        }
+        !solver
+            .solve_from(&s, positions.to_vec(), rots.to_vec())
+            .success
+    };
+    let groups = crate::conflict::conflicting_groups(&diagnosis);
+    crate::conflict::find_conflicts(&components, &groups, &fails)
 }
 
 /// Which of each body's six coordinates can still move, at the given pose.

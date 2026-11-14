@@ -48,6 +48,7 @@
 //! ```
 
 mod alias;
+pub mod conflict;
 pub mod constraint;
 pub mod diagnosis;
 pub mod edit;
@@ -64,6 +65,7 @@ pub mod status;
 mod structure;
 mod system;
 
+pub use conflict::Conflict;
 pub use constraint::Constraint;
 pub use diagnosis::Diagnosis;
 pub use edit::{ConstraintState, SketchError};
@@ -76,6 +78,7 @@ pub use status::{ConstraintStatus, EntityStatus, Status};
 
 /// The curated public surface in one `use`.
 pub mod prelude {
+    pub use crate::conflict::Conflict;
     pub use crate::constraint::Constraint;
     pub use crate::diagnosis::Diagnosis;
     pub use crate::entity::{Entity, EntityId, EntityKind, PointRef};

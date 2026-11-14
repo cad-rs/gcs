@@ -195,6 +195,16 @@ equations are independent.
 The 3D family discounts storage parameters that are not physical freedoms
 (a plane has four for three, a cylinder seven for five).
 
+`sk.conflicts()` says what to take out when the sketch cannot be solved:
+for each connected component that does not solve from where it stands,
+minimal sets of constraints that cannot all hold while any one of them
+could go, found by solving copies with constraints taken out (a deletion
+filter, newest first), each listed newest first — the first is the
+suggestion. It also finds conflicts the linear diagnosis cannot see (two
+distances too short to bridge two fixed points). A solve that only
+succeeds by collapsing geometry does not count. `SpaceSketch::conflicts`
+and `rigid3d::assembly_conflicts` do the same.
+
 For assemblies, `rigid3d::diagnose_assembly` is the same diagnosis over six
 columns per body, reported by mate id, and `rigid3d::assembly_mobility`
 tells which of each body's six coordinates can still move.

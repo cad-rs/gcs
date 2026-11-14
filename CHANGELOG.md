@@ -341,6 +341,25 @@ through them from a host's side.
   and tests the others on the pieces that leave, so a hub with forty parts
   is forty small tests; the assembly gate went from 177 s to 2.7 s
   (optimised) with it.
+- `Sketch::conflicts()`, `SpaceSketch::conflicts()`,
+  `rigid3d::assembly_conflicts()` and the module `conflict`: for every
+  connected component that does not solve from the current geometry,
+  minimal conflicting sets (`Conflict`, constraint indices newest first;
+  `suggested()` is the first). A deletion filter takes constraints out one
+  at a time, newest first, and leaves out each one the rest still fails
+  without; the newest member of what is left is taken out and the filter
+  runs again until the component solves, so taking out every suggestion
+  lets the system solve. A conflicting dependency group of the diagnosis
+  that fails on its own is filtered instead of the whole component. Each
+  test solves a copy (the host's geometry is not touched); a solve that
+  only succeeds by collapsing geometry (a line of no length, a circle of
+  no radius, a plane normal or cylinder axis of no length) counts as
+  failing. Every conflicting case of the 2D (20), assembly (23) and 3D
+  (8) corpora reports the set its construction says, and the others none;
+  seeded faults in `tests/conflicts.rs` cover a conflict the linear
+  diagnosis cannot see (two distances too short to bridge two fixed
+  points), a constraint of the component outside the conflict, two
+  conflicts in one component and suppressed constraints.
 - `Sketch::freedoms()`, `SpaceSketch::freedoms()`,
   `rigid3d::assembly_freedoms()` and the module `freedom`: how each entity
   can still move, in geometric terms (`EntityFreedom`, `None` for a removed

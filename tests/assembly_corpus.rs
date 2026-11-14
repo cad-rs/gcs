@@ -1201,3 +1201,69 @@ fn body_freedoms_match_the_labels() {
     );
     assert_eq!(right, total, "body freedoms that differ from the labels");
 }
+
+// ── conflicts (P4.4) ────────────────────────────────────────────────────────
+
+/// The minimal conflicting set (slots, newest first) each conflicting case
+/// should report, from how it is built.
+fn expected_conflict(id: &str) -> Vec<usize> {
+    if id.starts_with("conflict-double-fixed-") {
+        // The two that disagree.
+        vec![1, 0]
+    } else if id.starts_with("conflict-double-concentric-") {
+        // The second concentric alone: as authored the two axes it aligns
+        // (body 0's `dir`, body 1's z) are exactly perpendicular, where its
+        // residual has no first-order slope, and a solve from a degenerate
+        // start stalls. From here it cannot be met, so it is a conflict on
+        // its own; a perturbed start would meet it (see ROADMAP).
+        vec![1]
+    } else if id.starts_with("conflict-duplicate-distance-")
+        || id.starts_with("conflict-duplicate-angle-")
+        || id.starts_with("conflict-angle-vs-perpendicular-")
+        || id.starts_with("conflict-coincident-vs-distance-")
+    {
+        // The two mates between the bodies disagree whether or not body 0
+        // is pinned (slot 0): both are relative.
+        vec![2, 1]
+    } else {
+        panic!("{id}: no conflict label")
+    }
+}
+
+#[test]
+fn conflicts_match_the_labels() {
+    use rcad_gcs::Conflict;
+    let solver = tight_solver();
+    let mut checked = 0;
+    for case in generate_all() {
+        let mut system = (case.build)();
+        let (pos, rot) = ConstraintSolver::seed_fixed(&system);
+        if case.expect == Expect::Conflict {
+            let found = rcad_gcs::rigid3d::assembly_conflicts(&system, &pos, &rot);
+            assert_eq!(
+                found,
+                vec![Conflict {
+                    constraints: expected_conflict(&case.id)
+                }],
+                "{}",
+                case.id
+            );
+            system.set_constraint_enabled(found[0].suggested(), false);
+            assert!(
+                ConstraintSolver::default()
+                    .solve_from(&system, pos, rot)
+                    .success,
+                "{}",
+                case.id
+            );
+            checked += 1;
+        } else {
+            // From the solution: no conflict, one quick solve.
+            let r = solver.solve(&system);
+            let found = rcad_gcs::rigid3d::assembly_conflicts(&system, &r.positions, &r.rotations);
+            assert_eq!(found, Vec::new(), "{}", case.id);
+        }
+    }
+    println!("assembly conflicts: {checked} conflicting cases as labelled");
+    assert!(checked >= 20, "{checked}");
+}

@@ -338,6 +338,21 @@ fn convergence_corpus() {
     }
 }
 
+/// Every constraint of these cases takes part in the conflict: one minimal
+/// set, newest first, and with its newest member off the sketch solves.
+fn assert_conflict(sk: &SpaceSketch, want: &[usize]) {
+    let found = sk.conflicts();
+    assert_eq!(
+        found,
+        vec![rcad_gcs::Conflict {
+            constraints: want.to_vec()
+        }]
+    );
+    let mut fixed = sk.clone();
+    fixed.set_constraint_enabled(found[0].suggested(), false);
+    assert!(fixed.solve().converged);
+}
+
 // ── conflict corpus ──────────────────────────────────────────────────────────
 
 #[test]
@@ -349,6 +364,7 @@ fn conflict_double_fixed_point() {
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
     assert_every_entity(&sk, EntityStatus::Conflicting);
+    assert_conflict(&sk, &[1, 0]);
 }
 
 #[test]
@@ -362,6 +378,7 @@ fn conflict_distance_beyond_pinned_span() {
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
     assert_every_entity(&sk, EntityStatus::Conflicting);
+    assert_conflict(&sk, &[2, 1, 0]);
 }
 
 #[test]
@@ -387,6 +404,7 @@ fn conflict_line_length_vs_pinned_ends() {
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
     assert_every_entity(&sk, EntityStatus::Conflicting);
+    assert_conflict(&sk, &[2, 1, 0]);
 }
 
 #[test]
@@ -401,6 +419,8 @@ fn conflict_parallel_and_perpendicular() {
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
     assert_every_entity(&sk, EntityStatus::Conflicting);
+    // Both lines are held, at right angles: being parallel fails alone.
+    assert_conflict(&sk, &[0]);
 }
 
 #[test]
@@ -422,6 +442,7 @@ fn conflict_plane_normals() {
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
     assert_every_entity(&sk, EntityStatus::Conflicting);
+    assert_conflict(&sk, &[1, 0]);
 }
 
 #[test]
@@ -439,6 +460,7 @@ fn conflict_sphere_radius() {
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
     assert_every_entity(&sk, EntityStatus::Conflicting);
+    assert_conflict(&sk, &[1, 0]);
 }
 
 #[test]
@@ -456,6 +478,7 @@ fn conflict_cylinder_radius() {
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
     assert_every_entity(&sk, EntityStatus::Conflicting);
+    assert_conflict(&sk, &[1, 0]);
 }
 
 #[test]
@@ -472,6 +495,7 @@ fn conflict_point_pinned_off_plane() {
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
     assert_every_entity(&sk, EntityStatus::Conflicting);
+    assert_conflict(&sk, &[0]);
 }
 
 // ── redundancy corpus ────────────────────────────────────────────────────────
