@@ -154,7 +154,16 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   usual answer.
 - **Reuse across re-solves:** cache the Jacobian sparsity pattern and the
   symbolic factorization between solves of the same system (parametric
-  re-solve is the common host pattern).
+  re-solve is the common host pattern). Within one solve the pattern is
+  laid out once already (compressed sparse rows, `system::Assembly`); it is
+  rebuilt for the next solve.
+- **The remaining allocations of an iteration.** Each step still allocates
+  its normal matrix (one buffer) and a few vectors of length n (gradient,
+  steps, trial residuals, saved parameters): 359 allocations in all on the
+  54-parameter chain, outside work included — at most about 9% of that
+  solve at 40 ns each, and negligible at larger sizes. Reusing them means
+  threading a workspace through the linear model, the polish and the step
+  space; not done until a measurement says it is worth it.
 
 ## 6. Testing and assurance
 

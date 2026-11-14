@@ -137,12 +137,12 @@ const HELD: usize = usize::MAX;
 /// trait promises that a constraint lists the same columns whatever their
 /// values, in a fixed order; an entry that arrives in another order is
 /// still placed, by a search of its row.)
-pub(crate) struct Assembly {
+struct Assembly {
     /// The columns the constraints touch, held or free, ascending.
-    pub(crate) touched: Vec<usize>,
+    touched: Vec<usize>,
     /// The free ones among them, ascending: column `k` of the Jacobian is
     /// `free[k]`.
-    pub(crate) free: Vec<usize>,
+    free: Vec<usize>,
     /// Per column of the family, its Jacobian column, or [`HELD`].
     col_of: Vec<usize>,
     /// Row `r` lists entries `entry_starts[r]..entry_starts[r + 1]`.
@@ -157,20 +157,17 @@ impl Assembly {
     /// Lay out the Jacobian of the constraints `indices` over the columns
     /// `fixed` does not hold, at `params`: the assembly and the empty
     /// pattern it fills.
-    pub(crate) fn new<E: Equations + ?Sized>(
+    fn new<E: Equations + ?Sized>(
         eqs: &E,
         indices: &[usize],
         params: &[f64],
         fixed: &[bool],
+        scratch: &mut Vec<SparseRow>,
     ) -> (Self, SparseJacobian) {
         let mut entry_starts = vec![0];
         let mut listed: Vec<usize> = Vec::new();
-        let mut scratch: Vec<SparseRow> = Vec::new();
         for &i in indices {
-            scratch.clear();
-            scratch.resize_with(eqs.equation_count(i), Vec::new);
-            eqs.jacobian(i, params, &mut scratch);
-            for row in &scratch {
+            for row in jacobian_rows(eqs, i, params, scratch) {
                 listed.extend(row.iter().map(|&(column, _)| column));
                 entry_starts.push(listed.len());
             }
@@ -184,20 +181,31 @@ impl Assembly {
             col_of[c] = k;
         }
 
-        let rows: Vec<Vec<usize>> = entry_starts
-            .windows(2)
-            .map(|span| {
-                let mut row: Vec<usize> = listed[span[0]..span[1]]
+        // Per row, its free columns ascending and each once, written
+        // straight into the pattern's column list.
+        let mut starts = Vec::with_capacity(entry_starts.len());
+        let mut cols: Vec<usize> = Vec::with_capacity(listed.len());
+        starts.push(0);
+        for span in entry_starts.windows(2) {
+            let begin = cols.len();
+            cols.extend(
+                listed[span[0]..span[1]]
                     .iter()
                     .map(|&c| col_of[c])
-                    .filter(|&k| k != HELD)
-                    .collect();
-                row.sort_unstable();
-                row.dedup();
-                row
-            })
-            .collect();
-        let pattern = SparseJacobian::from_rows(free.len(), &rows);
+                    .filter(|&k| k != HELD),
+            );
+            cols[begin..].sort_unstable();
+            let mut kept = begin;
+            for at in begin..cols.len() {
+                if kept == begin || cols[at] != cols[kept - 1] {
+                    cols[kept] = cols[at];
+                    kept += 1;
+                }
+            }
+            cols.truncate(kept);
+            starts.push(cols.len());
+        }
+        let pattern = SparseJacobian::from_parts(free.len(), starts, cols);
         let mut assembly = Self {
             touched,
             free,
@@ -206,13 +214,13 @@ impl Assembly {
             listed,
             slots: Vec::new(),
         };
-        assembly.slots = (0..pattern.n_rows())
-            .flat_map(|r| {
-                let span = assembly.entry_starts[r]..assembly.entry_starts[r + 1];
-                span.map(move |e| (r, e))
-            })
-            .map(|(r, e)| assembly.slot(&pattern, r, assembly.listed[e]))
-            .collect();
+        let mut slots = Vec::with_capacity(assembly.listed.len());
+        for r in 0..pattern.n_rows() {
+            for e in assembly.entry_starts[r]..assembly.entry_starts[r + 1] {
+                slots.push(assembly.slot(&pattern, r, assembly.listed[e]));
+            }
+        }
+        assembly.slots = slots;
         (assembly, pattern)
     }
 
@@ -236,7 +244,7 @@ impl Assembly {
     /// Write the Jacobian of the constraints `indices` (those it was laid
     /// out for) at `params` into the values of `j`, which arrive zeroed.
     /// `scratch` is reused between builds.
-    pub(crate) fn assemble<E: Equations + ?Sized>(
+    fn assemble<E: Equations + ?Sized>(
         &self,
         eqs: &E,
         indices: &[usize],
@@ -246,16 +254,7 @@ impl Assembly {
     ) {
         let mut r = 0;
         for &i in indices {
-            let count = eqs.equation_count(i);
-            if scratch.len() < count {
-                scratch.resize_with(count, Vec::new);
-            }
-            let rows = &mut scratch[..count];
-            for row in rows.iter_mut() {
-                row.clear();
-            }
-            eqs.jacobian(i, params, rows);
-            for row in rows.iter() {
+            for row in jacobian_rows(eqs, i, params, scratch) {
                 let base = self.entry_starts[r];
                 let laid_out = &self.listed[base..self.entry_starts[r + 1]];
                 for (k, &(column, v)) in row.iter().enumerate() {
@@ -272,6 +271,27 @@ impl Assembly {
             }
         }
     }
+}
+
+/// The Jacobian rows of constraint `index` at `params`, written into the
+/// first rows of `scratch`, which keeps its rows (and their capacity) from
+/// one call to the next.
+fn jacobian_rows<'s, E: Equations + ?Sized>(
+    eqs: &E,
+    index: usize,
+    params: &[f64],
+    scratch: &'s mut Vec<SparseRow>,
+) -> &'s [SparseRow] {
+    let count = eqs.equation_count(index);
+    if scratch.len() < count {
+        scratch.resize_with(count, Vec::new);
+    }
+    let rows = &mut scratch[..count];
+    for row in rows.iter_mut() {
+        row.clear();
+    }
+    eqs.jacobian(index, params, rows);
+    rows
 }
 
 /// Assemble the dense Jacobian (equations of `indices` × the columns of
@@ -516,15 +536,14 @@ fn solve_one<E: Equations + ?Sized>(
     fixed: &[bool],
     options: &CoreOptions,
 ) -> (SolveResult, Vec<usize>) {
-    let (assembly, pattern) = Assembly::new(eqs, group, params, fixed);
-    let touched = assembly.touched.clone();
+    let mut scratch: Vec<SparseRow> = Vec::new();
+    let (assembly, pattern) = Assembly::new(eqs, group, params, fixed, &mut scratch);
     // Only this component's own free columns move: the Newton loop's free
     // list is exactly its movable coordinates.
     let free = &assembly.free;
     let space = eqs.step_space(free);
 
     let n_eq = equation_total(eqs, group);
-    let mut scratch: Vec<SparseRow> = Vec::new();
     let mut build = |p: &[f64], j: &mut SparseJacobian| {
         assembly.assemble(eqs, group, p, j, &mut scratch);
     };
@@ -561,7 +580,7 @@ fn solve_one<E: Equations + ?Sized>(
         }),
         options,
     );
-    (result, touched)
+    (result, assembly.touched)
 }
 
 /// The unit a component's equations are measured in, from its

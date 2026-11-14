@@ -422,6 +422,25 @@ through them from a host's side.
   matrix is most of the work; the assembly fixtures gain 3–6%. Allocations
   per solve fall by a third to two thirds (temporary counter: 954 → 644
   on the 54-parameter chain, 8 707 → 3 068 on the 240-parameter truss).
+- **A solve allocates about half as often.** Of what the sparse Jacobian
+  left, two things allocated in proportion to the size: the normal matrix,
+  a vector per row (n + 1 allocations for every step), and the layout of
+  the pattern, which gave every row its own vector, and whose scratch rows
+  were dropped and grown again (several reallocations each) for every
+  constraint. The normal matrix and its LU factors are now one row-major
+  buffer, with the same pivots, updates and order; the layout writes its
+  columns straight into the pattern and shares one set of scratch rows
+  with every Jacobian build of the solve. Results are bitwise unchanged
+  (the same 21 437-solve comparison). The flat factorisation is also
+  quicker in itself — 57% at 18 unknowns, 32% at 54, 25% at 200, 3% at
+  790 — and the diagnosis, whose Gram system uses it, gains with it.
+  Medians of a three-round A/B: solves of 18–60 parameters take 24–34%
+  less time, the assembly fixtures 23–31% less (all but the 40-body
+  chain), 198–240 parameters 7–12% less; the largest fixtures (40-body
+  chain, 780–792 parameters) are within the scatter of the machine
+  (+5% to −6%, every round overlapping). Allocations per solve: 644 → 359 on the 54-parameter
+  chain, 3 068 → 733 on the 240-parameter truss, 613 → 311 on the 5-body
+  assembly chain.
 - **The convergence polish factors once.** After the tolerance is met,
   up to four unregularised Gauss–Newton steps nail the result to rounding;
   each built a Jacobian and factored the normal equations afresh. On an

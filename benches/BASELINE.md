@@ -337,6 +337,45 @@ and the dense passes 21%. The factorisation is what is left: it is now 39%
 of the 54-parameter chain and 83% of the 240-parameter truss, and it is
 why the largest fixtures gain least.
 
+### After the normal matrix and the layout stopped allocating per row (P2.1)
+
+Same machine, all benchmarks, the previous commit (`9ecc6b4`) and this
+change alternately, three rounds each. This run was noisier than the
+previous one (rounds of one build differ by 15–20%), so the table gives
+medians and the range of the rounds.
+
+| Benchmark | before | after | change | rounds overlap |
+|---|---:|---:|---:|---|
+| `sketch/solve_chain/54` | 0.213 ms | 0.155 ms | −27% | no |
+| `sketch/solve_chain/198` | 3.98 ms | 3.69 ms | −7.3% | yes |
+| `sketch/solve_chain/792` | 224 ms | 229 ms | +2.6% | yes (195–242 / 194–252) |
+| `sketch/resolve_chain/54` | 0.211 ms | 0.161 ms | −24% | no |
+| `sketch/solve_field/360` | 0.833 ms | 0.549 ms | −34% | no |
+| `sketch/solve_field/3600` | 7.87 ms | 5.52 ms | −30% | no |
+| `space/solve_truss/60` | 0.258 ms | 0.172 ms | −34% | no |
+| `space/solve_truss/240` | 9.58 ms | 8.76 ms | −8.6% | yes |
+| `space/solve_truss/780` | 410 ms | 428 ms | +4.3% | yes (409–450 / 356–448) |
+| `assembly/solve_chain/5`, `/20`, `/40` | | | −23%, −24%, +4.9% | no, no, yes |
+| `assembly/solve_star/5`, `/20`, `/40` | | | −26%, −31%, −25% | no |
+| diagnosis benchmarks | | | −2% to −25% (one +9.7%) | mostly yes |
+
+Allocations per solve, counted with a temporary counting allocator: 644 →
+359 on the 54-parameter chain, 3 068 → 733 on the 240-parameter truss,
+613 → 311 on the 5-body assembly chain.
+
+The large fixtures were settled by timing the factorisation alone, the
+old row-of-vectors layout against the flat one on the same banded matrix,
+alternately, five runs each in one binary (median, building the matrix
+included): 1.91 → 0.83 µs at n = 18, 15.8 → 10.8 µs at 54, 637 → 476 µs
+at 200, 37.8 → 36.5 ms at 790. The flat layout is no slower anywhere, so
+the +3–5% medians above are the machine. The diagnosis gains because its
+Gram system is factored by the same code.
+
+A first quick run with only the flat matrix (the layout as before) gained
+3–15% on the small fixtures; the rest of the gain at that size is the
+layout, which for the rigid family had grown a fresh vector for every row
+of every constraint, several reallocations each.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.

@@ -340,12 +340,21 @@ impl SparseJacobian {
         let mut cols = Vec::new();
         starts.push(0);
         for row in rows {
-            let row = row.as_ref();
-            debug_assert!(row.windows(2).all(|w| w[0] < w[1]));
-            debug_assert!(row.iter().all(|&c| c < n_cols));
-            cols.extend_from_slice(row);
+            cols.extend_from_slice(row.as_ref());
             starts.push(cols.len());
         }
+        Self::from_parts(n_cols, starts, cols)
+    }
+
+    /// The pattern whose row `r` is `cols[starts[r]..starts[r + 1]]`
+    /// (columns ascending, each listed once), with every value zero.
+    pub(crate) fn from_parts(n_cols: usize, starts: Vec<usize>, cols: Vec<usize>) -> Self {
+        debug_assert_eq!(starts.first(), Some(&0));
+        debug_assert_eq!(starts.last(), Some(&cols.len()));
+        debug_assert!(starts
+            .windows(2)
+            .all(|span| cols[span[0]..span[1]].windows(2).all(|w| w[0] < w[1])));
+        debug_assert!(cols.iter().all(|&c| c < n_cols));
         let vals = vec![0.0; cols.len()];
         Self {
             n_cols,
@@ -1002,9 +1011,7 @@ where
             let factors = if options.polish_singular {
                 LuFactors::factor(normal.clone()).or_else(|| {
                     let mut normal = normal;
-                    for (i, row) in normal.iter_mut().enumerate() {
-                        row[i] += options.lambda;
-                    }
+                    normal.add_diagonal(options.lambda);
                     LuFactors::factor(normal)
                 })
             } else {
@@ -1141,9 +1148,7 @@ pub(crate) const QR_TRIGGER: f64 = 1e-8;
 /// rank-truncated QR of `J` (see [`QR_TRIGGER`]).
 fn gauss_newton_step(j: &SparseJacobian, f: &[f64], lambda: f64) -> Option<Vec<f64>> {
     let (mut a, mut b) = j.normal_equations(f);
-    for (i, row) in a.iter_mut().enumerate() {
-        row[i] += lambda;
-    }
+    a.add_diagonal(lambda);
     match LuFactors::factor(a) {
         Some(factors) if factors.pivot_ratio() >= QR_TRIGGER => Some(factors.solve(&mut b)),
         _ => min_norm_step(j, f),
@@ -1799,9 +1804,9 @@ impl SparseJacobian {
     /// The normal-equation pair `A = JᵀJ` and `b = Jᵀ(−F)`: the sums of
     /// [`normal_equations`], term for term and in the same order, at a cost
     /// of the squared entries of each row and nothing per empty column.
-    pub(crate) fn normal_equations(&self, f: &[f64]) -> (Vec<Vec<f64>>, Vec<f64>) {
+    pub(crate) fn normal_equations(&self, f: &[f64]) -> (Square, Vec<f64>) {
         let n = self.n_cols;
-        let mut a = vec![vec![0.0_f64; n]; n];
+        let mut a = Square::zeros(n);
         let mut b = vec![0.0_f64; n];
         let mut nonzero: Vec<(usize, f64)> = Vec::new();
 
@@ -1810,7 +1815,7 @@ impl SparseJacobian {
             nonzero.extend(self.row(r));
             for &(col, v) in &nonzero {
                 b[col] -= v * fi;
-                let a_col = &mut a[col];
+                let a_col = a.row_mut(col);
                 for &(k, w) in &nonzero {
                     a_col[k] += v * w;
                 }
@@ -1878,24 +1883,77 @@ pub(crate) struct LuFactors {
     /// triangle left by the elimination on and above the diagonal, and
     /// below it the elimination factors, each moved with its row by the
     /// later exchanges (as LAPACK stores them).
-    lu: Vec<Vec<f64>>,
+    lu: Square,
     /// The row exchanged with `col` at elimination step `col`.
     swaps: Vec<usize>,
 }
 
+/// A square matrix stored row after row in one buffer: one allocation
+/// however many rows, where a vector per row cost one each.
+#[derive(Clone)]
+pub(crate) struct Square {
+    n: usize,
+    a: Vec<f64>,
+}
+
+impl Square {
+    pub(crate) fn zeros(n: usize) -> Self {
+        Self {
+            n,
+            a: vec![0.0; n * n],
+        }
+    }
+
+    /// The matrix with the rows `rows` (each as long as there are rows).
+    #[cfg(test)]
+    pub(crate) fn from_rows(rows: &[Vec<f64>]) -> Self {
+        let n = rows.len();
+        let mut square = Self::zeros(n);
+        for (target, row) in square.a.chunks_exact_mut(n.max(1)).zip(rows) {
+            target.copy_from_slice(row);
+        }
+        square
+    }
+
+    #[cfg(test)]
+    pub(crate) fn row(&self, i: usize) -> &[f64] {
+        &self.a[i * self.n..(i + 1) * self.n]
+    }
+
+    pub(crate) fn row_mut(&mut self, i: usize) -> &mut [f64] {
+        &mut self.a[i * self.n..(i + 1) * self.n]
+    }
+
+    /// Add `lambda` to every diagonal entry.
+    pub(crate) fn add_diagonal(&mut self, lambda: f64) {
+        for i in 0..self.n {
+            self.a[i * self.n + i] += lambda;
+        }
+    }
+
+    /// Exchange rows `i` and `j`.
+    fn swap_rows(&mut self, i: usize, j: usize) {
+        if i != j {
+            let (lo, hi) = (i.min(j), i.max(j));
+            let (first, second) = self.a.split_at_mut(hi * self.n);
+            first[lo * self.n..(lo + 1) * self.n].swap_with_slice(&mut second[..self.n]);
+        }
+    }
+}
+
 impl LuFactors {
     /// Factor `a`; `None` when a pivot falls below [`PIVOT_TOL`].
-    pub(crate) fn factor(mut a: Vec<Vec<f64>>) -> Option<Self> {
-        let n = a.len();
+    pub(crate) fn factor(mut a: Square) -> Option<Self> {
+        let n = a.n;
         let mut swaps = Vec::with_capacity(n);
 
         for col in 0..n {
-            let pivot_row =
-                (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
-            a.swap(col, pivot_row);
+            let at = |i: usize| a.a[i * n + col].abs();
+            let pivot_row = (col..n).max_by(|&i, &j| at(i).total_cmp(&at(j)))?;
+            a.swap_rows(col, pivot_row);
             swaps.push(pivot_row);
 
-            let pivot = a[col][col];
+            let pivot = a.a[col * n + col];
             if pivot.abs() < PIVOT_TOL {
                 return None;
             }
@@ -1908,9 +1966,9 @@ impl LuFactors {
             // `gaussian_elimination`; the entry below the pivot, which it
             // drives to (about) zero and never reads again, keeps the
             // factor instead.
-            let (above, below) = a.split_at_mut(col + 1);
-            let pivot_tail = &above[col][col + 1..];
-            for row in below.iter_mut() {
+            let (above, below) = a.a.split_at_mut((col + 1) * n);
+            let pivot_tail = &above[col * n + col + 1..];
+            for row in below.chunks_exact_mut(n) {
                 let factor = row[col] / pivot;
                 for (x, p) in row[col + 1..].iter_mut().zip(pivot_tail) {
                     let v = p * factor;
@@ -1926,8 +1984,8 @@ impl LuFactors {
     /// reciprocal of the condition number. NaN if a pivot is.
     pub(crate) fn pivot_ratio(&self) -> f64 {
         let (mut small, mut large) = (f64::INFINITY, 0.0_f64);
-        for (i, row) in self.lu.iter().enumerate() {
-            let p = row[i].abs();
+        for i in 0..self.lu.n {
+            let p = self.lu.a[i * self.lu.n + i].abs();
             if p.is_nan() {
                 return f64::NAN;
             }
@@ -1940,7 +1998,8 @@ impl LuFactors {
     /// Solve `A x = b` for the factored `A`. `b` is used as scratch space.
     pub(crate) fn solve(&self, b: &mut [f64]) -> Vec<f64> {
         let n = b.len();
-        debug_assert_eq!(self.lu.len(), n);
+        debug_assert_eq!(self.lu.n, n);
+        let lu = &self.lu.a;
 
         // The factors moved with their rows, so the exchanges are applied
         // first; every entry then receives the updates the interleaved
@@ -1950,7 +2009,8 @@ impl LuFactors {
         }
         for col in 0..n {
             let pivot = b[col];
-            for (row, target) in self.lu[col + 1..].iter().zip(&mut b[col + 1..]) {
+            let below = lu[(col + 1) * n..].chunks_exact(n);
+            for (row, target) in below.zip(&mut b[col + 1..]) {
                 let bv = pivot * row[col];
                 *target -= bv;
             }
@@ -1958,12 +2018,13 @@ impl LuFactors {
 
         let mut x = vec![0.0_f64; n];
         for i in (0..n).rev() {
+            let row = &lu[i * n..(i + 1) * n];
             x[i] = b[i];
             for j in (i + 1)..n {
-                let v = self.lu[i][j] * x[j];
+                let v = row[j] * x[j];
                 x[i] -= v;
             }
-            x[i] /= self.lu[i][i];
+            x[i] /= row[i];
         }
         x
     }
@@ -2000,17 +2061,16 @@ impl RowSpaceGram {
             }
         }
 
-        let mut gram = vec![vec![0.0_f64; rank]; rank];
+        let mut gram = Square::zeros(rank);
         for entries in &by_column {
             for &(i, vi) in entries {
+                let gram_i = gram.row_mut(i);
                 for &(j, vj) in entries {
-                    gram[i][j] += vi * vj;
+                    gram_i[j] += vi * vj;
                 }
             }
         }
-        for (i, row) in gram.iter_mut().enumerate() {
-            row[i] += lambda;
-        }
+        gram.add_diagonal(lambda);
 
         Self {
             by_column,
@@ -2163,7 +2223,8 @@ mod tests {
 
     #[test]
     fn lu_factors_reproduce_gaussian_elimination_bitwise() {
-        let factors = LuFactors::factor(sample_matrix()).expect("regular matrix");
+        let factors =
+            LuFactors::factor(Square::from_rows(&sample_matrix())).expect("regular matrix");
         for rhs in [
             vec![1.0, 2.0, 3.0, 4.0],
             vec![-0.3, 0.0, 7.5, 1.0e-3],
@@ -2195,7 +2256,7 @@ mod tests {
         let n = 40;
         let a: Vec<Vec<f64>> = (0..n).map(|_| (0..n).map(|_| random()).collect()).collect();
         let rhs: Vec<f64> = (0..n).map(|_| random()).collect();
-        let factors = LuFactors::factor(a.clone()).expect("regular matrix");
+        let factors = LuFactors::factor(Square::from_rows(&a)).expect("regular matrix");
         let direct = gaussian_elimination(&mut a.clone(), &mut rhs.clone()).expect("regular");
         let through_factors = factors.solve(&mut rhs.clone());
         assert!(
@@ -2314,7 +2375,7 @@ mod tests {
     #[test]
     fn lu_factors_reject_a_singular_matrix() {
         let singular = vec![vec![1.0, 2.0], vec![2.0, 4.0]];
-        assert!(LuFactors::factor(singular).is_none());
+        assert!(LuFactors::factor(Square::from_rows(&singular)).is_none());
     }
 
     #[test]
@@ -2392,6 +2453,7 @@ mod tests {
         every.copy_from_dense(&j);
         for sparse in [SparseJacobian::from_dense(&j, n), every] {
             let (a_sparse, b_sparse) = sparse.normal_equations(&f);
+            let a_sparse: Vec<Vec<f64>> = (0..n).map(|i| a_sparse.row(i).to_vec()).collect();
             assert_eq!(bits(&a_sparse), bits(&a_ref));
             assert_eq!(
                 b_sparse.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
