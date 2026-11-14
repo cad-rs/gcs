@@ -531,6 +531,37 @@ impl Sketch {
         system::diagnose(&self.equations(), &self.params, &self.fixed, &NoGauge)
     }
 
+    /// The state of every entity and constraint at the current parameters
+    /// (see [`crate::status`]): one [`EntityStatus`](crate::EntityStatus)
+    /// per entity — the most serious of conflicting, unsolved,
+    /// over-defined, under-defined and well-defined that applies — and one
+    /// [`ConstraintStatus`](crate::ConstraintStatus) per constraint. It
+    /// runs [`Sketch::diagnose`] and [`Sketch::mobility`] (a factorisation
+    /// each per component); call it after a solve, not every frame.
+    pub fn status(&self) -> crate::status::Status {
+        let movable = self.mobility();
+        let movable_entity = |e: usize| self.entity_param_range(e).any(|p| movable[p]);
+        let removed = |e: usize| self.is_entity_removed(e);
+        let of_constraint = |c: usize| {
+            self.constraints[c]
+                .references()
+                .into_iter()
+                .map(|(e, _)| e)
+                .collect()
+        };
+        crate::status::status_of(
+            &self.equations(),
+            &self.params,
+            self.diagnose(),
+            crate::status::Entities {
+                count: self.entities.len(),
+                removed: &removed,
+                movable: &movable_entity,
+                of_constraint: &of_constraint,
+            },
+        )
+    }
+
     /// Connected components of the constraint graph: groups of constraint
     /// indices that share parameters (see [`crate::graph`]). The solver
     /// runs per component; localized re-solve = solving only the components

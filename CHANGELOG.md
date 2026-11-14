@@ -292,6 +292,23 @@ through them from a host's side.
 
 ### Added
 
+- `Sketch::status()` and the module `status`: one state per entity
+  (`EntityStatus`: well-defined, under-defined, over-defined, unsolved,
+  conflicting — the most serious that applies; `None` for a removed
+  entity) and per constraint (`ConstraintStatus`: met, redundant,
+  partially redundant, unmet, conflicting, inactive), with the degrees of
+  freedom and the dependency groups (`Status`). It is built from
+  `diagnose()` and `mobility()`: a constraint takes the state of its
+  dependency group, so every member of a conflict is conflicting rather
+  than only the representative `Diagnosis::conflicting` names; an entity
+  takes the most serious state of the constraints on it, and is
+  under-defined if one of its free parameters can move. "Unmet" is judged
+  as a solve judges convergence (the tolerance in the units of the
+  component and the precision of its numbers), and only in a component
+  that is not at a solution. Every entity of the 2D corpus (13 075, in 320
+  cases) reports the state its case's construction says it should
+  (`entity_statuses_match_the_labels` in `tests/corpus.rs`). 2D only so
+  far.
 - Feature `rayon` (off by default): the connected components of a solve
   run on several threads. Consecutive components are grouped into one
   task per 96 equations, at most one per thread, each holding about the

@@ -59,6 +59,7 @@ pub mod rigid3d;
 pub mod sketch;
 pub mod solver;
 pub mod space3d;
+pub mod status;
 mod structure;
 mod system;
 
@@ -69,6 +70,7 @@ pub use entity::{Entity, EntityId, EntityKind, PointRef};
 pub use numerics::{FailurePolicy, SolveOptions, SolveResult, SolveStatus};
 pub use sketch::{DofReport, Sketch};
 pub use space3d::SpaceSketch;
+pub use status::{ConstraintStatus, EntityStatus, Status};
 
 /// The curated public surface in one `use`.
 pub mod prelude {
@@ -81,4 +83,5 @@ pub mod prelude {
     pub use crate::sketch::Sketch;
     pub use crate::solver;
     pub use crate::space3d;
+    pub use crate::status::{ConstraintStatus, EntityStatus, Status};
 }

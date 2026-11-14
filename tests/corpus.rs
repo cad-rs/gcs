@@ -24,6 +24,7 @@ use rcad_gcs::constraint::Constraint;
 use rcad_gcs::constraint::Constraint::*;
 use rcad_gcs::entity::PointRef;
 use rcad_gcs::sketch::Sketch;
+use rcad_gcs::EntityStatus;
 use serde_json::json;
 
 const CONTRACT_TOL: f64 = 1e-9;
@@ -1232,4 +1233,78 @@ fn drift_recover_check(
             case.id
         );
     }
+}
+
+/// What each entity of a case should report (P4.1), from how its family
+/// is built rather than from what the solver says: after the solve for
+/// every case but the conflicting ones, which are looked at as authored.
+fn expected_entity_status(case: &Case, sk: &Sketch) -> Vec<Option<EntityStatus>> {
+    use EntityStatus::*;
+    let n = sk.entities.len();
+    let all = |state| vec![Some(state); n];
+    let id = case.id.as_str();
+    if let Some(drop) = id
+        .strip_prefix("under-margin-")
+        .and_then(|rest| rest.rsplit_once("-drop"))
+        .map(|(_, d)| d.parse::<usize>().expect("drop index"))
+    {
+        // Anchor and line are pinned; the hole lacks its radius, x or y
+        // unless only the bore's constraint was dropped; the bore keeps its
+        // y and radius free in every variant.
+        let hole = if drop == 3 { WellDefined } else { UnderDefined };
+        return vec![
+            Some(WellDefined),
+            Some(WellDefined),
+            Some(hole),
+            Some(UnderDefined),
+        ];
+    }
+    if id.starts_with("under-tangent-") {
+        // The circle is held; the line slides along its tangent.
+        return vec![Some(WellDefined), Some(UnderDefined)];
+    }
+    if id.starts_with("under-chain-") {
+        // The anchor is fixed; every point after it swings.
+        let mut v = all(UnderDefined);
+        v[0] = Some(WellDefined);
+        return v;
+    }
+    match case.expect {
+        // Every entity of these takes part in the conflict (or the
+        // redundancy), as the builders put them together.
+        Expect::Conflict => all(Conflicting),
+        Expect::Redundant => all(OverDefined),
+        // At the exact tangency the tangent row depends on the axis
+        // distances to first order: circle and line carry it.
+        Expect::Singular => all(OverDefined),
+        Expect::Solve => all(WellDefined),
+        Expect::Under => panic!("{id}: an under-constrained case without a label"),
+    }
+}
+
+#[test]
+fn entity_statuses_match_the_labels() {
+    let (mut total, mut right) = (0usize, 0usize);
+    for case in generate_all() {
+        let mut sk = (case.build)();
+        if !matches!(case.expect, Expect::Conflict) {
+            assert!(sk.solve().converged, "{}", case.id);
+        }
+        let expected = expected_entity_status(&case, &sk);
+        let got = sk.status().entities;
+        assert_eq!(got.len(), expected.len(), "{}", case.id);
+        for (e, (g, x)) in got.iter().zip(&expected).enumerate() {
+            total += 1;
+            if g == x {
+                right += 1;
+            } else {
+                println!("{} entity {e}: {g:?}, expected {x:?}", case.id);
+            }
+        }
+    }
+    println!(
+        "entity status: {right}/{total} as labelled ({:.4})",
+        right as f64 / total as f64
+    );
+    assert_eq!(right, total, "entity statuses that differ from the labels");
 }

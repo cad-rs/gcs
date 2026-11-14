@@ -140,6 +140,24 @@ reports:
 - `dependency_groups` — for each dependency, every constraint taking part
   in it (not just one representative).
 
+`sk.status()` turns that into one state per entity and per constraint,
+for a UI to colour by: each entity is `WellDefined`, `UnderDefined`,
+`OverDefined` (a redundant constraint on it), `Unsolved` (a constraint on
+it not met, in a component not at a solution) or `Conflicting` — the most
+serious that applies — and each constraint `Met`, `Redundant`,
+`PartiallyRedundant`, `Unmet`, `Conflicting` or `Inactive`. Every member of
+a conflicting dependency is `Conflicting`, not only the representative the
+diagnosis names. (2D for now.)
+
+```rust
+use rcad_gcs::EntityStatus;
+
+let status = sk.status();
+for id in status.entities_in(EntityStatus::UnderDefined) {
+    // highlight entity `id`: it can still move
+}
+```
+
 `sk.dof()` is that same rank-based number, and `sk.mobility()` tells which
 individual parameters can still move. `sk.structural_dof_estimate()` is the
 cheap count (free parameters − equations); it is exact only when all

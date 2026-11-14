@@ -118,6 +118,10 @@ let now = system.measure(index, &next.positions, &next.rotations);
 
 2D 的 `Sketch` 现在在两次求解之间保留它的连通分量，以及每个分量求解时只取决于结构的那部分（各方程列出的列、Jacobian 的布局、别名类的步空间）。只要拓扑版本号（`topology_revision()`）不变、实体表也没被直接改动，下一次求解就直接用；改尺寸值（`set_constraint_value`）、移动几何（`set_params`、拖拽）都不影响复用，加删约束、抑制、`fix_param` 等会推进版本号，下一次求解时重建。宿主不需要改调用，结果与不复用时逐位相同。要注意的：① 宿主最好在同一个 `Sketch` 上反复求解（或从解过的草图 `clone`，克隆共享保留的结构），每帧从头重建草图就拿不到这个收益；② 直接改公开字段 `entities` 也会被发现（按实体表的摘要），但请尽量通过接口编辑；③ 保留的结构不参与序列化，反序列化后的草图第一次求解时重建；④ `Debug` 输出里多了一个 `plans` 字段。3D 草图和装配还没有做。
 
+### 3.7 逐实体、逐约束的状态
+
+2D 的 `Sketch::status()` 给每个实体一个 `EntityStatus`（`WellDefined` 定义完全 / `UnderDefined` 欠定义 / `OverDefined` 过定义（身上有冗余约束）/ `Unsolved` 未求解（身上有约束没满足，且所在分量不在解上）/ `Conflicting` 冲突，多种同时成立时取最严重的一个；已删除的实体是 `None`），给每个约束一个 `ConstraintStatus`（`Met` / `Redundant` / `PartiallyRedundant` / `Unmet` / `Conflicting` / `Inactive`），连同自由度和依赖组。宿主如果自己拿 `diagnose()` 的 `conflicting` 和 `mobility()` 拼过“哪些几何要标红 / 标蓝”，可以换成它；区别是：同一个依赖组里的约束取同一种状态，所以冲突时组里每个约束都是 `Conflicting`（`diagnose().conflicting` 只列一个代表，选哪个取决于主元顺序）。它内部跑一次诊断和一次可动性分析，请在求解后调用，不要每帧调用。3D 草图和装配还没有。顺带修了 `mobility()` 的一个错误（CHANGELOG 的 Fixed）：以前开放的距离链上，被 `Fixed` 约束固定的起点会被报成 y 方向可动。
+
 ## 4. 这一版没有动的
 
 以下已知问题仍在，迁移时不要指望它们已经解决（都在 [CATCHUP_PLAN.md](CATCHUP_PLAN.md) 里排了阶段）：

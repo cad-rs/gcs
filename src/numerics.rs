@@ -576,7 +576,7 @@ pub(crate) struct Magnitudes<'a> {
 /// the equation is measured in units of that resolution instead. One
 /// rounding of the terms is worth `ε·size`; the weight is
 /// `PRECISION_ULPS·ε·size / tolerance` once that exceeds `unit`.
-fn weight_of(size: f64, tolerance: f64, unit: f64) -> f64 {
+pub(crate) fn weight_of(size: f64, tolerance: f64, unit: f64) -> f64 {
     let weight = PRECISION_ULPS * f64::EPSILON * size / tolerance;
     // A tolerance of zero, or a size that is not a number, weighs nothing.
     if weight.is_finite() {
