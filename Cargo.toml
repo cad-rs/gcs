@@ -28,10 +28,14 @@ default = []
 # Serializable constraint/sketch data types (off by default: the solver core
 # stays dependency-free beyond glam).
 serde = ["dep:serde", "glam/serde"]
+# Solve the connected components of a system on several threads (rayon's
+# global pool). Results are bitwise those of the sequential solve.
+rayon = ["dep:rayon"]
 
 [dependencies]
 glam = "0.29"
 serde = { version = "1.0", features = ["derive"], optional = true }
+rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
 approx = "0.5"

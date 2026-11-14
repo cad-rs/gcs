@@ -376,6 +376,50 @@ A first quick run with only the flat matrix (the layout as before) gained
 layout, which for the rigid family had grown a fresh vector for every row
 of every constraint, several reallocations each.
 
+### Components on several threads, feature `rayon` (P2.7)
+
+Same machine (24 threads), all benchmarks, three builds alternately, three
+rounds each: the previous commit (`5cac1d4`), this change with default
+features, and this change with `--features rayon`. Rounds of one build
+agreed to a few percent; medians.
+
+| Benchmark | components | before | `rayon` | change |
+|---|---:|---:|---:|---:|
+| `sketch/solve_field/360` | 20 | 0.559 ms | 0.329 ms | −41% |
+| `sketch/solve_field/3600` | 200 | 5.13 ms | 1.86 ms | −64% |
+| `assembly/solve_star/40` | 41 | 0.578 ms | 0.500 ms | −14% |
+| `assembly/solve_star/20` | 21 | 0.280 ms | 0.300 ms | +7.3% |
+| `assembly/solve_star/5` | 6 | 0.0732 ms | 0.0838 ms | +14% |
+| `assembly/solve_chain/5` | 2 | 0.0735 ms | 0.0772 ms | +5.0% |
+| one-component 2D and 3D solves | 1 | | | −1% to +6% |
+
+The 20- and 5-body stars are below the 192 equations at which work is
+shared out, so they take the sequential path; what they pay is the lock
+the rigid family's evaluation cache takes with the feature (one per
+constraint evaluation, never contended), and how the larger build
+compiles. The one-component solves are within the scatter of the rounds
+(`space/solve_truss/780` 349–377 ms with the feature against 344–345
+without, its largest spread).
+
+How the task size was chosen (quick runs of a timing driver, not
+criterion; each column against the sequential solve of the same run):
+
+| | one task per component | tasks ≥ 64 equations | ≥ 96 | ≥ 128 |
+|---|---:|---:|---:|---:|
+| 2 rectangles (36 equations) | +60% | sequential | sequential | sequential |
+| 8 rectangles (144) | +37% | sequential | sequential | sequential |
+| 20 rectangles (360) | ±0 | −21% | −25% | −8% |
+| 200 rectangles (3 600) | −30% | −47% | −44% | −47% |
+| 40 grounded bodies | | −14% | −13% | −11% |
+| 80 grounded bodies | | −10% | −13% | −17% |
+| 2 grounded bodies | +210% | sequential | sequential | sequential |
+
+The tasks share the equations out evenly, one per 96 and at most one per
+thread. Waking a thread of the pool costs tens of microseconds on this
+machine, which is two to ten small components' worth of work; one task
+per component spends more on that than it saves. At 128, 20 rectangles
+make two tasks, and the larger sets the time.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.

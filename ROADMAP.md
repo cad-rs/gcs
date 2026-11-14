@@ -77,9 +77,15 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   perturbation still runs out of iterations (`tests/hard_cases.rs` prints
   the table); solving such a chain block by block is the better answer
   there.
-- **Parallel residual / Jacobian evaluation.** The residual closure is pure;
-  `rayon` could parallelise the FD column sweep and the per-constraint
-  residuals behind an opt-in feature.
+- **Parallelism inside one component.** Feature `rayon` solves separate
+  connected components on separate threads, and only when there is
+  enough to share out (192 equations or more; see `benches/BASELINE.md`).
+  A sketch that is one large component gains nothing from it: there the
+  time is the dense factorisation of the normal matrix, which a sparse or
+  block factorisation would parallelise better than the per-constraint
+  residuals would (they are a few percent of such a solve). With the
+  feature, small assemblies pay 5–14% for the lock of the rigid family's
+  evaluation cache; a cache owned by each task would avoid it.
 
 ## 2. Diagnostics and degrees of freedom
 

@@ -136,6 +136,14 @@ tells which of each body's six coordinates can still move.
 
 - `serde` — derive `Serialize`/`Deserialize` on the constraint data model
   of all three families. Off by default: the core depends only on `glam`.
+- `rayon` — solve the connected components of a system on several threads
+  (rayon's global pool, or the pool the call runs in). The results are
+  bitwise those of the sequential solve. It only pays when there is much
+  to share out: consecutive components are grouped into one task per 96
+  equations (at most one per thread, each with about the same number of
+  equations), and a system of fewer than 192 equations is solved on the
+  calling thread as before. One large component is not split: a sketch
+  that is a single connected component solves no faster. Off by default.
 
 ## Constraint catalog (summary)
 

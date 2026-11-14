@@ -26,9 +26,26 @@ use crate::numerics::{
 /// A sparse row or direction: `(parameter or column index, value)` pairs.
 pub(crate) type SparseRow = Vec<(usize, f64)>;
 
+/// `Sync` when the connected components of one system may be solved on
+/// several threads (feature `rayon`), nothing otherwise: a family that
+/// caches per constraint then pays for a lock only where one is needed.
+#[cfg(feature = "rayon")]
+pub(crate) trait SharedAcrossThreads: Sync {}
+#[cfg(feature = "rayon")]
+impl<T: Sync + ?Sized> SharedAcrossThreads for T {}
+/// See the `rayon` version.
+#[cfg(not(feature = "rayon"))]
+pub(crate) trait SharedAcrossThreads {}
+#[cfg(not(feature = "rayon"))]
+impl<T: ?Sized> SharedAcrossThreads for T {}
+
 /// A list of constraints, each contributing scalar equations over a flat
 /// parameter vector.
-pub(crate) trait Equations {
+///
+/// With feature `rayon` it is `Sync` (see [`SharedAcrossThreads`]): a
+/// component evaluates only its own constraints, so whatever an
+/// implementation caches per constraint is never contended.
+pub(crate) trait Equations: SharedAcrossThreads {
     /// Number of constraints.
     fn constraint_count(&self) -> usize;
 
@@ -497,23 +514,35 @@ where
     E: Equations + ?Sized,
     F: FnOnce(&mut [f64], &[usize]),
 {
+    let groups: Vec<&[usize]> = components
+        .iter()
+        .enumerate()
+        .filter(|(ordinal, _)| only.is_none_or(|selected| selected.contains(ordinal)))
+        .map(|(_, group)| group.as_slice())
+        .collect();
+
+    #[cfg(feature = "rayon")]
+    let solved = {
+        let runs = parallel_runs(eqs, &groups);
+        if runs.len() >= 2 {
+            solve_in_parallel(eqs, params, fixed, &runs, options)
+        } else {
+            solve_in_turn(eqs, params, fixed, &groups, options)
+        }
+    };
+    #[cfg(not(feature = "rayon"))]
+    let solved = solve_in_turn(eqs, params, fixed, &groups, options);
+
     let mut iterations = 0usize;
     let mut converged = true;
     let mut status = SolveStatus::Converged;
     let mut solved_touched: Vec<usize> = Vec::new();
-
-    for (ordinal, group) in components.iter().enumerate() {
-        if let Some(selected) = only {
-            if !selected.contains(&ordinal) {
-                continue;
-            }
-        }
-        let (result, touched) = solve_one(eqs, group, params, fixed, options);
-        iterations += result.iterations;
-        converged &= result.converged;
-        status = status.max(result.status);
+    for one in solved {
+        iterations += one.result.iterations;
+        converged &= one.result.converged;
+        status = status.max(one.result.status);
         // Components share no parameters, so the union stays duplicate-free.
-        solved_touched.extend(touched);
+        solved_touched.extend(one.touched);
     }
     solved_touched.sort_unstable();
     after_solve(params, &solved_touched);
@@ -527,15 +556,130 @@ where
     }
 }
 
+/// What the solve of one component left behind.
+struct Solved {
+    result: SolveResult,
+    /// The columns its constraints touch, held or free.
+    touched: Vec<usize>,
+    /// The stored parameters the solve may have changed (those of its free
+    /// columns; a rigid body stores seven numbers for six columns).
+    #[cfg(feature = "rayon")]
+    moved: Vec<usize>,
+}
+
+/// Solve the components `groups` one after the other on `params`.
+fn solve_in_turn<E: Equations + ?Sized>(
+    eqs: &E,
+    params: &mut [f64],
+    fixed: &[bool],
+    groups: &[&[usize]],
+    options: &CoreOptions,
+) -> Vec<Solved> {
+    groups
+        .iter()
+        .map(|group| solve_one(eqs, group, params, fixed, options))
+        .collect()
+}
+
+/// Solve runs of components on the threads of the current rayon pool, one
+/// task per run (see [`parallel_runs`]).
+///
+/// Each task works on its own copy of the parameters and solves its run in
+/// turn on it; afterwards every component's moved parameters are copied
+/// back. A component reads only the parameters its constraints touch and
+/// writes only its own, so it computes exactly what it would in
+/// [`solve_in_turn`]: the results are bitwise the same, whatever the number
+/// of threads.
+#[cfg(feature = "rayon")]
+fn solve_in_parallel<E: Equations + ?Sized>(
+    eqs: &E,
+    params: &mut [f64],
+    fixed: &[bool],
+    runs: &[&[&[usize]]],
+    options: &CoreOptions,
+) -> Vec<Solved> {
+    use rayon::prelude::*;
+
+    let parts: Vec<(Vec<f64>, Vec<Solved>)> = {
+        let start: &[f64] = params;
+        runs.par_iter()
+            .map(|run| {
+                let mut local = start.to_vec();
+                let done = solve_in_turn(eqs, &mut local, fixed, run, options);
+                (local, done)
+            })
+            .collect()
+    };
+    let mut solved = Vec::new();
+    for (local, done) in parts {
+        for one in done {
+            for &i in &one.moved {
+                params[i] = local[i];
+            }
+            solved.push(one);
+        }
+    }
+    solved
+}
+
+/// The components `groups` cut into runs of consecutive components, the
+/// tasks of [`solve_in_parallel`]: one per [`PARALLEL_RUN_EQUATIONS`]
+/// equations, at most one per thread of the pool, each holding about the
+/// same number of equations. A single run means there is too little to
+/// share out, and the components are solved in turn.
+///
+/// A task has to be worth waking a thread for, and the slowest task sets
+/// the time. Measured on this crate's fixtures (24 threads): one task per
+/// component cost 20–65 µs more than solving in turn on systems of 2–10
+/// small components, broke even at 20 rectangles and gained only 30% at
+/// 200. Tasks of at least 64, 96 and 128 equations, the work shared out
+/// evenly, all made 200 rectangles about twice as fast and 40 and 80
+/// grounded bodies 10–17% faster; 20 rectangles (360 equations) gained 21%,
+/// 25% and 8% — at 128 they make two tasks — so 96 it is. Below 192
+/// equations nothing is shared out.
+#[cfg(feature = "rayon")]
+fn parallel_runs<'g, E: Equations + ?Sized>(
+    eqs: &E,
+    groups: &'g [&'g [usize]],
+) -> Vec<&'g [&'g [usize]]> {
+    let sizes: Vec<usize> = groups
+        .iter()
+        .map(|group| equation_total(eqs, group))
+        .collect();
+    let total: usize = sizes.iter().sum();
+    let tasks = (total / PARALLEL_RUN_EQUATIONS).min(rayon::current_num_threads());
+    if tasks < 2 {
+        return vec![groups];
+    }
+    // Cut where the running total passes each multiple of an equal share.
+    let mut runs = Vec::with_capacity(tasks);
+    let (mut begin, mut held) = (0, 0);
+    for (k, size) in sizes.iter().enumerate() {
+        held += size;
+        if runs.len() + 1 < tasks && held * tasks >= (runs.len() + 1) * total {
+            runs.push(&groups[begin..=k]);
+            begin = k + 1;
+        }
+    }
+    if begin < groups.len() {
+        runs.push(&groups[begin..]);
+    }
+    runs
+}
+
+/// The equations per task of the parallel solve (see [`parallel_runs`]).
+#[cfg(feature = "rayon")]
+const PARALLEL_RUN_EQUATIONS: usize = 96;
+
 /// Solve one connected subsystem: only the free parameters its constraints
-/// touch may move. Returns the result and the touched parameter set.
+/// touch may move.
 fn solve_one<E: Equations + ?Sized>(
     eqs: &E,
     group: &[usize],
     params: &mut [f64],
     fixed: &[bool],
     options: &CoreOptions,
-) -> (SolveResult, Vec<usize>) {
+) -> Solved {
     let mut scratch: Vec<SparseRow> = Vec::new();
     let (assembly, pattern) = Assembly::new(eqs, group, params, fixed, &mut scratch);
     // Only this component's own free columns move: the Newton loop's free
@@ -580,7 +724,12 @@ fn solve_one<E: Equations + ?Sized>(
         }),
         options,
     );
-    (result, assembly.touched)
+    Solved {
+        result,
+        #[cfg(feature = "rayon")]
+        moved: space.storage().to_vec(),
+        touched: assembly.touched,
+    }
 }
 
 /// The unit a component's equations are measured in, from its
@@ -995,4 +1144,105 @@ fn unpinned_gauge_dims(
     }
     let (_, rank) = householder_qr_column_pivoting(&mut m, RANK_REL_TOL);
     local.len() - rank
+}
+
+#[cfg(all(test, feature = "rayon"))]
+pub(crate) mod parallel_tests {
+    use super::*;
+    use crate::constraint::Constraint;
+    use crate::entity::PointRef;
+    use crate::solver::SketchEquations;
+    use crate::Sketch;
+
+    fn bits(v: &[f64]) -> Vec<u64> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// Solve `groups` in turn and in parallel, one run per component (the
+    /// most threads the parallel path can use), from the same start; both
+    /// must leave the same parameters, bit for bit, and report the same.
+    pub(crate) fn assert_paths_agree<E: Equations + ?Sized>(
+        eqs: &E,
+        start: &[f64],
+        fixed: &[bool],
+        groups: &[&[usize]],
+    ) {
+        let options = CoreOptions::from(&crate::SolveOptions::default());
+        let mut in_turn = start.to_vec();
+        let a = solve_in_turn(eqs, &mut in_turn, fixed, groups, &options);
+        let runs: Vec<&[&[usize]]> = groups.chunks(1).collect();
+        let mut parallel = start.to_vec();
+        let b = solve_in_parallel(eqs, &mut parallel, fixed, &runs, &options);
+        assert_ne!(bits(&in_turn), bits(start), "the start must need solving");
+        assert_eq!(bits(&in_turn), bits(&parallel));
+        assert_eq!(a.len(), b.len());
+        for (a, b) in a.iter().zip(&b) {
+            assert_eq!(a.result.status, b.result.status);
+            assert_eq!(a.result.iterations, b.result.iterations);
+            assert_eq!(a.result.residual.to_bits(), b.result.residual.to_bits());
+            assert_eq!(a.touched, b.touched);
+        }
+    }
+
+    /// `count` independent anchored segments of six equations each, knocked
+    /// off their solution.
+    fn segments(count: usize) -> Sketch {
+        let mut sk = Sketch::new();
+        for i in 0..count {
+            let (x, y) = ((i % 4) as f64 * 10.0, (i / 4) as f64 * 10.0);
+            let origin = sk.add_point(x, y);
+            let side = sk.add_line(x, y, x + 3.0, y);
+            sk.add_constraint(Constraint::fix_point(origin, x, y));
+            sk.add_constraint(Constraint::coincident(
+                PointRef::LineStart(side),
+                PointRef::Point(origin),
+            ));
+            sk.add_constraint(Constraint::Horizontal(side));
+            sk.add_constraint(Constraint::LineLength {
+                line: side,
+                length: 3.0 + i as f64,
+            });
+        }
+        sk.drift_free_params(0.1, 3);
+        sk
+    }
+
+    #[test]
+    fn parallel_components_solve_bitwise_as_in_turn_2d() {
+        let sk = segments(12);
+        let eqs = SketchEquations::new(&sk.entities, &sk.constraints);
+        let components = components(&eqs, &sk.params);
+        assert_eq!(components.len(), 12);
+        let groups: Vec<&[usize]> = components.iter().map(Vec::as_slice).collect();
+        assert_paths_agree(&eqs, &sk.params, &sk.fixed, &groups);
+    }
+
+    /// One task per `PARALLEL_RUN_EQUATIONS` equations and at most one per
+    /// thread, the components kept in order and shared out evenly; a
+    /// system too small for two tasks stays in one run.
+    #[test]
+    fn parallel_runs_share_the_equations_out_evenly() {
+        let threads = rayon::current_num_threads();
+        for count in [1, 15, 16, 31, 32, 33, 50, 97, 400] {
+            let sk = segments(count);
+            let eqs = SketchEquations::new(&sk.entities, &sk.constraints);
+            let components = components(&eqs, &sk.params);
+            let groups: Vec<&[usize]> = components.iter().map(Vec::as_slice).collect();
+            let runs = parallel_runs(&eqs, &groups);
+
+            let total = 6 * count;
+            let tasks = (total / PARALLEL_RUN_EQUATIONS).min(threads).max(1);
+            assert_eq!(runs.len(), tasks, "{count} components");
+            let rejoined: Vec<&[usize]> = runs.iter().flat_map(|run| run.iter().copied()).collect();
+            assert_eq!(rejoined, groups, "{count} components");
+            for run in &runs {
+                let held: usize = run.iter().map(|group| equation_total(&eqs, group)).sum();
+                assert!(
+                    held.abs_diff(total / tasks) <= 6,
+                    "{count} components: a run of {held} equations for a share of {}",
+                    total / tasks
+                );
+            }
+        }
+    }
 }

@@ -7,7 +7,22 @@
 //! step and renormalised. Counting in columns is what makes the degrees of
 //! freedom come out right without any gauge bookkeeping.
 
-use std::cell::RefCell;
+/// The cache slot of one constraint: a lock where components may be solved
+/// on several threads (feature `rayon`), a `RefCell` otherwise.
+#[cfg(feature = "rayon")]
+type Slot<T> = std::sync::Mutex<T>;
+#[cfg(not(feature = "rayon"))]
+type Slot<T> = std::cell::RefCell<T>;
+
+#[cfg(feature = "rayon")]
+fn open<T>(slot: &Slot<T>) -> std::sync::MutexGuard<'_, T> {
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+#[cfg(not(feature = "rayon"))]
+fn open<T>(slot: &Slot<T>) -> std::cell::RefMut<'_, T> {
+    slot.borrow_mut()
+}
 
 use glam::{DQuat, DVec3};
 
@@ -62,8 +77,10 @@ pub(crate) struct RigidEquations<'a> {
     /// Per constraint, its last evaluation. The Newton loop asks for the
     /// residuals and then the Jacobian at the same poses, and a constraint
     /// evaluation yields both, so the second request is served from here.
-    /// The buffers are reused.
-    last: RefCell<Vec<Evaluation>>,
+    /// The buffers are reused. One slot per constraint: components share
+    /// no constraint, so with feature `rayon` they can be solved on
+    /// different threads.
+    last: Vec<Slot<Evaluation>>,
 }
 
 /// One constraint as a system over its own one or two bodies.
@@ -112,13 +129,15 @@ impl<'a> RigidEquations<'a> {
             })
             .collect();
         let last = (0..system.constraints.len())
-            .map(|_| Evaluation {
-                filled: false,
-                inputs: [0.0; 2 * STORED_PER_BODY],
-                rj: ResidualJacobian {
-                    r: Vec::new(),
-                    j: Vec::new(),
-                },
+            .map(|_| {
+                Slot::new(Evaluation {
+                    filled: false,
+                    inputs: [0.0; 2 * STORED_PER_BODY],
+                    rj: ResidualJacobian {
+                        r: Vec::new(),
+                        j: Vec::new(),
+                    },
+                })
             })
             .collect();
         Self {
@@ -126,7 +145,7 @@ impl<'a> RigidEquations<'a> {
             held: vec![false; system.num_components],
             definition: vec![false; system.constraints.len()],
             alone,
-            last: RefCell::new(last),
+            last,
         }
     }
 
@@ -215,8 +234,8 @@ impl<'a> RigidEquations<'a> {
                 .copy_from_slice(&params[body * STORED_PER_BODY..(body + 1) * STORED_PER_BODY]);
         }
 
-        let mut last = self.last.borrow_mut();
-        let seen = &mut last[index];
+        let mut seen = open(&self.last[index]);
+        let seen = &mut *seen;
         // Bitwise comparison: the same poses give the same numbers.
         if !seen.filled || seen.inputs.map(f64::to_bits) != inputs.map(f64::to_bits) {
             let positions = [
@@ -462,5 +481,44 @@ mod tests {
             params[i] = v;
         }
         assert_eq!(params, before);
+    }
+
+    #[cfg(feature = "rayon")]
+    #[test]
+    fn parallel_components_solve_bitwise_as_in_turn_rigid() {
+        use crate::rigid3d::{Constraint as Mate, ConstraintSolver, ConstraintSystem};
+        use crate::system::parallel_tests::assert_paths_agree;
+        use crate::system::{components, components_of};
+
+        // Bodies pinned to a grounded body 0 one by one: each is a cluster.
+        let mut system = ConstraintSystem::with_components(1);
+        system.add_constraint(Mate::fixed_with_orientation(
+            0,
+            0,
+            DVec3::ZERO,
+            DQuat::IDENTITY,
+        ));
+        for i in 0..8 {
+            let body = system.num_components;
+            system.num_components += 1;
+            let t = DVec3::new(i as f64 * 4.0, 1.0, 0.5);
+            for (k, local) in [DVec3::ZERO, DVec3::X * 2.0, DVec3::new(0.0, 3.0, 1.0)]
+                .into_iter()
+                .enumerate()
+            {
+                system.add_constraint(Mate::coincident(10 * i + k + 10, 0, t + local, body, local));
+            }
+        }
+        let eqs = RigidEquations::grounded(&system);
+        let (positions, rots) = ConstraintSolver::seed_fixed(&system);
+        let mut params = pack(&positions, &rots);
+        let mut clusters: Vec<Vec<usize>> = Vec::new();
+        for group in components(&eqs, &params) {
+            eqs.snap_grounded(&group, &mut params);
+            clusters.extend(components_of(&eqs, &group, &params));
+        }
+        let groups: Vec<&[usize]> = clusters.iter().map(Vec::as_slice).collect();
+        assert!(groups.len() >= 8, "{} clusters", groups.len());
+        assert_paths_agree(&eqs, &params, &system.held_columns(), &groups);
     }
 }

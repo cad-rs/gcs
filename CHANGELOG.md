@@ -234,6 +234,31 @@ through them from a host's side.
 
 ### Added
 
+- Feature `rayon` (off by default): the connected components of a solve
+  run on several threads. Consecutive components are grouped into one
+  task per 96 equations, at most one per thread, each holding about the
+  same number of equations; a system of fewer than 192 equations is
+  solved in turn as before. Each task solves on its own copy of the
+  parameters and the moved ones are copied back, so the results are
+  bitwise those of the sequential solve (all 21 437 solves of the test
+  suite compared, once with the parallel path forced on every
+  multi-component system and once as shipped; two unit tests compare the
+  parameter vectors of the two paths). Medians of a three-round A/B on
+  24 threads: 20 independent rectangles solve 41% faster, 200 of them 64%
+  faster (2.8×), 40 bodies grounded one by one 14% faster. A system below
+  the threshold takes the sequential path but still pays for the feature:
+  the 5- and 20-body stars are 14% and 7% slower with it, the 5-body
+  chain 5%; one-component solves are within −1% to +6% (round scatter).
+  Without the feature the code that runs is the sequential solve as
+  before; the default build measured within ±4% of the previous commit,
+  except two 5-body assembly benchmarks: the chain at +9.8% in one run
+  and level in a second, and the diagnosis of the star at +8% in both,
+  cause not found (it is not the layout of the evaluation cache,
+  measured both ways). With the feature,
+  the rigid family's per-constraint evaluation cache takes a lock (one
+  per constraint, never contended); without it the cache is a `RefCell`
+  per constraint as before.
+
 - `SolveStatus` (`Converged`, `MaxIterations`, `Stalled`, `Singular`,
   `Diverged`), reported in `SolveResult::status`.
 - `SolveOptions` (tolerance, iteration limit, failure policy) and
