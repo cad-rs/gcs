@@ -95,6 +95,52 @@ pub fn diagnose(
     }
 }
 
+/// The state of every body and every constraint of an assembly at the
+/// given pose (see [`crate::status`] and [`crate::Sketch::status`]): the
+/// entities are the bodies (`ComponentId`s; `None` for a removed one), the
+/// constraints are indexed by their slot in `system.constraints` — not by
+/// mate id, which two constraints may share. A body is under-defined when
+/// some coordinate of it can still move ([`mobility`]); grounded bodies are
+/// held by their rows. As with [`diagnose`], read it at a solved pose (or
+/// at the failed one, for conflicts).
+pub fn status(
+    system: &ConstraintSystem,
+    positions: &[Point3],
+    rots: &[DQuat],
+) -> crate::status::Status {
+    let params = pack(positions, rots);
+    let fixed = system.held_columns();
+    let eqs = RigidEquations::new(system);
+    let diagnosis = system::diagnose(&eqs, &params, &fixed, &NoGauge);
+    let movable = crate::status::movable_entities(
+        &eqs,
+        &params,
+        &fixed,
+        &NoGauge,
+        system.num_components,
+        &|b| b * COLUMNS_PER_BODY..(b + 1) * COLUMNS_PER_BODY,
+    );
+    let removed = |b: usize| system.is_component_removed(b);
+    let movable_body = |b: usize| movable[b];
+    let of_constraint = |c: usize| {
+        let (first, second) = system.constraints[c].kind.bodies();
+        std::iter::once(first).chain(second).collect()
+    };
+    crate::status::status_of(
+        &eqs,
+        &params,
+        &fixed,
+        &NoGauge,
+        diagnosis,
+        crate::status::Entities {
+            count: system.num_components,
+            removed: &removed,
+            movable: &movable_body,
+            of_constraint: &of_constraint,
+        },
+    )
+}
+
 /// Which of each body's six coordinates can still move, at the given pose.
 ///
 /// Entry `[body][k]` is `true` when the constraints, linearized at the

@@ -261,6 +261,20 @@ fn cross(a: (f64, f64, f64), b: (f64, f64, f64)) -> (f64, f64, f64) {
     )
 }
 
+/// [`crate::status::status_of`] with the gauge of planes and cylinders.
+pub(crate) fn status_of(
+    eqs: &SpaceEquations<'_>,
+    params: &[f64],
+    fixed: &[bool],
+    diagnosis: SpaceDiagnosis,
+    entities: crate::status::Entities<'_>,
+) -> crate::status::Status {
+    let gauge = SpaceGauge {
+        entities: eqs.entities,
+    };
+    crate::status::status_of(eqs, params, fixed, &gauge, diagnosis, entities)
+}
+
 /// Per entity, whether a physical motion of it is left (see
 /// [`crate::status::movable_entities`]; the gauge of planes and cylinders
 /// is not counted as motion).

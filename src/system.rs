@@ -1790,12 +1790,22 @@ pub(crate) trait Gauge {
     fn soft_directions(&self, _params: &[f64], _fixed: &[bool]) -> Vec<SparseRow> {
         Vec::new()
     }
+
+    /// Whether every storage parameter is a physical freedom (no gauge at
+    /// all): tests in the stored parameters then mean what they say.
+    fn is_trivial(&self) -> bool {
+        false
+    }
 }
 
 /// Every storage parameter is a physical freedom.
 pub(crate) struct NoGauge;
 
-impl Gauge for NoGauge {}
+impl Gauge for NoGauge {
+    fn is_trivial(&self) -> bool {
+        true
+    }
+}
 
 /// Rank-revealing diagnosis of the constraints at `params`.
 ///

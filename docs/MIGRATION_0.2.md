@@ -120,7 +120,7 @@ let now = system.measure(index, &next.positions, &next.rotations);
 
 ### 3.7 逐实体、逐约束的状态
 
-2D 的 `Sketch::status()` 给每个实体一个 `EntityStatus`（`WellDefined` 定义完全 / `UnderDefined` 欠定义 / `OverDefined` 过定义（身上有冗余约束）/ `Unsolved` 未求解（身上有约束没满足，且所在分量不在解上）/ `Conflicting` 冲突，多种同时成立时取最严重的一个；已删除的实体是 `None`），给每个约束一个 `ConstraintStatus`（`Met` / `Redundant` / `PartiallyRedundant` / `Unmet` / `Conflicting` / `Inactive`），连同自由度和依赖组。宿主如果自己拿 `diagnose()` 的 `conflicting` 和 `mobility()` 拼过“哪些几何要标红 / 标蓝”，可以换成它；区别是：同一个依赖组里的约束取同一种状态，所以冲突时组里每个约束都是 `Conflicting`（`diagnose().conflicting` 只列一个代表，选哪个取决于主元顺序）。它内部跑一次诊断和一次可动性分析，请在求解后调用，不要每帧调用。3D 草图有同样的 `SpaceSketch::status()`：平面法向的长度、圆柱轴点沿轴的滑动和轴向量的缩放是存储方式而不是自由度，不会让它们显示成欠定义。装配还没有。顺带修了 `mobility()` 的一个错误（CHANGELOG 的 Fixed）：以前开放的距离链上，被 `Fixed` 约束固定的起点会被报成 y 方向可动。
+2D 的 `Sketch::status()` 给每个实体一个 `EntityStatus`（`WellDefined` 定义完全 / `UnderDefined` 欠定义 / `OverDefined` 过定义（身上有冗余约束）/ `Unsolved` 未求解（身上有约束没满足，且所在分量不在解上）/ `Conflicting` 冲突，多种同时成立时取最严重的一个；已删除的实体是 `None`），给每个约束一个 `ConstraintStatus`（`Met` / `Redundant` / `PartiallyRedundant` / `Unmet` / `Conflicting` / `Inactive`），连同自由度和依赖组。宿主如果自己拿 `diagnose()` 的 `conflicting` 和 `mobility()` 拼过“哪些几何要标红 / 标蓝”，可以换成它；区别是：同一个依赖组里的约束取同一种状态，所以冲突时组里每个约束都是 `Conflicting`（`diagnose().conflicting` 只列一个代表，选哪个取决于主元顺序）。它内部跑一次诊断和一次可动性分析，请在求解后调用，不要每帧调用。3D 草图有同样的 `SpaceSketch::status()`：平面法向的长度、圆柱轴点沿轴的滑动和轴向量的缩放是存储方式而不是自由度，不会让它们显示成欠定义。装配用 `rigid3d::assembly_status(system, positions, rotations)`：实体是各个刚体，约束按 `system.constraints` 里的槽位编号（不是配合 id，两个约束可能同 id）。约束只有在“单独去掉它，所在分量的秩不降”时才算 `Redundant`——行之间相关还不够：用三对重合点钉住一个零件，9 个方程只有 6 的秩，但哪一对都去不掉，这个零件报“定义完全”而不是“过定义”。顺带修了 `mobility()` 的一个错误（CHANGELOG 的 Fixed）：以前开放的距离链上，被 `Fixed` 约束固定的起点会被报成 y 方向可动。
 
 ## 4. 这一版没有动的
 

@@ -292,15 +292,20 @@ through them from a host's side.
 
 ### Added
 
-- `Sketch::status()`, `SpaceSketch::status()` and the module `status`: one state per entity
+- `Sketch::status()`, `SpaceSketch::status()`, `rigid3d::assembly_status()`
+  and the module `status`: one state per entity
   (`EntityStatus`: well-defined, under-defined, over-defined, unsolved,
   conflicting — the most serious that applies; `None` for a removed
   entity) and per constraint (`ConstraintStatus`: met, redundant,
   partially redundant, unmet, conflicting, inactive), with the degrees of
   freedom and the dependency groups (`Status`). It is built from
-  `diagnose()` and `mobility()`: a constraint takes the state of its
-  dependency group, so every member of a conflict is conflicting rather
-  than only the representative `Diagnosis::conflicting` names; an entity
+  `diagnose()` and `mobility()`: every member of a conflicting dependency
+  group is conflicting, not only the representative
+  `Diagnosis::conflicting` names; a constraint is redundant only if it
+  could go alone without the rank of its component dropping — tested
+  constraint by constraint, since dependent rows are not enough (two point
+  coincidences pinning a rigid body share the distance along their line,
+  yet neither can go); an entity
   takes the most serious state of the constraints on it, and is
   under-defined if one of its free parameters can move. "Unmet" is judged
   as a solve judges convergence (the tolerance in the units of the
@@ -314,7 +319,14 @@ through them from a host's side.
   axis, the axis rescaled) are taken out before a motion counts; a plane
   pinned by a normal and a point, and a cylinder through five held points,
   are well-defined. The 3D corpus's conflict, redundancy and DOF cases
-  check the states too. Not yet for assemblies.
+  check the states too. For an assembly the entities are the bodies and
+  the constraints are indexed by slot; every body of the assembly corpus
+  (4 749, in 333 cases) reports the state its case's construction says
+  (`body_statuses_match_the_labels`). The removal test holds the columns
+  of a constraint that decides them alone (a fixed point, a grounded body)
+  and tests the others on the pieces that leave, so a hub with forty parts
+  is forty small tests; the assembly gate went from 177 s to 2.7 s
+  (optimised) with it.
 - Feature `rayon` (off by default): the connected components of a solve
   run on several threads. Consecutive components are grouped into one
   task per 96 equations, at most one per thread, each holding about the

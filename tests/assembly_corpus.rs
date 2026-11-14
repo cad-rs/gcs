@@ -16,6 +16,7 @@ use glam::{DQuat, DVec3};
 use rcad_gcs::rigid3d::{
     diagnose_assembly, Constraint, ConstraintSolver, ConstraintSystem, PoseSolveOptions,
 };
+use rcad_gcs::EntityStatus;
 use serde_json::json;
 
 const CONTRACT_TOL: f64 = 1e-9;
@@ -913,4 +914,62 @@ fn round_trip_tol(family: &str) -> f64 {
         "star" => 1.0e-6,
         _ => CONTRACT_TOL,
     }
+}
+
+/// What each body of a case should report (P4.1), from how its family is
+/// built: at the tightly solved pose for every case but the conflicting
+/// ones, which are looked at where their fixings put them.
+fn expected_body_status(case: &Case, system: &ConstraintSystem) -> Vec<Option<EntityStatus>> {
+    use EntityStatus::*;
+    let n = system.num_components;
+    let all = |state| vec![Some(state); n];
+    match (case.family, case.expect) {
+        // The ground is fixed with its orientation; every other body is
+        // pinned (pair, star), or held by exactly its six freedoms (chain).
+        ("pair" | "chain" | "star", Expect::Solve) => all(WellDefined),
+        // The shaft keeps its spin about the axis.
+        ("shaft", Expect::Under) => {
+            let mut v = all(UnderDefined);
+            v[0] = Some(WellDefined);
+            v
+        }
+        // Two free bodies with a partial mate between them, no ground.
+        ("under", Expect::Under) => all(UnderDefined),
+        // Every body takes part in the conflict, or carries the duplicate.
+        (_, Expect::Conflict) => all(Conflicting),
+        (_, Expect::Redundant) => all(OverDefined),
+        (family, expect) => panic!("{}: no label for {family} / {expect:?}", case.id),
+    }
+}
+
+#[test]
+fn body_statuses_match_the_labels() {
+    let solver = tight_solver();
+    let (mut total, mut right) = (0usize, 0usize);
+    for case in generate_all() {
+        let system = (case.build)();
+        let (mut pos, mut rot) = ConstraintSolver::seed_fixed(&system);
+        if case.expect != Expect::Conflict {
+            let r = solver.solve(&system);
+            assert!(r.success, "{}", case.id);
+            pos = r.positions;
+            rot = r.rotations;
+        }
+        let expected = expected_body_status(&case, &system);
+        let got = rcad_gcs::rigid3d::assembly_status(&system, &pos, &rot).entities;
+        assert_eq!(got.len(), expected.len(), "{}", case.id);
+        for (b, (g, x)) in got.iter().zip(&expected).enumerate() {
+            total += 1;
+            if g == x {
+                right += 1;
+            } else {
+                println!("{} body {b}: {g:?}, expected {x:?}", case.id);
+            }
+        }
+    }
+    println!(
+        "body status: {right}/{total} as labelled ({:.4})",
+        right as f64 / total as f64
+    );
+    assert_eq!(right, total, "body statuses that differ from the labels");
 }

@@ -694,9 +694,10 @@ impl SpaceSketch {
                 .map(|(e, _)| e)
                 .collect()
         };
-        crate::status::status_of(
+        crate::space3d::diagnosis::status_of(
             &eqs,
             &self.params,
+            &self.fixed,
             self.diagnose(),
             crate::status::Entities {
                 count: self.entities.len(),

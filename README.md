@@ -149,7 +149,9 @@ serious that applies — and each constraint `Met`, `Redundant`,
 a conflicting dependency is `Conflicting`, not only the representative the
 diagnosis names. The 3D sketch has the same `status()`; a plane's normal
 length and a cylinder's axis-point slide are how they are stored, not
-freedoms. (Not yet for assemblies.)
+freedoms; `rigid3d::assembly_status` gives the same per body and per
+mate slot. A constraint is `Redundant` only if it could be taken out
+alone without freeing anything.
 
 ```rust
 use rcad_gcs::EntityStatus;

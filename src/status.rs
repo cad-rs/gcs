@@ -104,9 +104,11 @@ pub(crate) struct Entities<'a> {
 }
 
 /// The [`Status`] of the system `eqs` at `params` from its diagnosis.
-pub(crate) fn status_of<E: Equations + ?Sized>(
+pub(crate) fn status_of<E: Equations + ?Sized, G: system::Gauge>(
     eqs: &E,
     params: &[f64],
+    fixed: &[bool],
+    gauge: &G,
     diagnosis: Diagnosis,
     entities: Entities<'_>,
 ) -> Status {
@@ -120,34 +122,61 @@ pub(crate) fn status_of<E: Equations + ?Sized>(
             *state = ConstraintStatus::Unmet;
         }
     }
-    let mut raise = |list: &[usize], to: ConstraintStatus| {
+    fn raise(constraints: &mut [ConstraintStatus], list: &[usize], to: ConstraintStatus) {
         for &c in list {
             if constraints[c] != ConstraintStatus::Inactive && constraints[c] < to {
                 constraints[c] = to;
             }
         }
-    };
-    raise(&diagnosis.redundant, ConstraintStatus::Redundant);
+    }
+    // A conflict involves every member of its dependency group, not only
+    // the representative the pivoting named.
     raise(
-        &diagnosis.partially_redundant,
-        ConstraintStatus::PartiallyRedundant,
+        &mut constraints,
+        &diagnosis.conflicting,
+        ConstraintStatus::Conflicting,
     );
-    raise(&diagnosis.conflicting, ConstraintStatus::Conflicting);
-    // The lists above name one representative per dependency, whichever
-    // the pivoting met last; a dependency group is the whole of one. Every
-    // member of a group takes the state of the group: conflicting if it
-    // holds a conflicting constraint, otherwise (partially) redundant —
-    // each member alone could go without changing the solution.
+    let in_conflict = |group: &[usize]| group.iter().any(|c| diagnosis.conflicting.contains(c));
     for group in &diagnosis.dependency_groups {
-        let has = |list: &[usize]| group.iter().any(|c| list.contains(c));
-        let state = if has(&diagnosis.conflicting) {
-            ConstraintStatus::Conflicting
-        } else if has(&diagnosis.partially_redundant) {
+        if in_conflict(group) {
+            raise(&mut constraints, group, ConstraintStatus::Conflicting);
+        }
+    }
+    // A redundant constraint is one that could go without changing the
+    // solution: dependent rows are not enough (two point coincidences of a
+    // rigid body share the distance along their line, yet neither can go),
+    // so each candidate — a member of a consistent dependency, or a row the
+    // diagnosis named — is taken out on its own and kept as redundant if
+    // the rank of its component does not drop.
+    let partial = |c: usize| {
+        diagnosis.partially_redundant.contains(&c)
+            || diagnosis.dependency_groups.iter().any(|g| {
+                g.contains(&c) && g.iter().any(|m| diagnosis.partially_redundant.contains(m))
+            })
+    };
+    let mut candidates: Vec<usize> = diagnosis
+        .redundant
+        .iter()
+        .chain(&diagnosis.partially_redundant)
+        .copied()
+        .chain(
+            diagnosis
+                .dependency_groups
+                .iter()
+                .filter(|g| !in_conflict(g))
+                .flat_map(|g| g.iter().copied()),
+        )
+        .filter(|&c| constraints[c] != ConstraintStatus::Conflicting)
+        .collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+    for c in removable(eqs, params, fixed, gauge, &candidates) {
+        let to = if partial(c) {
             ConstraintStatus::PartiallyRedundant
         } else {
             ConstraintStatus::Redundant
         };
-        raise(group, state);
+        raise(&mut constraints, &[c], to);
     }
 
     let mut states: Vec<Option<EntityStatus>> = (0..entities.count)
@@ -186,8 +215,233 @@ pub(crate) fn status_of<E: Equations + ?Sized>(
     }
 }
 
-/// Per entity (`count` of them, entity `e` stored in the parameters
-/// `params_of(e)`), whether some motion of it that no constraint resists
+/// The constraints of `eqs` that `active` marks; the others have no
+/// equations.
+struct Only<'a, E: ?Sized> {
+    eqs: &'a E,
+    active: Vec<bool>,
+}
+
+impl<E: Equations + ?Sized> Equations for Only<'_, E> {
+    fn constraint_count(&self) -> usize {
+        self.eqs.constraint_count()
+    }
+    fn equation_count(&self, index: usize) -> usize {
+        if self.active[index] {
+            self.eqs.equation_count(index)
+        } else {
+            0
+        }
+    }
+    fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]) {
+        if self.active[index] {
+            self.eqs.residuals(index, params, out);
+        }
+    }
+    fn jacobian(&self, index: usize, params: &[f64], out: &mut [system::SparseRow]) {
+        if self.active[index] {
+            self.eqs.jacobian(index, params, out);
+        }
+    }
+    fn column_count(&self, params: &[f64]) -> usize {
+        self.eqs.column_count(params)
+    }
+    fn step_space(&self, free: &[usize]) -> Box<dyn crate::numerics::StepSpace + '_> {
+        self.eqs.step_space(free)
+    }
+    fn steps_are_additive(&self) -> bool {
+        self.eqs.steps_are_additive()
+    }
+    fn column_magnitude(&self, column: usize, params: &[f64]) -> f64 {
+        self.eqs.column_magnitude(column, params)
+    }
+    fn length_scale(&self, group: &[usize], params: &[f64]) -> Option<f64> {
+        self.eqs.length_scale(group, params)
+    }
+    fn debug_check_jacobian(&self) -> bool {
+        self.eqs.debug_check_jacobian()
+    }
+}
+
+/// The constraints among `candidates` that can each be taken out alone
+/// without lowering the rank of their component: the rank of the
+/// component's Jacobian with and without it, from the same diagnosis (and
+/// gauge) the status is built from.
+fn removable<E: Equations + ?Sized, G: system::Gauge>(
+    eqs: &E,
+    params: &[f64],
+    fixed: &[bool],
+    gauge: &G,
+    candidates: &[usize],
+) -> Vec<usize> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let n = eqs.constraint_count();
+    let rank_of = |active: Vec<bool>, fixed: &[bool]| {
+        system::diagnose(&Only { eqs, active }, params, fixed, gauge).rank
+    };
+    let mut out = Vec::new();
+    for group in &system::components(eqs, params) {
+        let mine: Vec<usize> = candidates
+            .iter()
+            .copied()
+            .filter(|c| group.contains(c))
+            .collect();
+        if mine.is_empty() {
+            continue;
+        }
+        // An anchor is a constraint of full rank on its own free columns
+        // (a fixed point, a grounded body): it decides them alone, so with
+        // them held the rank of the rest is the rank of the component less
+        // their number — and a constraint other than an anchor can be
+        // tested on the smaller pieces the rest falls into (a hub with
+        // forty parts pinned to it falls into forty). Only without a
+        // gauge: under one, full rank in the stored parameters is not the
+        // same test.
+        let anchors: Vec<usize> = if gauge.is_trivial() {
+            group
+                .iter()
+                .copied()
+                .filter(|&c| full_rank_on_own_columns(eqs, c, params, fixed))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut held = fixed.to_vec();
+        for &a in &anchors {
+            for column in columns_of(eqs, a, params) {
+                held[column] = true;
+            }
+        }
+        // The pieces of the component with the anchors' columns held: the
+        // other constraints joined by the columns they share and nobody
+        // holds.
+        let rest: Vec<usize> = group
+            .iter()
+            .copied()
+            .filter(|c| !anchors.contains(c))
+            .collect();
+        let pieces = pieces_of(eqs, &rest, params, &held);
+        let mut whole_rank = None;
+        for c in mine {
+            if anchors.contains(&c) || anchors.is_empty() {
+                // Tested on the whole component.
+                let mut active = vec![false; n];
+                for &k in group {
+                    active[k] = true;
+                }
+                let full = *whole_rank.get_or_insert_with(|| rank_of(active.clone(), fixed));
+                active[c] = false;
+                if rank_of(active, fixed) == full {
+                    out.push(c);
+                }
+                continue;
+            }
+            let piece = pieces.iter().find(|p| p.contains(&c)).expect("in a piece");
+            let mut active = vec![false; n];
+            for &k in piece {
+                active[k] = true;
+            }
+            let full = rank_of(active.clone(), &held);
+            active[c] = false;
+            if rank_of(active, &held) == full {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// The free columns constraint `c` lists, ascending.
+fn columns_of<E: Equations + ?Sized>(eqs: &E, c: usize, params: &[f64]) -> Vec<usize> {
+    let mut rows: Vec<system::SparseRow> = vec![Vec::new(); eqs.equation_count(c)];
+    eqs.jacobian(c, params, &mut rows);
+    let mut columns: Vec<usize> = rows.iter().flatten().map(|&(column, _)| column).collect();
+    columns.sort_unstable();
+    columns.dedup();
+    columns
+}
+
+/// Whether the equations of constraint `c` alone have full rank on the
+/// free columns it lists (at least one).
+fn full_rank_on_own_columns<E: Equations + ?Sized>(
+    eqs: &E,
+    c: usize,
+    params: &[f64],
+    fixed: &[bool],
+) -> bool {
+    let mut rows: Vec<system::SparseRow> = vec![Vec::new(); eqs.equation_count(c)];
+    eqs.jacobian(c, params, &mut rows);
+    let columns: Vec<usize> = columns_of(eqs, c, params)
+        .into_iter()
+        .filter(|&column| !fixed[column])
+        .collect();
+    if columns.is_empty() || rows.len() < columns.len() {
+        return false;
+    }
+    // Aᵀ with one column per equation (row-equilibrated), as the diagnosis
+    // takes its rank.
+    let mut a = vec![vec![0.0_f64; rows.len()]; columns.len()];
+    for (r, row) in rows.iter().enumerate() {
+        let scale = row.iter().fold(0.0_f64, |m, &(_, v)| m.max(v.abs()));
+        for &(column, v) in row {
+            if let Ok(k) = columns.binary_search(&column) {
+                a[k][r] = if scale > 0.0 { v / scale } else { 0.0 };
+            }
+        }
+    }
+    let (_, rank) =
+        numerics::householder_qr_column_pivoting(&mut a, crate::diagnosis::RANK_REL_TOL);
+    rank == columns.len()
+}
+
+/// The constraints `indices` grouped by the columns they share that
+/// `held` does not hold (union–find over constraints).
+fn pieces_of<E: Equations + ?Sized>(
+    eqs: &E,
+    indices: &[usize],
+    params: &[f64],
+    held: &[bool],
+) -> Vec<Vec<usize>> {
+    use std::collections::HashMap;
+    let mut parent: Vec<usize> = (0..indices.len()).collect();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut first_of_column: HashMap<usize, usize> = HashMap::new();
+    for (k, &c) in indices.iter().enumerate() {
+        for column in columns_of(eqs, c, params) {
+            if held[column] {
+                continue;
+            }
+            match first_of_column.get(&column) {
+                Some(&other) => {
+                    let (a, b) = (find(&mut parent, k), find(&mut parent, other));
+                    if a != b {
+                        parent[a] = b;
+                    }
+                }
+                None => {
+                    first_of_column.insert(column, k);
+                }
+            }
+        }
+    }
+    let mut by_root: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (k, &c) in indices.iter().enumerate() {
+        let root = find(&mut parent, k);
+        by_root.entry(root).or_default().push(c);
+    }
+    by_root.into_values().collect()
+}
+
+/// Per entity (`count` of them, entity `e` stepped by the columns
+/// `params_of(e)`: its parameters, or a rigid body's six coordinates), whether some motion of it that no constraint resists
 /// is physical, not just another way of storing it: a direction of the
 /// null space of the constraint Jacobian — over the effective columns of
 /// `gauge`, which leave out what a representation stores twice (a plane's
@@ -207,7 +461,10 @@ pub(crate) fn movable_entities<E: Equations + ?Sized, G: system::Gauge>(
 ) -> Vec<bool> {
     use std::collections::HashMap;
     let tol = crate::diagnosis::RANK_REL_TOL;
-    let mut owner = vec![usize::MAX; params.len()];
+    // Over the columns of the family (a rigid body stores seven numbers
+    // and moves in six).
+    let n_cols = eqs.column_count(params);
+    let mut owner = vec![usize::MAX; n_cols];
     for e in 0..count {
         for p in params_of(e) {
             owner[p] = e;
@@ -215,7 +472,7 @@ pub(crate) fn movable_entities<E: Equations + ?Sized, G: system::Gauge>(
     }
     let soft = gauge.soft_directions(params, fixed);
     let mut movable = vec![false; count];
-    let mut touched_any = vec![false; params.len()];
+    let mut touched_any = vec![false; n_cols];
     for group in system::components(eqs, params) {
         let mut touched = system::touched_params(eqs, &group, params);
         for &p in &touched {

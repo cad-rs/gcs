@@ -559,6 +559,8 @@ impl Sketch {
         crate::status::status_of(
             &self.equations(),
             &self.params,
+            &self.fixed,
+            &NoGauge,
             self.diagnose(),
             crate::status::Entities {
                 count: self.entities.len(),
