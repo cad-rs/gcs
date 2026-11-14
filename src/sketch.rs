@@ -1,5 +1,7 @@
 //! The main [`Sketch`] API.
 
+use std::sync::Arc;
+
 use glam::DVec2;
 
 use crate::constraint::Constraint;
@@ -56,6 +58,40 @@ pub struct Sketch {
     /// See [`Sketch::topology_revision`].
     #[cfg_attr(feature = "serde", serde(default))]
     revision: u64,
+    /// What the last solve kept of the structure (see [`PlanCache`]).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    plans: PlanCache,
+}
+
+/// The components of a sketch and what each one's solve needs that depends
+/// on the structure alone (`system::Plans`), kept from one solve to the
+/// next while the structure holds: while the topology revision is the same
+/// and so are the entities (a host may edit the public entity list
+/// directly, which the revision does not see). A clone shares them.
+#[derive(Clone, Default)]
+struct PlanCache {
+    key: Option<(u64, u64)>,
+    plans: Option<Arc<system::Plans>>,
+}
+
+impl std::fmt::Debug for PlanCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlanCache")
+            .field("key", &self.key)
+            .field("kept", &self.plans.is_some())
+            .finish()
+    }
+}
+
+impl PlanCache {
+    /// The plans for `key`, made by `make` unless they are kept for it.
+    fn get(&mut self, key: (u64, u64), make: impl FnOnce() -> system::Plans) -> Arc<system::Plans> {
+        if self.key != Some(key) || self.plans.is_none() {
+            self.plans = Some(Arc::new(make()));
+            self.key = Some(key);
+        }
+        Arc::clone(self.plans.as_ref().expect("just made"))
+    }
 }
 
 impl Sketch {
@@ -69,7 +105,28 @@ impl Sketch {
             states: Vec::new(),
             removed: Vec::new(),
             revision: 0,
+            plans: PlanCache::default(),
         }
+    }
+
+    /// The key of [`PlanCache`]: the topology revision, and a digest of
+    /// what the structure is read from besides (the entity list, the sizes
+    /// of the parameter, constraint and state lists).
+    fn plan_key(&self) -> (u64, u64) {
+        // FNV-1a over 64-bit words.
+        let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |word: u64| {
+            digest ^= word;
+            digest = digest.wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        mix(self.params.len() as u64);
+        mix(self.constraints.len() as u64);
+        mix(self.states.len() as u64);
+        for e in &self.entities {
+            mix(e.kind as u64);
+            mix(e.param_start as u64);
+        }
+        (self.revision, digest)
     }
 
     // ── Entity constructors ───────────────────────────────────────────────────
@@ -497,13 +554,15 @@ impl Sketch {
         only: Option<&[usize]>,
         options: &SolveOptions,
     ) -> SolveResult {
+        let key = self.plan_key();
         let eqs = SketchEquations::with_states(&self.entities, &self.constraints, &self.states);
-        let components = system::components(&eqs, &self.params);
-        system::solve_components(
+        let params = &self.params;
+        let plans = self.plans.get(key, || system::Plans::new(&eqs, params));
+        system::solve_planned(
             &eqs,
             &mut self.params,
             &self.fixed,
-            &components,
+            &plans,
             only,
             &CoreOptions::from(options),
             |_, _| {},

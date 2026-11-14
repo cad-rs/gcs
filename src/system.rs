@@ -16,6 +16,7 @@
 //! not physical freedoms (the 3D planes and cylinders).
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::alias::{Aliases, ClassSpace, Classes};
 use crate::diagnosis::{Diagnosis, CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL};
@@ -179,13 +180,13 @@ const HELD: usize = usize::MAX;
 /// values, in a fixed order; an entry that arrives in another order is
 /// still placed, by a search of its row.)
 struct Assembly {
-    /// The columns the constraints touch, held or free, ascending.
-    touched: Vec<usize>,
     /// The free ones among them, ascending: column `k` of the Jacobian is
     /// `free[k]`.
     free: Vec<usize>,
     /// Per column of the family, its Jacobian column, or [`HELD`].
     col_of: Vec<usize>,
+    /// The column `col_of[0]` is for: the lowest one touched.
+    col_base: usize,
     /// Row `r` lists entries `entry_starts[r]..entry_starts[r + 1]`.
     entry_starts: Vec<usize>,
     /// The column of each listed entry, as the layout saw it.
@@ -232,19 +233,6 @@ impl Listing {
 }
 
 impl Assembly {
-    /// Lay out the Jacobian of the constraints `indices` over the columns
-    /// `fixed` does not hold, at `params`: the assembly and the empty
-    /// pattern it fills.
-    fn new<E: Equations + ?Sized>(
-        eqs: &E,
-        indices: &[usize],
-        params: &[f64],
-        fixed: &[bool],
-        scratch: &mut Vec<SparseRow>,
-    ) -> (Self, SparseJacobian) {
-        Self::lay_out(Listing::new(eqs, indices, params, scratch), fixed, None)
-    }
-
     /// Lay out the Jacobian of `listing` over the columns `fixed` does not
     /// hold; with `classes`, over one column per unknown class that an
     /// equation not absorbed touches, each member's entries summed into it
@@ -259,12 +247,15 @@ impl Assembly {
             listed,
             touched,
         } = listing;
-        let mut col_of = vec![HELD; touched.last().map_or(0, |&c| c + 1)];
+        // Over the span of the touched columns only: a component of a large
+        // system touches a few columns far from zero.
+        let col_base = touched.first().copied().unwrap_or(0);
+        let mut col_of = vec![HELD; touched.last().map_or(0, |&c| c + 1 - col_base)];
         let free: Vec<usize> = match classes {
             None => {
                 let free: Vec<usize> = touched.iter().copied().filter(|&c| !fixed[c]).collect();
                 for (k, &c) in free.iter().enumerate() {
-                    col_of[c] = k;
+                    col_of[c - col_base] = k;
                 }
                 free
             }
@@ -288,7 +279,7 @@ impl Assembly {
                         continue;
                     }
                     if let Ok(k) = roots.binary_search(&classes.root_of(c)) {
-                        col_of[c] = k;
+                        col_of[c - col_base] = k;
                     }
                 }
                 roots
@@ -306,7 +297,7 @@ impl Assembly {
             cols.extend(
                 listed[span[0]..span[1]]
                     .iter()
-                    .map(|&c| if absorbed { HELD } else { col_of[c] })
+                    .map(|&c| if absorbed { HELD } else { col_of[c - col_base] })
                     .filter(|&k| k != HELD),
             );
             cols[begin..].sort_unstable();
@@ -322,9 +313,9 @@ impl Assembly {
         }
         let pattern = SparseJacobian::from_parts(free.len(), starts, cols);
         let mut assembly = Self {
-            touched,
             free,
             col_of,
+            col_base,
             entry_starts,
             listed,
             slots: Vec::new(),
@@ -346,7 +337,11 @@ impl Assembly {
 
     /// The slot of column `column` in row `r` of `pattern`, or [`HELD`].
     fn slot(&self, pattern: &SparseJacobian, r: usize, column: usize) -> usize {
-        let k = self.col_of.get(column).copied().unwrap_or(HELD);
+        let k = column
+            .checked_sub(self.col_base)
+            .and_then(|at| self.col_of.get(at))
+            .copied()
+            .unwrap_or(HELD);
         if k == HELD {
             return HELD;
         }
@@ -617,6 +612,60 @@ where
     E: Equations + ?Sized,
     F: FnOnce(&mut [f64], &[usize]),
 {
+    solve_parts(
+        eqs,
+        params,
+        fixed,
+        components,
+        None,
+        only,
+        options,
+        after_solve,
+    )
+}
+
+/// [`solve_components`] over the components of `plans`, keeping the plan of
+/// each component it solves there for the next solve (see [`Plan`]).
+pub(crate) fn solve_planned<E, F>(
+    eqs: &E,
+    params: &mut [f64],
+    fixed: &[bool],
+    plans: &Plans,
+    only: Option<&[usize]>,
+    options: &CoreOptions,
+    after_solve: F,
+) -> SolveResult
+where
+    E: Equations + ?Sized,
+    F: FnOnce(&mut [f64], &[usize]),
+{
+    solve_parts(
+        eqs,
+        params,
+        fixed,
+        plans.components(),
+        Some(plans),
+        only,
+        options,
+        after_solve,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn solve_parts<E, F>(
+    eqs: &E,
+    params: &mut [f64],
+    fixed: &[bool],
+    components: &[Vec<usize>],
+    plans: Option<&Plans>,
+    only: Option<&[usize]>,
+    options: &CoreOptions,
+    after_solve: F,
+) -> SolveResult
+where
+    E: Equations + ?Sized,
+    F: FnOnce(&mut [f64], &[usize]),
+{
     let groups: Vec<&[usize]> = components
         .iter()
         .enumerate()
@@ -628,13 +677,13 @@ where
     let solved = {
         let runs = parallel_runs(eqs, &groups);
         if runs.len() >= 2 {
-            solve_in_parallel(eqs, params, fixed, &runs, options)
+            solve_in_parallel(eqs, params, fixed, plans, &runs, options)
         } else {
-            solve_in_turn(eqs, params, fixed, &groups, options)
+            solve_in_turn(eqs, params, fixed, plans, &groups, options)
         }
     };
     #[cfg(not(feature = "rayon"))]
-    let solved = solve_in_turn(eqs, params, fixed, &groups, options);
+    let solved = solve_in_turn(eqs, params, fixed, plans, &groups, options);
 
     let mut iterations = 0usize;
     let mut converged = true;
@@ -675,12 +724,13 @@ fn solve_in_turn<E: Equations + ?Sized>(
     eqs: &E,
     params: &mut [f64],
     fixed: &[bool],
+    plans: Option<&Plans>,
     groups: &[&[usize]],
     options: &CoreOptions,
 ) -> Vec<Solved> {
     groups
         .iter()
-        .map(|group| solve_one(eqs, group, params, fixed, options))
+        .map(|group| solve_one(eqs, group, plans, params, fixed, options))
         .collect()
 }
 
@@ -698,6 +748,7 @@ fn solve_in_parallel<E: Equations + ?Sized>(
     eqs: &E,
     params: &mut [f64],
     fixed: &[bool],
+    plans: Option<&Plans>,
     runs: &[&[&[usize]]],
     options: &CoreOptions,
 ) -> Vec<Solved> {
@@ -708,7 +759,7 @@ fn solve_in_parallel<E: Equations + ?Sized>(
         runs.par_iter()
             .map(|run| {
                 let mut local = start.to_vec();
-                let done = solve_in_turn(eqs, &mut local, fixed, run, options);
+                let done = solve_in_turn(eqs, &mut local, fixed, plans, run, options);
                 (local, done)
             })
             .collect()
@@ -774,62 +825,226 @@ fn parallel_runs<'g, E: Equations + ?Sized>(
 #[cfg(feature = "rayon")]
 const PARALLEL_RUN_EQUATIONS: usize = 96;
 
+/// What the solve of one component needs that depends on the structure of
+/// the system alone — which constraints are active, which parameters they
+/// list, which are held — and not on any value: kept by [`Plans`] from one
+/// solve to the next while the topology holds.
+pub(crate) struct Plan {
+    /// The columns the constraints touch, held or free, ascending.
+    touched: Vec<usize>,
+    /// The layout over every free parameter: made with the plan for a
+    /// component without classes, and only if a solve needs it (it falls
+    /// back to the whole system) for one with them.
+    whole: OnceLock<(Assembly, SparseJacobian)>,
+    /// With classes of aliased parameters (see [`crate::alias`]): which
+    /// rows they absorb, the layout over the classes and its step space.
+    classes: Option<ClassPlan>,
+}
+
+/// The part of a [`Plan`] for a component solved over classes.
+struct ClassPlan {
+    /// Per equation, whether its classes absorb it (the same at every
+    /// solve: it depends on the structure only, not on the offsets).
+    absorbed: Vec<bool>,
+    assembly: Assembly,
+    pattern: SparseJacobian,
+    space: ClassSpace,
+}
+
+impl Plan {
+    /// The plan of the constraints `group`, and the classes found at
+    /// `params` while making it (for the solve at hand to use).
+    fn new<E: Equations + ?Sized>(
+        eqs: &E,
+        group: &[usize],
+        params: &[f64],
+        fixed: &[bool],
+        scratch: &mut Vec<SparseRow>,
+    ) -> (Self, Option<Classes>) {
+        let listing = Listing::new(eqs, group, params, scratch);
+        let touched = listing.touched.clone();
+        let classes = Aliases::classes_of(eqs, group, &touched, params, fixed);
+        let whole = OnceLock::new();
+        let plan = match &classes {
+            Some(classes) => {
+                let (assembly, pattern) = Assembly::lay_out(listing, fixed, Some(classes));
+                let space = ClassSpace::new(classes, &assembly.free, fixed);
+                Some(ClassPlan {
+                    absorbed: classes.absorbed.clone(),
+                    assembly,
+                    pattern,
+                    space,
+                })
+            }
+            None => {
+                let _ = whole.set(Assembly::lay_out(listing, fixed, None));
+                None
+            }
+        };
+        (
+            Self {
+                touched,
+                whole,
+                classes: plan,
+            },
+            classes,
+        )
+    }
+
+    /// The layout over every free parameter of the constraints `group`
+    /// (listed afresh if the plan does not have it: what an equation lists
+    /// does not depend on `params`).
+    fn whole<E: Equations + ?Sized>(
+        &self,
+        eqs: &E,
+        group: &[usize],
+        params: &[f64],
+        fixed: &[bool],
+        scratch: &mut Vec<SparseRow>,
+    ) -> &(Assembly, SparseJacobian) {
+        self.whole.get_or_init(|| {
+            Assembly::lay_out(Listing::new(eqs, group, params, scratch), fixed, None)
+        })
+    }
+
+    /// [`Plan::whole`], taken out of a plan that is not kept.
+    fn into_whole<E: Equations + ?Sized>(
+        self,
+        eqs: &E,
+        group: &[usize],
+        params: &[f64],
+        fixed: &[bool],
+        scratch: &mut Vec<SparseRow>,
+    ) -> (Assembly, SparseJacobian) {
+        match self.whole.into_inner() {
+            Some(whole) => whole,
+            None => Assembly::lay_out(Listing::new(eqs, group, params, scratch), fixed, None),
+        }
+    }
+}
+
+/// The connected components of a system and the [`Plan`] of each, made at
+/// a component's first solve. Valid while the structure of the system does
+/// not change; the owner keys it by its topology revision.
+pub(crate) struct Plans {
+    components: Vec<Vec<usize>>,
+    /// Per constraint, the component it belongs to (`usize::MAX` for none).
+    component_of: Vec<usize>,
+    plans: Vec<OnceLock<Plan>>,
+}
+
+impl Plans {
+    /// The components of `eqs` at `params`, with no plan made yet.
+    pub(crate) fn new<E: Equations + ?Sized>(eqs: &E, params: &[f64]) -> Self {
+        let components = components(eqs, params);
+        let mut component_of = vec![usize::MAX; eqs.constraint_count()];
+        for (ordinal, group) in components.iter().enumerate() {
+            for &i in group {
+                component_of[i] = ordinal;
+            }
+        }
+        let plans = components.iter().map(|_| OnceLock::new()).collect();
+        Self {
+            components,
+            component_of,
+            plans,
+        }
+    }
+
+    /// The components, as [`components`] gives them.
+    pub(crate) fn components(&self) -> &[Vec<usize>] {
+        &self.components
+    }
+
+    /// The slot of the plan of the component `group` belongs to.
+    fn slot(&self, group: &[usize]) -> Option<&OnceLock<Plan>> {
+        let ordinal = *self.component_of.get(*group.first()?)?;
+        self.plans.get(ordinal)
+    }
+}
+
 /// Solve one connected subsystem: only the free parameters its constraints
 /// touch may move.
 ///
 /// The equations that only alias one parameter to another or to a value
-/// are eliminated first (see [`crate::alias`]): the parameters are put where those
-/// equations say, and the solve runs over one column per class of
+/// are eliminated first (see [`crate::alias`]): the parameters are put where
+/// those equations say, and the solve runs over one column per class of
 /// parameters still unknown. If that solve does not converge, the
 /// parameters are put back and the component is solved over every
 /// parameter, as without the elimination.
+///
+/// What depends on the structure alone comes from the component's [`Plan`]
+/// in `plans`, made now if it is not there yet; without `plans` it is made
+/// for this solve and dropped.
 fn solve_one<E: Equations + ?Sized>(
     eqs: &E,
     group: &[usize],
+    plans: Option<&Plans>,
     params: &mut [f64],
     fixed: &[bool],
     options: &CoreOptions,
 ) -> Solved {
     let mut scratch: Vec<SparseRow> = Vec::new();
-    let listing = Listing::new(eqs, group, params, &mut scratch);
     let unit = equation_unit(eqs.length_scale(group, params));
+    // A plan that is kept, or one made for this solve alone (which the
+    // solve may then take apart instead of copying from).
+    let mut local: Option<Plan> = None;
+    let mut fresh: Option<Classes> = None;
+    let kept: Option<&Plan> = match plans.and_then(|plans| plans.slot(group)) {
+        Some(slot) => Some(match slot.get() {
+            Some(plan) => plan,
+            None => {
+                let (made, classes) = Plan::new(eqs, group, params, fixed, &mut scratch);
+                fresh = classes;
+                // Components are solved once each per call, so nobody else
+                // fills this slot meanwhile; if somebody did, theirs is the
+                // same plan.
+                let _ = slot.set(made);
+                slot.get().expect("the plan was just set")
+            }
+        }),
+        None => {
+            let (made, classes) = Plan::new(eqs, group, params, fixed, &mut scratch);
+            fresh = classes;
+            local = Some(made);
+            None
+        }
+    };
+    let plan: &Plan = kept.unwrap_or_else(|| local.as_ref().expect("made above"));
+    let touched_owned = plan.touched.clone();
+    let touched = &touched_owned;
+
+    // One-shot integration check (debug builds): the analytic assembly
+    // must agree with central differences at the starting point, over
+    // every parameter and before anything moves. The exhaustive
+    // per-variant gates live with the constraint definitions; this catches
+    // per-call assembly bugs (column mapping, mask filtering).
+    #[cfg(debug_assertions)]
+    if equation_total(eqs, group) > 0 && eqs.debug_check_jacobian() {
+        let (assembly, pattern) = plan.whole(eqs, group, params, fixed, &mut scratch);
+        let free = &assembly.free;
+        if !free.is_empty() {
+            let space = eqs.step_space(free);
+            let mut build = |p: &[f64], j: &mut SparseJacobian| {
+                assembly.assemble(eqs, group, p, j, &mut scratch);
+            };
+            debug_check_jacobian(eqs, group, params, free, &*space, pattern, &mut build);
+        }
+    }
+
     // A start that is not a number is reported as it stands (`Diverged`),
     // not mended by putting the parameters where their classes say.
-    let finite = listing.touched.iter().all(|&p| params[p].is_finite());
-    let classes = if finite {
-        Aliases::classes_of(eqs, group, &listing.touched, params, fixed)
-    } else {
-        None
-    };
-    let listing = match classes {
-        Some(classes) => {
-            let movable: Vec<usize> = listing
-                .touched
-                .iter()
-                .copied()
-                .filter(|&p| !fixed[p])
-                .collect();
+    let finite = touched.iter().all(|&p| params[p].is_finite());
+    if let (true, Some(class_plan)) = (finite, &plan.classes) {
+        // The offsets and the known values follow the dimensions, so the
+        // classes are found afresh; what they absorb does not change.
+        let classes = fresh.or_else(|| Aliases::classes_of(eqs, group, touched, params, fixed));
+        if let Some(classes) = classes {
+            debug_assert_eq!(classes.absorbed, class_plan.absorbed);
+            let movable: Vec<usize> = touched.iter().copied().filter(|&p| !fixed[p]).collect();
             let start: Vec<f64> = movable.iter().map(|&p| params[p]).collect();
-
-            // The debug check of the Jacobian is made over every parameter,
-            // before anything moves.
-            #[cfg(debug_assertions)]
-            if eqs.debug_check_jacobian() {
-                let (assembly, pattern) = Assembly::new(eqs, group, params, fixed, &mut scratch);
-                let free = &assembly.free;
-                if !free.is_empty() {
-                    let space = eqs.step_space(free);
-                    let mut build = |p: &[f64], j: &mut SparseJacobian| {
-                        assembly.assemble(eqs, group, p, j, &mut scratch);
-                    };
-                    debug_check_jacobian(eqs, group, params, free, &*space, &pattern, &mut build);
-                }
-            }
-
             classes.snap(params, fixed);
-            let touched = listing.touched.clone();
-            let (assembly, pattern) = Assembly::lay_out(listing, fixed, Some(&classes));
-            let space = ClassSpace::new(&classes, &assembly.free, fixed);
+            let space = &class_plan.space;
             let mut columns = |p: &[f64], out: &mut [f64]| {
                 out.fill(0.0);
                 for (&member, &k) in space.storage().iter().zip(space.columns()) {
@@ -840,9 +1055,9 @@ fn solve_one<E: Equations + ?Sized>(
                 eqs,
                 group,
                 params,
-                &space,
-                &assembly,
-                pattern,
+                space,
+                &class_plan.assembly,
+                class_plan.pattern.clone(),
                 &mut columns,
                 unit,
                 &mut scratch,
@@ -853,35 +1068,32 @@ fn solve_one<E: Equations + ?Sized>(
                     result,
                     #[cfg(feature = "rayon")]
                     moved: movable,
-                    touched,
+                    touched: touched_owned,
                 };
             }
             for (&p, &v) in movable.iter().zip(&start) {
                 params[p] = v;
             }
-            Listing::new(eqs, group, params, &mut scratch)
         }
-        None => listing,
-    };
-
-    let (assembly, pattern) = Assembly::lay_out(listing, fixed, None);
-    // Only this component's own free columns move: the Newton loop's free
-    // list is exactly its movable coordinates.
-    let free = &assembly.free;
-    let space = eqs.step_space(free);
-
-    // One-shot integration check (debug builds): the analytic assembly
-    // must agree with central differences at the starting point. The
-    // exhaustive per-variant gates live with the constraint definitions;
-    // this catches per-call assembly bugs (column mapping, mask filtering).
-    #[cfg(debug_assertions)]
-    if equation_total(eqs, group) > 0 && !free.is_empty() && eqs.debug_check_jacobian() {
-        let mut build = |p: &[f64], j: &mut SparseJacobian| {
-            assembly.assemble(eqs, group, p, j, &mut scratch);
-        };
-        debug_check_jacobian(eqs, group, params, free, &*space, &pattern, &mut build);
     }
 
+    // Only this component's own free columns move: the Newton loop's free
+    // list is exactly its movable coordinates.
+    let owned: Assembly;
+    let (assembly, pattern) = match (kept, local.take()) {
+        (Some(plan), _) => {
+            let (assembly, pattern) = plan.whole(eqs, group, params, fixed, &mut scratch);
+            (assembly, pattern.clone())
+        }
+        (None, Some(plan)) => {
+            let (assembly, pattern) = plan.into_whole(eqs, group, params, fixed, &mut scratch);
+            owned = assembly;
+            (&owned, pattern)
+        }
+        (None, None) => unreachable!("a plan is kept or made"),
+    };
+    let free = &assembly.free;
+    let space = eqs.step_space(free);
     let mut columns = |p: &[f64], out: &mut [f64]| {
         for (magnitude, &column) in out.iter_mut().zip(free) {
             *magnitude = eqs.column_magnitude(column, p);
@@ -892,7 +1104,7 @@ fn solve_one<E: Equations + ?Sized>(
         group,
         params,
         &*space,
-        &assembly,
+        assembly,
         pattern,
         &mut columns,
         unit,
@@ -903,7 +1115,7 @@ fn solve_one<E: Equations + ?Sized>(
         result,
         #[cfg(feature = "rayon")]
         moved: space.storage().to_vec(),
-        touched: assembly.touched,
+        touched: touched_owned,
     }
 }
 
@@ -1382,10 +1594,10 @@ pub(crate) mod parallel_tests {
     ) {
         let options = CoreOptions::from(&crate::SolveOptions::default());
         let mut in_turn = start.to_vec();
-        let a = solve_in_turn(eqs, &mut in_turn, fixed, groups, &options);
+        let a = solve_in_turn(eqs, &mut in_turn, fixed, None, groups, &options);
         let runs: Vec<&[&[usize]]> = groups.chunks(1).collect();
         let mut parallel = start.to_vec();
-        let b = solve_in_parallel(eqs, &mut parallel, fixed, &runs, &options);
+        let b = solve_in_parallel(eqs, &mut parallel, fixed, None, &runs, &options);
         assert_ne!(bits(&in_turn), bits(start), "the start must need solving");
         assert_eq!(bits(&in_turn), bits(&parallel));
         assert_eq!(a.len(), b.len());

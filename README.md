@@ -114,7 +114,11 @@ sk.validate()?;                           // wrong kinds, dangling references
 
 `sk.topology_revision()` changes only when the structure does (something
 added, removed, enabled, suppressed or fixed), not when a value or the
-geometry changes, so structure-derived data can be cached against it.
+geometry changes, so structure-derived data can be cached against it. The
+2D `Sketch` does so itself: it keeps its components and the layout of each
+one's solve while the revision holds, so re-solving the same sketch (or a
+clone of a solved one) after a dimension edit or a drag skips that work;
+the result is the same, bit for bit.
 
 An assembly (`rigid3d::ConstraintSystem`) is edited the same way, with
 `remove_component` in place of `remove_entity`. It holds no poses, so

@@ -455,6 +455,25 @@ through them from a host's side.
 
 ### Performance
 
+- **A 2D sketch re-solved after a dimension edit or a drag takes about
+  half the time.** Of a re-solve after the elimination of trivial
+  equations, most was work that depends on the structure alone: splitting
+  the system into components, listing the columns of every equation,
+  laying out the Jacobian and the step space of the alias classes (32–72%
+  on four rectangle fixtures, measured with temporary timers). A `Sketch`
+  now keeps all of that between solves (`system::Plans`, behind an `Arc`
+  so that a clone shares it) while its topology revision and its entity
+  list are unchanged, and recomputes only what follows the values: the
+  offsets of the classes, the size of each component, the Newton loop.
+  The results are bitwise those of a solve that keeps nothing (every one
+  of the 20 865 solves of the test suite compared). Re-solving a chain of
+  3, 11 and 44 rectangles takes 49%, 50% and 40% less (0.040 → 0.021 ms,
+  0.148 → 0.073 ms, 0.768 → 0.461 ms); a first solve costs the same as
+  before (−4% to +2.4%). The layout's column map now spans only the
+  columns a component touches rather than every column up to its highest,
+  which a kept layout of one of 200 small components had made a few
+  hundred times too large. The 3D and rigid-pose families do not keep
+  anything yet.
 - **2D solves of sketches built from coincidences, fixed points and
   horizontal / vertical lines are many times faster**, because those
   equations are eliminated before the solve (see "Changed"). The

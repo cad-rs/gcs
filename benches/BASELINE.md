@@ -462,6 +462,34 @@ and the 3D truss lost in all three rounds was not looked for; differences
 of this size between builds of unchanged code have been seen on these
 fixtures before (P2.2, P2.7 above).
 
+### After a 2D sketch began keeping its structure between solves (P3.4)
+
+Same machine, the previous commit (`491d1cc`) and this change alternately,
+three rounds each, medians. The 2D solves and the assembly solves are from
+a run of the final code; the diagnosis and 3D rows from a run of the
+version just before it (the same apart from not keeping a copy of each
+component's column listing), which moved them by −1.6% to +3.6% except
+`assembly/diagnose_star/5` and `/40` (+8.4%, +4.6%, all three rounds).
+Those two were not measured again with the final code, and why they
+moved was not looked into.
+
+| Benchmark | before | after | change |
+|---|---:|---:|---:|
+| `sketch/resolve_chain/54` | 0.0403 ms | 0.0206 ms | −49% |
+| `sketch/resolve_chain/198` | 0.148 ms | 0.0732 ms | −50% |
+| `sketch/resolve_chain/792` | 0.768 ms | 0.461 ms | −40% |
+| `sketch/solve_chain/54`, `/198`, `/792` | | | +2.1%, +1.0%, +0.2% |
+| `sketch/solve_field/360`, `/3600` | | | +2.4%, −4.0% |
+| `assembly/solve_chain/*`, `assembly/solve_star/*` | | | −3.0% to +2.5% |
+
+`resolve_chain` solves a sketch that was solved once before it was
+copied, so the copy carries the kept structure; `solve_chain` and
+`solve_field` solve a sketch that never was, and pay for making it. A
+first version of this change made a cold `solve_field/3600` 33% slower:
+each kept layout held a column map as long as the highest column of the
+component, a few thousand entries for each of 200 components of 18. It
+now spans only the component's own columns.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.

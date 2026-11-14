@@ -190,11 +190,15 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   nothing fails a change that makes them worse yet. Wall-clock gates on
   shared CI runners are noisy; a base-vs-head comparison in one job is the
   usual answer.
-- **Reuse across re-solves:** cache the Jacobian sparsity pattern and the
-  symbolic factorization between solves of the same system (parametric
-  re-solve is the common host pattern). Within one solve the pattern is
-  laid out once already (compressed sparse rows, `system::Assembly`); it is
-  rebuilt for the next solve.
+- **Reuse across re-solves, beyond 2D.** A 2D sketch keeps its components
+  and, per component, the columns its equations list, its layouts and the
+  step space of its alias classes from one solve to the next while its
+  topology revision and entity list hold (`system::Plans`). Not yet: the
+  3D-geometric family and assemblies rebuild all of it every solve; what
+  depends on the dimension values is still recomputed every time (the
+  offsets of the alias classes, the size of each component, the
+  diagnosis); and there is no symbolic factorisation to keep, the
+  factorisation being dense.
 - **The remaining allocations of an iteration.** Each step still allocates
   its normal matrix (one buffer) and a few vectors of length n (gradient,
   steps, trial residuals, saved parameters): 359 allocations in all on the
