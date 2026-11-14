@@ -152,9 +152,7 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
 - **What-if.** `what_if().would_add()` agrees with the diagnosis on every
   candidate tried (2D corpus, an assembly sample, 3D fixtures). Left: it
   does not apply the witness of `status()` (a redundant answer may be
-  singular there) nor the removability test; a grounding `Fixed` in an
-  assembly reads as `Redundant` by the rank rule (`removes` says what it
-  takes); a candidate on a large component pays a dense projection
+  singular there) nor the removability test; a candidate on a large component pays a dense projection
   (rank × columns) and the first question a full factorisation plus an
   orthonormal basis.
 - **Conflict localization.** `conflicts()` (all three families) gives

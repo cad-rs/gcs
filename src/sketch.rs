@@ -823,7 +823,7 @@ impl WhatIf<'_> {
         constraints.push(constraint.clone());
         let with = SketchEquations::with_states(&sk.entities, &constraints, &sk.states);
         self.spaces
-            .would_add(&with, &sk.fixed, sk.constraints.len(), false)
+            .would_add(&with, &sk.fixed, sk.constraints.len())
     }
 }
 

@@ -400,8 +400,8 @@ through them from a host's side.
   picks its rows — the component poorly conditioned or already
   inconsistent, a row within a factor of the rank tolerance or of a
   classification threshold — and where the candidate changes more than
-  rows (an assembly `Fixed` that grounds a body, effective columns that
-  change, a component with nothing free), the components it touches are
+  rows (held columns that differ, effective columns that change, a
+  component with nothing free), the components it touches are
   diagnosed exactly instead. On the 2D corpus 10 096 candidates of every
   kind (dimensions at their measured values and off them) and on a
   sample of the assembly corpus 1 443 get the diagnosis's answer, as do

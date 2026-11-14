@@ -107,11 +107,6 @@ struct Evaluation {
 impl<'a> RigidEquations<'a> {
     /// Every body is an unknown and every constraint an equation — the
     /// view the diagnosis takes.
-    /// Per body, whether it is grounded (not an unknown).
-    pub(crate) fn grounded_bodies(&self) -> &[bool] {
-        &self.held
-    }
-
     pub(crate) fn new(system: &'a ConstraintSystem) -> Self {
         let alone = system
             .constraints

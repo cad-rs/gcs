@@ -320,3 +320,40 @@ fn pinning_a_cylinder_axis_point_takes_three_ranks_and_two_freedoms() {
     );
     assert_eq!(got, diagnosed_3d(&sk, &pin));
 }
+
+// ── assemblies ──────────────────────────────────────────────────────────────
+
+#[test]
+fn a_full_fixed_on_a_free_body_takes_its_six_freedoms() {
+    // In the diagnosis a Fixed with orientation is six equations on its
+    // body (grounding is how the solve treats it): on a free body it is
+    // independent and takes all six; on a body already fixed in full it
+    // only repeats.
+    use glam::{DQuat, DVec3};
+    use rcad_gcs::rigid3d::{diagnose_assembly, Constraint as Mate, ConstraintSystem};
+    let mut system = ConstraintSystem::with_components(2);
+    system.add_constraint(Mate::fixed_with_orientation(
+        0,
+        0,
+        DVec3::ZERO,
+        DQuat::IDENTITY,
+    ));
+    let pos = vec![DVec3::ZERO, DVec3::new(1.0, 2.0, 3.0)];
+    let rot = vec![DQuat::IDENTITY; 2];
+    let probe = rcad_gcs::rigid3d::assembly_what_if(&system, &pos, &rot);
+    let ground = Mate::fixed_with_orientation(1, 1, pos[1], rot[1]);
+    let before = diagnose_assembly(&system, &pos, &rot);
+    let mut with = system.clone();
+    with.add_constraint(ground);
+    let after = diagnose_assembly(&with, &pos, &rot);
+    assert_eq!(after.rank - before.rank, 6);
+    assert_eq!(
+        probe.would_add(&ground),
+        Addition {
+            verdict: Verdict::Independent,
+            removes: 6
+        }
+    );
+    let again = Mate::fixed_with_orientation(1, 0, DVec3::ZERO, DQuat::IDENTITY);
+    assert_eq!(probe.would_add(&again).verdict, Verdict::Redundant);
+}

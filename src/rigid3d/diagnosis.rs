@@ -266,12 +266,10 @@ pub fn what_if<'a>(
     positions: &[Point3],
     rots: &[DQuat],
 ) -> AssemblyWhatIf<'a> {
-    let eqs = RigidEquations::new(system);
     AssemblyWhatIf {
         system,
-        grounded: eqs.grounded_bodies().to_vec(),
         spaces: crate::whatif::RowSpaces::new(
-            eqs,
+            RigidEquations::new(system),
             pack(positions, rots),
             system.held_columns(),
             NoGauge,
@@ -282,22 +280,19 @@ pub fn what_if<'a>(
 /// A what-if probe of an assembly (see [`what_if`]).
 pub struct AssemblyWhatIf<'a> {
     system: &'a ConstraintSystem,
-    grounded: Vec<bool>,
     spaces: crate::whatif::RowSpaces<RigidEquations<'a>, NoGauge>,
 }
 
 impl AssemblyWhatIf<'_> {
     /// What adding `constraint` would do, as [`diagnose`] would have it
-    /// with the constraint added (see [`crate::WhatIf::would_add`]). A
-    /// `Fixed` that grounds a body changes which columns are unknowns: it
-    /// is diagnosed exactly on the clusters it touches.
+    /// with the constraint added (see [`crate::WhatIf::would_add`]). As in
+    /// the diagnosis, a full `Fixed` (with orientation) is six equations on
+    /// its body: on a free body it is independent and takes six freedoms.
     pub fn would_add(&self, constraint: &crate::rigid3d::Constraint) -> crate::whatif::Addition {
         let mut with = self.system.clone();
         let slot = with.add_constraint(*constraint);
-        let eqs = RigidEquations::new(&with);
-        let grounds = eqs.grounded_bodies() != self.grounded.as_slice();
         self.spaces
-            .would_add(&eqs, &with.held_columns(), slot, grounds)
+            .would_add(&RigidEquations::new(&with), &with.held_columns(), slot)
     }
 }
 

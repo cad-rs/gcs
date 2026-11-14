@@ -19,11 +19,10 @@
 //! name now, [`Verdict::PartiallyRedundant`] likewise for the gray band,
 //! and [`Verdict::Redundant`] when neither.
 //!
-//! Candidates that change more than rows — an assembly `Fixed` that grounds
-//! a body (its columns are then held), a plane whose effective columns
-//! change because the candidate reaches a parameter of it the component
-//! did not, a component with nothing free — are diagnosed exactly on the
-//! components they touch instead. Either way the system itself is not
+//! Candidates that change more than rows — held columns that differ, a
+//! plane whose effective columns change because the candidate reaches a
+//! parameter of it the component did not, a component with nothing free —
+//! are diagnosed exactly on the components they touch instead. Either way the system itself is not
 //! touched. Like the diagnosis, the answer is at the current parameters:
 //! probe a solved system.
 
@@ -155,14 +154,11 @@ impl<E: Equations, G: Gauge> RowSpaces<E, G> {
     /// What adding constraint `candidate` of `with` — this system's
     /// equations with the candidate appended, over the same columns, with
     /// the held columns `fixed_with` — would do.
-    /// `exact` asks for the exact test (the candidate changes more than
-    /// rows).
     pub(crate) fn would_add<W: Equations + ?Sized>(
         &self,
         with: &W,
         fixed_with: &[bool],
         candidate: usize,
-        exact: bool,
     ) -> Addition {
         let k = with.equation_count(candidate);
         if k == 0 {
@@ -179,12 +175,8 @@ impl<E: Equations, G: Gauge> RowSpaces<E, G> {
             .collect();
         merged.sort_unstable();
         merged.dedup();
-        let fast = if exact {
-            None
-        } else {
-            self.fast(with, fixed_with, candidate, &merged, &listed)
-        };
-        fast.unwrap_or_else(|| self.exact(with, fixed_with, candidate, &merged))
+        self.fast(with, fixed_with, candidate, &merged, &listed)
+            .unwrap_or_else(|| self.exact(with, fixed_with, candidate, &merged))
     }
 
     /// The incremental test; `None` when it does not apply.

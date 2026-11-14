@@ -1148,6 +1148,6 @@ impl SpaceWhatIf<'_> {
         constraints.push(constraint.clone());
         let with = SpaceEquations::with_states(&sk.entities, &constraints, &sk.states);
         self.spaces
-            .would_add(&with, &sk.fixed, sk.constraints.len(), false)
+            .would_add(&with, &sk.fixed, sk.constraints.len())
     }
 }

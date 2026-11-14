@@ -1271,7 +1271,7 @@ fn conflicts_match_the_labels() {
 // ── what-if (P4.5) ──────────────────────────────────────────────────────────
 
 /// Candidate mates between the first bodies of a system at a pose: each
-/// kind, dimensions at what they measure and off it, and a grounding.
+/// kind, dimensions at what they measure and off it, and a full Fixed.
 fn what_if_candidates(system: &ConstraintSystem, pos: &[DVec3], rot: &[DQuat]) -> Vec<Constraint> {
     let n = system.num_components.min(3);
     let local = |b: usize, world: DVec3| rot[b].inverse() * (world - pos[b]);
