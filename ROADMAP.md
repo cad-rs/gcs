@@ -37,6 +37,23 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   reduced solve fails is solved a second time over every parameter, so
   that it fails exactly as it used to: a conflicting sketch pays for two
   solves.
+- **Solving a component block by block.** A serial chain of constraints
+  (a 3D truss where each point hangs on the three before it) is solved
+  as one least-squares system, so an error early in the chain amplifies
+  along it: from a perturbation of 0.2 the solve lands on another
+  configuration or runs out of iterations (`tests/hard_cases.rs`). A
+  Dulmage–Mendelsohn decomposition and the strongly connected blocks of
+  its square part (Hopcroft–Karp, Tarjan) would solve such a chain three
+  unknowns at a time. It was built and measured (plan section 11, P3.2):
+  the truss comes back to where it was drawn at every length, in
+  milliseconds, but 2D got 1.5–3.6× slower (its blocks are one or two
+  unknowns after the elimination, and each block's setup dominates), two
+  inconsistently drawn circle chains settled with circles on the far side
+  of their neighbours, and predicting each block's start from the earlier
+  blocks' moves brought the truss's wrong configurations back. Not
+  adopted yet; the per-block cost and the choice of a block's starting
+  point (perhaps the root nearest the current configuration, solved in
+  closed form for small blocks) come first.
 - **Small geometry outside 2D solving.** A 2D component is solved at any
   size: every 2D equation is a length, and a component smaller than one
   unit is held to the tolerance in proportion to its size
