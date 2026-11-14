@@ -398,6 +398,11 @@ impl SparseJacobian {
         &self.cols[self.starts[r]..self.starts[r + 1]]
     }
 
+    /// The values of row `r`, one per entry of [`SparseJacobian::row_cols`].
+    pub(crate) fn row_values(&self, r: usize) -> &[f64] {
+        &self.vals[self.starts[r]..self.starts[r + 1]]
+    }
+
     /// The values, slot by slot (see [`SparseJacobian::row_start`]).
     pub(crate) fn values_mut(&mut self) -> &mut [f64] {
         &mut self.vals

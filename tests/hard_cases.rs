@@ -128,6 +128,23 @@ fn serial_trusses_converge_back() {
     }
 }
 
+/// From a large perturbation too. The serial truss falls into blocks of
+/// three unknowns, one per point, solved in order (P3.2); solved as one
+/// least-squares system it landed on other configurations tens of units
+/// away from 20 points on, and did not converge at 200.
+#[test]
+fn serial_trusses_come_back_from_a_large_perturbation() {
+    for points in [20usize, 80, 160, 260] {
+        let o = run(points, &[1, 2, 3], 0.2, 100);
+        assert!(o.converged, "{points} points: residual {:.3e}", o.residual);
+        assert!(
+            o.displacement < 1e-6,
+            "{points} points moved {:.3e}",
+            o.displacement
+        );
+    }
+}
+
 /// A needle triangle: `A` and `B` held 1 apart, `C` 2 from `A` and `1 + δ`
 /// from `B`. `C` then sits `≈ 2√δ` off the line `AB`, the two distance
 /// rows are nearly parallel (`κ(J) ≈ 1/(2√δ)`, squared in `JᵀJ`), and at

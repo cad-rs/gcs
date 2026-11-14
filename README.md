@@ -23,6 +23,11 @@ Each family reduces to `F(x) = 0` over a parameter vector:
    place and move as one, and only the remaining equations are iterated
    on. An equation that closes a cycle of them is kept and checked like
    any other, and the diagnosis still reads the full system;
+   what is left is matched equation to unknown and split into blocks
+   (Dulmage–Mendelsohn, then strongly connected components), solved one
+   after the other with the earlier ones held — a serial chain becomes a
+   string of small solves; a block that fails sends the component back to
+   a solve of the whole;
 3. residuals and **analytic** Jacobian rows come from the constraint set —
    a CI test keeps every derivative in lockstep with its residual by
    comparing against finite differences; no row is finite-differenced in

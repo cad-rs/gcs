@@ -273,6 +273,37 @@ impl ClassSpace {
         }
     }
 
+    /// [`ClassSpace::new`] for a few of the classes, found through
+    /// `members` — every free member of an unknown class as `(root,
+    /// member)`, sorted — rather than by going through every parameter.
+    pub(crate) fn of_roots(members: &[(usize, usize)], roots: &[usize]) -> Self {
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        for (k, &root) in roots.iter().enumerate() {
+            let from = members.partition_point(|&(r, _)| r < root);
+            let to = members.partition_point(|&(r, _)| r <= root);
+            pairs.extend(members[from..to].iter().map(|&(_, p)| (p, k)));
+        }
+        pairs.sort_unstable();
+        Self {
+            storage: pairs.iter().map(|&(p, _)| p).collect(),
+            column: pairs.iter().map(|&(_, k)| k).collect(),
+            dim: roots.len(),
+        }
+    }
+
+    /// Every free member of an unknown class of `classes`, as `(root,
+    /// member)`, sorted (for [`ClassSpace::of_roots`]).
+    pub(crate) fn members(classes: &Classes, fixed: &[bool]) -> Vec<(usize, usize)> {
+        let mut members: Vec<(usize, usize)> = classes
+            .touched
+            .iter()
+            .filter(|&&p| !fixed[p] && !classes.is_known(p))
+            .map(|&p| (classes.root_of(p), p))
+            .collect();
+        members.sort_unstable();
+        members
+    }
+
     /// Per member of [`StepSpace::storage`], its column.
     pub(crate) fn columns(&self) -> &[usize] {
         &self.column

@@ -262,6 +262,33 @@ through them from a host's side.
   coordinate that is not a number is still reported `Diverged` (the
   elimination is skipped, rather than mending it). The 3D and rigid-pose
   families are unchanged.
+- **A component that falls into blocks is solved one block after the
+  other** (2D and 3D-geometric; `src/structure.rs`). What a component's
+  solve iterates on (after the elimination above) is matched equation to
+  unknown (Hopcroft–Karp) and split into its Dulmage–Mendelsohn parts: an
+  over-determined part, solved first; the square part, cut into its
+  strongly connected blocks (Tarjan) and solved in the order they depend on
+  each other, each block for its own unknowns with those before it held;
+  an under-determined part, solved last for the smallest change. A square
+  block of up to three unknowns is solved by plain Newton steps on its
+  dense Jacobian from where it stands, larger ones by the general loop; a
+  block that does not converge sends the component back to where it
+  started and to the solve of the whole system, so a failing solve ends as
+  before. The layout of every block is kept with the component's plan.
+  What a host sees: a serial 3D truss perturbed by 0.2 now comes back to
+  where it was drawn at every length tried (it landed on configurations
+  3–72 units away from 20 points on and did not converge at 200 and 260,
+  taking up to 27 s; now at most 2 ms). On the 2D corpus the large-drift
+  branch flips go from 5 to 3 and the worst large drift from 9.0 to 4.5;
+  but two chains of tangent circles drawn with the wrong spacing
+  (`circle-chain-k7`, `-k8`), which must move a long way, now settle with
+  some circles on the far side of their neighbour — the solution nearer to
+  where each circle was drawn (total displacement 4.2 instead of 6.0 and
+  9.6), where solving everything at once had kept the chain in order.
+  `SolveResult::iterations` is the sum over the blocks, so it can exceed
+  `max_iterations`, which bounds each block's loop. Assemblies are never
+  split (their equations outnumber their freedoms structurally), and
+  neither is a braced 3D truss.
 
 ### Added
 
@@ -455,6 +482,17 @@ through them from a host's side.
 
 ### Performance
 
+- **Re-solving a 2D sketch made of small blocks is faster again; the
+  first solve after a change of structure is slower.** With the blocks
+  laid out once in the kept plan and solved by a few dense Newton steps
+  each, re-solving a chain of 3, 11 and 44 rectangles takes 44%, 46% and
+  67% less (0.021 → 0.012 ms, 0.073 → 0.040 ms, 0.472 → 0.158 ms). A
+  first solve pays for the decomposition and the layout of every block:
+  +25% for chains of 3 and 11 rectangles, +18% and +22% for fields of 20
+  and 200, −9% for the chain of 44. The 3D and assembly benchmarks are not
+  split and stay within −2.6% to +4.3% (the smallest assembly fixtures
+  +7.5% and +8.8%, a size they have moved by before on changes that did
+  not touch them; not looked into).
 - **A 2D sketch re-solved after a dimension edit or a drag takes about
   half the time.** Of a re-solve after the elimination of trivial
   equations, most was work that depends on the structure alone: splitting

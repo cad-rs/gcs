@@ -24,6 +24,7 @@ use crate::numerics::{
     self, gt, householder_qr_column_pivoting, le, solve_normal_equations, AdditiveSpace,
     CoreOptions, RowSpaceGram, SolveResult, SolveStatus, SparseJacobian, StepSpace, LAMBDA,
 };
+use crate::structure;
 
 /// A sparse row or direction: `(parameter or column index, value)` pairs.
 pub(crate) type SparseRow = Vec<(usize, f64)>;
@@ -91,6 +92,13 @@ pub(crate) trait Equations: SharedAcrossThreads {
     /// default — column `i` is parameter `i`.
     fn step_space(&self, free: &[usize]) -> Box<dyn StepSpace + '_> {
         Box::new(AdditiveSpace::new(free.to_vec()))
+    }
+
+    /// Whether [`Equations::step_space`] is the additive one, column `i`
+    /// being parameter `i`: then a component can be solved in parts (see
+    /// [`crate::structure`]), each over some of its parameters.
+    fn steps_are_additive(&self) -> bool {
+        true
     }
 
     /// The size of the quantity that column `column` steps, for judging
@@ -187,12 +195,32 @@ struct Assembly {
     col_of: Vec<usize>,
     /// The column `col_of[0]` is for: the lowest one touched.
     col_base: usize,
+    /// Per listed row, its row of the pattern, or [`HELD`] for a row the
+    /// [`Shape`] leaves out.
+    pattern_row: Vec<usize>,
     /// Row `r` lists entries `entry_starts[r]..entry_starts[r + 1]`.
     entry_starts: Vec<usize>,
     /// The column of each listed entry, as the layout saw it.
     listed: Vec<usize>,
     /// The slot of each listed entry in the values, or [`HELD`].
     slots: Vec<usize>,
+}
+
+/// What an [`Assembly`] lays out, beyond one column per free parameter
+/// and one row per equation.
+#[derive(Clone, Copy, Default)]
+struct Shape<'a> {
+    /// One column per unknown class of these, each member's entries summed
+    /// into it; the parameters of a known class are held.
+    classes: Option<&'a Classes>,
+    /// Rows laid out with no entries (they still have residuals): the
+    /// absorbed ones.
+    empty: Option<&'a [bool]>,
+    /// The rows laid out at all; the others are not part of the Jacobian.
+    keep: Option<&'a [bool]>,
+    /// The only columns that may be free, by key (the class root, or the
+    /// parameter), ascending; any other is held.
+    columns: Option<&'a [usize]>,
 }
 
 /// The columns each equation of a component lists, the first pass of an
@@ -234,81 +262,94 @@ impl Listing {
 
 impl Assembly {
     /// Lay out the Jacobian of `listing` over the columns `fixed` does not
-    /// hold; with `classes`, over one column per unknown class that an
-    /// equation not absorbed touches, each member's entries summed into it
-    /// and the absorbed rows left empty.
-    fn lay_out(
-        listing: Listing,
-        fixed: &[bool],
-        classes: Option<&Classes>,
-    ) -> (Self, SparseJacobian) {
+    /// hold, in the [`Shape`] `shape`.
+    fn lay_out(listing: Listing, fixed: &[bool], shape: Shape<'_>) -> (Self, SparseJacobian) {
         let Listing {
             entry_starts,
             listed,
             touched,
         } = listing;
+        let n_listed_rows = entry_starts.len() - 1;
+        let empty = |r: usize| shape.empty.is_some_and(|empty| empty[r]);
+        let kept = |r: usize| shape.keep.is_none_or(|keep| keep[r]);
+        // The key of a free column: its class root, or itself.
+        let key = |c: usize| match shape.classes {
+            Some(classes) if classes.is_known(c) => None,
+            Some(classes) => Some(classes.root_of(c)),
+            None => Some(c),
+        };
+        let allowed = |k: usize| {
+            shape
+                .columns
+                .is_none_or(|cols| cols.binary_search(&k).is_ok())
+        };
+        let free_key = |c: usize| {
+            if fixed[c] {
+                return None;
+            }
+            key(c).filter(|&k| allowed(k))
+        };
+
         // Over the span of the touched columns only: a component of a large
         // system touches a few columns far from zero.
         let col_base = touched.first().copied().unwrap_or(0);
         let mut col_of = vec![HELD; touched.last().map_or(0, |&c| c + 1 - col_base)];
-        let free: Vec<usize> = match classes {
-            None => {
-                let free: Vec<usize> = touched.iter().copied().filter(|&c| !fixed[c]).collect();
-                for (k, &c) in free.iter().enumerate() {
-                    col_of[c - col_base] = k;
-                }
-                free
+        let free: Vec<usize> = if shape.classes.is_none() && shape.columns.is_none() {
+            let free: Vec<usize> = touched.iter().copied().filter(|&c| !fixed[c]).collect();
+            for (k, &c) in free.iter().enumerate() {
+                col_of[c - col_base] = k;
             }
-            Some(classes) => {
-                let mut roots: Vec<usize> = Vec::new();
-                for (r, span) in entry_starts.windows(2).enumerate() {
-                    if classes.absorbed[r] {
-                        continue;
-                    }
-                    roots.extend(
-                        listed[span[0]..span[1]]
-                            .iter()
-                            .filter(|&&c| !fixed[c] && !classes.is_known(c))
-                            .map(|&c| classes.root_of(c)),
-                    );
+            free
+        } else {
+            // The keys that a laid-out row touches.
+            let mut keys: Vec<usize> = Vec::new();
+            for (r, span) in entry_starts.windows(2).enumerate() {
+                if empty(r) || !kept(r) {
+                    continue;
                 }
-                roots.sort_unstable();
-                roots.dedup();
-                for &c in &touched {
-                    if fixed[c] || classes.is_known(c) {
-                        continue;
-                    }
-                    if let Ok(k) = roots.binary_search(&classes.root_of(c)) {
-                        col_of[c - col_base] = k;
-                    }
-                }
-                roots
+                keys.extend(listed[span[0]..span[1]].iter().filter_map(|&c| free_key(c)));
             }
+            keys.sort_unstable();
+            keys.dedup();
+            for &c in &touched {
+                if let Some(k) = free_key(c) {
+                    if let Ok(at) = keys.binary_search(&k) {
+                        col_of[c - col_base] = at;
+                    }
+                }
+            }
+            keys
         };
 
-        // Per row, its free columns ascending and each once, written
-        // straight into the pattern's column list.
+        // Per laid-out row, its free columns ascending and each once,
+        // written straight into the pattern's column list.
+        let mut pattern_row = vec![HELD; n_listed_rows];
         let mut starts = Vec::with_capacity(entry_starts.len());
         let mut cols: Vec<usize> = Vec::with_capacity(listed.len());
         starts.push(0);
         for (r, span) in entry_starts.windows(2).enumerate() {
+            if !kept(r) {
+                continue;
+            }
+            pattern_row[r] = starts.len() - 1;
             let begin = cols.len();
-            let absorbed = classes.is_some_and(|classes| classes.absorbed[r]);
-            cols.extend(
-                listed[span[0]..span[1]]
-                    .iter()
-                    .map(|&c| if absorbed { HELD } else { col_of[c - col_base] })
-                    .filter(|&k| k != HELD),
-            );
+            if !empty(r) {
+                cols.extend(
+                    listed[span[0]..span[1]]
+                        .iter()
+                        .map(|&c| col_of[c - col_base])
+                        .filter(|&k| k != HELD),
+                );
+            }
             cols[begin..].sort_unstable();
-            let mut kept = begin;
+            let mut unique = begin;
             for at in begin..cols.len() {
-                if kept == begin || cols[at] != cols[kept - 1] {
-                    cols[kept] = cols[at];
-                    kept += 1;
+                if unique == begin || cols[at] != cols[unique - 1] {
+                    cols[unique] = cols[at];
+                    unique += 1;
                 }
             }
-            cols.truncate(kept);
+            cols.truncate(unique);
             starts.push(cols.len());
         }
         let pattern = SparseJacobian::from_parts(free.len(), starts, cols);
@@ -318,13 +359,13 @@ impl Assembly {
             col_base,
             entry_starts,
             listed,
+            pattern_row,
             slots: Vec::new(),
         };
         let mut slots = Vec::with_capacity(assembly.listed.len());
-        for r in 0..pattern.n_rows() {
-            let absorbed = classes.is_some_and(|classes| classes.absorbed[r]);
+        for r in 0..n_listed_rows {
             for e in assembly.entry_starts[r]..assembly.entry_starts[r + 1] {
-                slots.push(if absorbed {
+                slots.push(if empty(r) {
                     HELD
                 } else {
                     assembly.slot(&pattern, r, assembly.listed[e])
@@ -335,22 +376,27 @@ impl Assembly {
         (assembly, pattern)
     }
 
-    /// The slot of column `column` in row `r` of `pattern`, or [`HELD`].
+    /// The slot of column `column` in listed row `r`, or [`HELD`].
     fn slot(&self, pattern: &SparseJacobian, r: usize, column: usize) -> usize {
+        let row = self.pattern_row[r];
         let k = column
             .checked_sub(self.col_base)
             .and_then(|at| self.col_of.get(at))
             .copied()
             .unwrap_or(HELD);
-        if k == HELD {
+        if k == HELD || row == HELD {
             return HELD;
         }
-        match pattern.row_cols(r).binary_search(&k) {
-            Ok(at) => pattern.row_start(r) + at,
+        match pattern.row_cols(row).binary_search(&k) {
+            Ok(at) => pattern.row_start(row) + at,
             Err(_) => {
                 // Outside the layout: the constraint listed a column it did
-                // not list when the layout was made.
-                debug_assert!(false, "row {r} lists column {column} outside its pattern");
+                // not list when the layout was made (or the row was laid
+                // out empty).
+                debug_assert!(
+                    pattern.row_cols(row).is_empty(),
+                    "row {r} lists column {column} outside its pattern"
+                );
                 HELD
             }
         }
@@ -839,6 +885,9 @@ pub(crate) struct Plan {
     /// With classes of aliased parameters (see [`crate::alias`]): which
     /// rows they absorb, the layout over the classes and its step space.
     classes: Option<ClassPlan>,
+    /// The blocks the component falls into (see [`crate::structure`]),
+    /// when there are at least two and the family steps additively.
+    blocks: Option<Vec<BlockPlan>>,
 }
 
 /// The part of a [`Plan`] for a component solved over classes.
@@ -867,7 +916,15 @@ impl Plan {
         let whole = OnceLock::new();
         let plan = match &classes {
             Some(classes) => {
-                let (assembly, pattern) = Assembly::lay_out(listing, fixed, Some(classes));
+                let (assembly, pattern) = Assembly::lay_out(
+                    listing,
+                    fixed,
+                    Shape {
+                        classes: Some(classes),
+                        empty: Some(&classes.absorbed),
+                        ..Shape::default()
+                    },
+                );
                 let space = ClassSpace::new(classes, &assembly.free, fixed);
                 Some(ClassPlan {
                     absorbed: classes.absorbed.clone(),
@@ -877,15 +934,46 @@ impl Plan {
                 })
             }
             None => {
-                let _ = whole.set(Assembly::lay_out(listing, fixed, None));
+                let _ = whole.set(Assembly::lay_out(listing, fixed, Shape::default()));
                 None
             }
+        };
+        let blocks = if eqs.steps_are_additive() {
+            match (&plan, &classes) {
+                (Some(class_plan), Some(classes)) => block_plans(
+                    eqs,
+                    group,
+                    params,
+                    fixed,
+                    Some(classes),
+                    &class_plan.pattern,
+                    &class_plan.assembly.free,
+                    &classes.absorbed,
+                    scratch,
+                ),
+                _ => whole.get().and_then(|(assembly, pattern)| {
+                    block_plans(
+                        eqs,
+                        group,
+                        params,
+                        fixed,
+                        None,
+                        pattern,
+                        &assembly.free,
+                        &vec![false; pattern.n_rows()],
+                        scratch,
+                    )
+                }),
+            }
+        } else {
+            None
         };
         (
             Self {
                 touched,
                 whole,
                 classes: plan,
+                blocks,
             },
             classes,
         )
@@ -903,7 +991,11 @@ impl Plan {
         scratch: &mut Vec<SparseRow>,
     ) -> &(Assembly, SparseJacobian) {
         self.whole.get_or_init(|| {
-            Assembly::lay_out(Listing::new(eqs, group, params, scratch), fixed, None)
+            Assembly::lay_out(
+                Listing::new(eqs, group, params, scratch),
+                fixed,
+                Shape::default(),
+            )
         })
     }
 
@@ -918,7 +1010,11 @@ impl Plan {
     ) -> (Assembly, SparseJacobian) {
         match self.whole.into_inner() {
             Some(whole) => whole,
-            None => Assembly::lay_out(Listing::new(eqs, group, params, scratch), fixed, None),
+            None => Assembly::lay_out(
+                Listing::new(eqs, group, params, scratch),
+                fixed,
+                Shape::default(),
+            ),
         }
     }
 }
@@ -961,6 +1057,339 @@ impl Plans {
         let ordinal = *self.component_of.get(*group.first()?)?;
         self.plans.get(ordinal)
     }
+}
+
+/// One block of a component (see [`crate::structure`]), laid out for its
+/// own solve: its equations over its own columns, the rest held.
+struct BlockPlan {
+    /// The constraints its equations belong to, in the order of the group.
+    sub: Vec<usize>,
+    /// Per equation of `sub`, whether it is one of the block's.
+    keep: Vec<bool>,
+    /// How many are.
+    kept: usize,
+    assembly: Assembly,
+    pattern: SparseJacobian,
+    space: BlockSpace,
+}
+
+/// The step space of a block: over classes, or over plain parameters.
+enum BlockSpace {
+    Classes(ClassSpace),
+    Plain(AdditiveSpace),
+}
+
+impl BlockSpace {
+    fn space(&self) -> &dyn StepSpace {
+        match self {
+            BlockSpace::Classes(space) => space,
+            BlockSpace::Plain(space) => space,
+        }
+    }
+}
+
+/// The blocks of the component `group`, laid out on `pattern` (over the
+/// columns `keys`; rows `skip` marks are left out), or `None` when it does
+/// not fall into at least two.
+#[allow(clippy::too_many_arguments)]
+fn block_plans<E: Equations + ?Sized>(
+    eqs: &E,
+    group: &[usize],
+    params: &[f64],
+    fixed: &[bool],
+    classes: Option<&Classes>,
+    pattern: &SparseJacobian,
+    keys: &[usize],
+    skip: &[bool],
+    scratch: &mut Vec<SparseRow>,
+) -> Option<Vec<BlockPlan>> {
+    let blocks = structure::blocks(pattern, keys.len(), skip);
+    if blocks.len() < 2 {
+        return None;
+    }
+    // The first row of each constraint of the group, and the constraint
+    // (by position in the group) of each row.
+    let mut first = Vec::with_capacity(group.len() + 1);
+    let mut owner = Vec::new();
+    first.push(0);
+    for (at, &i) in group.iter().enumerate() {
+        let count = eqs.equation_count(i);
+        owner.extend(std::iter::repeat_n(at, count));
+        first.push(first[at] + count);
+    }
+    let members = classes.map(|classes| ClassSpace::members(classes, fixed));
+    let plans = blocks
+        .iter()
+        .map(|block| {
+            let block_keys: Vec<usize> = block.cols.iter().map(|&k| keys[k]).collect();
+            let mut positions: Vec<usize> = block.rows.iter().map(|&r| owner[r]).collect();
+            positions.dedup();
+            let sub: Vec<usize> = positions.iter().map(|&at| group[at]).collect();
+            let mut keep = Vec::with_capacity(equation_total(eqs, &sub));
+            for &at in &positions {
+                for r in first[at]..first[at + 1] {
+                    keep.push(block.rows.binary_search(&r).is_ok());
+                }
+            }
+            let listing = Listing::new(eqs, &sub, params, scratch);
+            let shape = Shape {
+                classes,
+                empty: None,
+                keep: Some(&keep),
+                columns: Some(&block_keys),
+            };
+            let (assembly, pattern) = Assembly::lay_out(listing, fixed, shape);
+            let space = match &members {
+                Some(members) => BlockSpace::Classes(ClassSpace::of_roots(members, &assembly.free)),
+                None => BlockSpace::Plain(AdditiveSpace::new(assembly.free.clone())),
+            };
+            BlockPlan {
+                sub,
+                kept: block.rows.len(),
+                keep,
+                assembly,
+                pattern,
+                space,
+            }
+        })
+        .collect();
+    Some(plans)
+}
+
+/// Solve the blocks `blocks` of a component one after the other, each for
+/// its own columns with the others held, each from where it stands. Stops
+/// at the first that does not converge and reports it; the caller puts
+/// the parameters back.
+fn solve_blocks<E: Equations + ?Sized>(
+    eqs: &E,
+    group: &[usize],
+    blocks: &[BlockPlan],
+    params: &mut [f64],
+    unit: f64,
+    scratch: &mut Vec<SparseRow>,
+    options: &CoreOptions,
+) -> SolveResult {
+    let mut iterations = 0;
+    let mut status = SolveStatus::Converged;
+    for block in blocks {
+        let result = match solve_small_block(eqs, block, params, unit, scratch, options) {
+            Some(result) => result,
+            None => {
+                let space = block.space.space();
+                let mut columns = |p: &[f64], out: &mut [f64]| match &block.space {
+                    BlockSpace::Classes(space) => {
+                        out.fill(0.0);
+                        for (&member, &k) in space.storage().iter().zip(space.columns()) {
+                            out[k] = out[k].max(eqs.column_magnitude(member, p));
+                        }
+                    }
+                    BlockSpace::Plain(space) => {
+                        for (magnitude, &column) in out.iter_mut().zip(space.storage()) {
+                            *magnitude = eqs.column_magnitude(column, p);
+                        }
+                    }
+                };
+                newton_over(
+                    eqs,
+                    &block.sub,
+                    Some(&block.keep),
+                    params,
+                    space,
+                    &block.assembly,
+                    block.pattern.clone(),
+                    &mut columns,
+                    unit,
+                    scratch,
+                    options,
+                )
+            }
+        };
+        iterations += result.iterations;
+        status = status.max(result.status);
+        if !result.converged {
+            return SolveResult {
+                iterations,
+                ..result
+            };
+        }
+    }
+    SolveResult {
+        converged: true,
+        residual: numerics::rms(&eval_residuals(eqs, group, params)),
+        iterations,
+        status,
+    }
+}
+
+/// The largest square block solved by [`solve_small_block`].
+const SMALL_BLOCK: usize = 3;
+
+/// A square block of at most [`SMALL_BLOCK`] unknowns solved by plain
+/// Newton steps on its dense Jacobian, each halved until it lowers the
+/// residual, from where the block stands — so it settles on the root
+/// nearest to that, as the block's equations see it. Converged, it takes
+/// further steps while they strictly lower the residual (up to the polish
+/// count), as the general loop does. `None` when it does not apply or does
+/// not get there (a singular step, no step that helps, the iteration limit,
+/// an equation that cannot be met to the tolerance where its numbers
+/// stand): the general loop then takes the block from where it started.
+fn solve_small_block<E: Equations + ?Sized>(
+    eqs: &E,
+    block: &BlockPlan,
+    params: &mut [f64],
+    unit: f64,
+    scratch: &mut Vec<SparseRow>,
+    options: &CoreOptions,
+) -> Option<SolveResult> {
+    let space = block.space.space();
+    let n = space.dim();
+    if n == 0 || n > SMALL_BLOCK || block.kept != n || options.norm != numerics::ResidualNorm::Rms {
+        return None;
+    }
+    let tolerance = options.tolerance * unit;
+    let storage = space.storage();
+    let start: Vec<f64> = storage.iter().map(|&p| params[p]).collect();
+    let mut all = vec![0.0_f64; block.keep.len()];
+    let mut eval = |p: &[f64], f: &mut [f64; SMALL_BLOCK]| {
+        eval_residuals_into(eqs, &block.sub, p, &mut all);
+        let mut at = 0;
+        for (v, &k) in all.iter().zip(&block.keep) {
+            if k {
+                f[at] = *v;
+                at += 1;
+            }
+        }
+        (f[..n].iter().map(|v| v * v).sum::<f64>() / n as f64).sqrt()
+    };
+    let give_up = |params: &mut [f64]| {
+        for (&p, &v) in storage.iter().zip(&start) {
+            params[p] = v;
+        }
+        None
+    };
+    let mut j = block.pattern.clone();
+    let mut f = [0.0_f64; SMALL_BLOCK];
+    let mut residual = eval(params, &mut f);
+    let mut iterations = 0;
+    let mut polish = 0;
+    loop {
+        if !residual.is_finite() {
+            return give_up(params);
+        }
+        let converged = residual < tolerance;
+        if converged && (residual == 0.0 || polish >= options.polish_steps) {
+            break;
+        }
+        if !converged && iterations >= options.max_iterations {
+            return give_up(params);
+        }
+        // The dense Jacobian of the block.
+        for v in j.values_mut() {
+            *v = 0.0;
+        }
+        block
+            .assembly
+            .assemble(eqs, &block.sub, params, &mut j, scratch);
+        let mut a = [[0.0_f64; SMALL_BLOCK]; SMALL_BLOCK];
+        for (r, row) in a.iter_mut().enumerate().take(n) {
+            for (&c, &v) in j.row_cols(r).iter().zip(j.row_values(r)) {
+                row[c] = v;
+            }
+        }
+        let Some(step) = solve_dense(&mut a, &f, n) else {
+            if converged {
+                break;
+            }
+            return give_up(params);
+        };
+        let saved: Vec<f64> = storage.iter().map(|&p| params[p]).collect();
+        let mut taken = None;
+        let mut scale = 1.0;
+        for _ in 0..if converged { 1 } else { 20 } {
+            let trial: Vec<f64> = step[..n].iter().map(|h| h * scale).collect();
+            space.apply(params, &saved, &trial);
+            let mut f_new = [0.0_f64; SMALL_BLOCK];
+            let r_new = eval(params, &mut f_new);
+            if r_new < residual {
+                taken = Some((f_new, r_new));
+                break;
+            }
+            scale *= 0.5;
+        }
+        match taken {
+            Some((f_new, r_new)) => {
+                f = f_new;
+                residual = r_new;
+                if converged {
+                    polish += 1;
+                } else {
+                    iterations += 1;
+                }
+            }
+            None => {
+                for (&p, &v) in storage.iter().zip(&saved) {
+                    params[p] = v;
+                }
+                if converged {
+                    break;
+                }
+                return give_up(params);
+            }
+        }
+    }
+    Some(SolveResult {
+        converged: true,
+        residual,
+        iterations,
+        status: SolveStatus::Converged,
+    })
+}
+
+/// Solve `a·h = −f` for the leading `n × n` of `a` by Gaussian elimination
+/// with partial pivoting; `None` if a pivot is not above `PIVOT_TOL`
+/// relative to the largest entry.
+fn solve_dense(
+    a: &mut [[f64; SMALL_BLOCK]; SMALL_BLOCK],
+    f: &[f64; SMALL_BLOCK],
+    n: usize,
+) -> Option<[f64; SMALL_BLOCK]> {
+    let mut b = [0.0_f64; SMALL_BLOCK];
+    for i in 0..n {
+        b[i] = -f[i];
+    }
+    let scale = a[..n]
+        .iter()
+        .flat_map(|row| row[..n].iter())
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    if scale == 0.0 || !scale.is_finite() {
+        return None;
+    }
+    for k in 0..n {
+        let pivot = (k..n)
+            .max_by(|&x, &y| a[x][k].abs().total_cmp(&a[y][k].abs()))
+            .expect("rows left");
+        if a[pivot][k].abs() <= numerics::PIVOT_TOL * scale {
+            return None;
+        }
+        a.swap(k, pivot);
+        b.swap(k, pivot);
+        for i in k + 1..n {
+            let m = a[i][k] / a[k][k];
+            for c in k..n {
+                a[i][c] -= m * a[k][c];
+            }
+            b[i] -= m * b[k];
+        }
+    }
+    let mut h = [0.0_f64; SMALL_BLOCK];
+    for k in (0..n).rev() {
+        let mut v = b[k];
+        for c in k + 1..n {
+            v -= a[k][c] * h[c];
+        }
+        h[k] = v / a[k][k];
+    }
+    h.iter().all(|v| v.is_finite()).then_some(h)
 }
 
 /// Solve one connected subsystem: only the free parameters its constraints
@@ -1044,6 +1473,21 @@ fn solve_one<E: Equations + ?Sized>(
             let movable: Vec<usize> = touched.iter().copied().filter(|&p| !fixed[p]).collect();
             let start: Vec<f64> = movable.iter().map(|&p| params[p]).collect();
             classes.snap(params, fixed);
+            if let Some(blocks) = &plan.blocks {
+                let result = solve_blocks(eqs, group, blocks, params, unit, &mut scratch, options);
+                if result.converged {
+                    return Solved {
+                        result,
+                        #[cfg(feature = "rayon")]
+                        moved: movable,
+                        touched: touched_owned,
+                    };
+                }
+                for (&p, &v) in movable.iter().zip(&start) {
+                    params[p] = v;
+                }
+                classes.snap(params, fixed);
+            }
             let space = &class_plan.space;
             let mut columns = |p: &[f64], out: &mut [f64]| {
                 out.fill(0.0);
@@ -1054,6 +1498,7 @@ fn solve_one<E: Equations + ?Sized>(
             let result = newton_over(
                 eqs,
                 group,
+                None,
                 params,
                 space,
                 &class_plan.assembly,
@@ -1079,6 +1524,22 @@ fn solve_one<E: Equations + ?Sized>(
 
     // Only this component's own free columns move: the Newton loop's free
     // list is exactly its movable coordinates.
+    if let (true, None, Some(blocks)) = (finite, &plan.classes, &plan.blocks) {
+        let movable: Vec<usize> = touched.iter().copied().filter(|&p| !fixed[p]).collect();
+        let start: Vec<f64> = movable.iter().map(|&p| params[p]).collect();
+        let result = solve_blocks(eqs, group, blocks, params, unit, &mut scratch, options);
+        if result.converged {
+            return Solved {
+                result,
+                #[cfg(feature = "rayon")]
+                moved: movable,
+                touched: touched_owned,
+            };
+        }
+        for (&p, &v) in movable.iter().zip(&start) {
+            params[p] = v;
+        }
+    }
     let owned: Assembly;
     let (assembly, pattern) = match (kept, local.take()) {
         (Some(plan), _) => {
@@ -1102,6 +1563,7 @@ fn solve_one<E: Equations + ?Sized>(
     let result = newton_over(
         eqs,
         group,
+        None,
         params,
         &*space,
         assembly,
@@ -1120,11 +1582,13 @@ fn solve_one<E: Equations + ?Sized>(
 }
 
 /// The Newton solve of the constraints `group` over the columns of
-/// `space`, whose Jacobian `assembly` builds into `pattern`.
+/// `space`, whose Jacobian `assembly` builds into `pattern`; with `keep`,
+/// of only the equations it marks (one flag per equation of `group`).
 #[allow(clippy::too_many_arguments)]
 fn newton_over<E: Equations + ?Sized>(
     eqs: &E,
     group: &[usize],
+    keep: Option<&[bool]>,
     params: &mut [f64],
     space: &dyn StepSpace,
     assembly: &Assembly,
@@ -1134,27 +1598,70 @@ fn newton_over<E: Equations + ?Sized>(
     scratch: &mut Vec<SparseRow>,
     options: &CoreOptions,
 ) -> SolveResult {
-    let n_eq = equation_total(eqs, group);
     let mut build = |p: &[f64], j: &mut SparseJacobian| {
         assembly.assemble(eqs, group, p, j, scratch);
     };
-    let mut rows = |p: &[f64], out: &mut [f64]| row_magnitudes(eqs, group, p, out);
-    numerics::newton_solve_in(
-        params,
-        space,
-        n_eq,
-        |p, f| eval_residuals_into(eqs, group, p, f),
-        numerics::Jacobian::Analytic {
-            pattern,
-            build: &mut build,
-        },
-        Some(numerics::Magnitudes {
-            columns,
-            rows: &mut rows,
-            unit,
-        }),
-        options,
-    )
+    match keep {
+        None => {
+            let n_eq = equation_total(eqs, group);
+            let mut rows = |p: &[f64], out: &mut [f64]| row_magnitudes(eqs, group, p, out);
+            numerics::newton_solve_in(
+                params,
+                space,
+                n_eq,
+                |p, f| eval_residuals_into(eqs, group, p, f),
+                numerics::Jacobian::Analytic {
+                    pattern,
+                    build: &mut build,
+                },
+                Some(numerics::Magnitudes {
+                    columns,
+                    rows: &mut rows,
+                    unit,
+                }),
+                options,
+            )
+        }
+        Some(keep) => {
+            // Every equation of the constraints is evaluated; the kept ones
+            // are passed on.
+            let n_eq = keep.iter().filter(|&&k| k).count();
+            let mut all = vec![0.0_f64; keep.len()];
+            let mut all_rows = vec![0.0_f64; keep.len()];
+            let compact = |all: &[f64], out: &mut [f64]| {
+                let mut at = 0;
+                for (v, &k) in all.iter().zip(keep) {
+                    if k {
+                        out[at] = *v;
+                        at += 1;
+                    }
+                }
+            };
+            let mut rows = |p: &[f64], out: &mut [f64]| {
+                row_magnitudes(eqs, group, p, &mut all_rows);
+                compact(&all_rows, out);
+            };
+            numerics::newton_solve_in(
+                params,
+                space,
+                n_eq,
+                |p, f| {
+                    eval_residuals_into(eqs, group, p, &mut all);
+                    compact(&all, f);
+                },
+                numerics::Jacobian::Analytic {
+                    pattern,
+                    build: &mut build,
+                },
+                Some(numerics::Magnitudes {
+                    columns,
+                    rows: &mut rows,
+                    unit,
+                }),
+                options,
+            )
+        }
+    }
 }
 
 /// The unit a component's equations are measured in, from its
@@ -1669,5 +2176,33 @@ pub(crate) mod parallel_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod small_block_tests {
+    use super::{solve_dense, SMALL_BLOCK};
+
+    #[test]
+    fn a_small_system_is_solved_with_pivoting() {
+        // a·h = −f with a zero leading entry (needs a row exchange).
+        let mut a = [[0.0, 2.0, 1.0], [1.0, 1.0, 0.0], [3.0, 0.0, 1.0]];
+        let h = [1.0, -2.0, 0.5];
+        let mut f = [0.0_f64; SMALL_BLOCK];
+        for (fi, row) in f.iter_mut().zip(&a) {
+            *fi = -(row[0] * h[0] + row[1] * h[1] + row[2] * h[2]);
+        }
+        let got = solve_dense(&mut a, &f, 3).expect("regular");
+        for (g, e) in got.iter().zip(h) {
+            assert!((g - e).abs() < 1e-14, "{got:?}");
+        }
+    }
+
+    #[test]
+    fn a_singular_or_empty_system_has_no_step() {
+        let mut a = [[1.0, 2.0, 0.0], [2.0, 4.0, 0.0], [0.0, 0.0, 0.0]];
+        assert!(solve_dense(&mut a, &[1.0, 1.0, 0.0], 2).is_none());
+        let mut zero = [[0.0; SMALL_BLOCK]; SMALL_BLOCK];
+        assert!(solve_dense(&mut zero, &[1.0, 0.0, 0.0], 1).is_none());
     }
 }

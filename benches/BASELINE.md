@@ -490,6 +490,47 @@ each kept layout held a column map as long as the highest column of the
 component, a few thousand entries for each of 200 components of 18. It
 now spans only the component's own columns.
 
+### After a component began to be solved block by block (P3.2)
+
+Same machine, all benchmarks, the previous commit (`f5bdd23`) and this
+change alternately, three rounds each, medians.
+
+| Benchmark | before | after | change |
+|---|---:|---:|---:|
+| `sketch/resolve_chain/54` | 0.0210 ms | 0.0118 ms | −44% |
+| `sketch/resolve_chain/198` | 0.0734 ms | 0.0395 ms | −46% |
+| `sketch/resolve_chain/792` | 0.472 ms | 0.158 ms | −67% |
+| `sketch/solve_chain/54` | 0.0419 ms | 0.0524 ms | +25% |
+| `sketch/solve_chain/198` | 0.145 ms | 0.181 ms | +25% |
+| `sketch/solve_chain/792` | 0.791 ms | 0.719 ms | −9.2% |
+| `sketch/solve_field/360` | 0.328 ms | 0.388 ms | +18% |
+| `sketch/solve_field/3600` | 3.40 ms | 4.15 ms | +22% |
+| `space/*`, `assembly/solve_*`, the diagnoses | | | −2.6% to +4.3% |
+| `assembly/solve_chain/5`, `assembly/diagnose_star/5` | | | +7.5%, +8.8% |
+
+A rectangle falls into blocks of one or two unknowns after the
+elimination. A re-solve finds the blocks laid out in the kept plan and
+solves each by a few dense Newton steps; a first solve (`solve_chain`,
+`solve_field`, a sketch never solved before) pays for decomposing the
+component and laying out every block, which on these small components
+costs more than the whole solve it replaces. The 3D benchmark truss is
+braced (structurally over-determined) and is not split; neither are the
+assemblies. Their two smallest fixtures moved by +7.5% and +8.8%, as they
+have before on changes that did not touch them (P2.7, P3.4); not looked
+into. Quick runs before this one had put the
+first-solve cost at +10–17%; these three rounds agree with one another
+and say +18–25%.
+
+The plan's target for P3, a sketch of 500 entities re-solved after one
+dimension edit in under 1 ms at the median, measured with a temporary
+driver (a chain of 100 rectangles, 1 800 parameters, solved, then one
+width changed and the sketch re-solved, 2 000 times): p50 248 µs and p90
+318 µs at `f5bdd23`, p50 170 µs and p90 213 µs after this change.
+
+The case the change is for is in `tests/hard_cases.rs`: a serial truss
+perturbed by 0.2 took 12–27 s at 200 and 260 points without converging
+and now returns to where it was drawn in at most 2 ms.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.

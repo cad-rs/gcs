@@ -307,6 +307,11 @@ impl Equations for RigidEquations<'_> {
         Box::new(PoseSpace::new(free))
     }
 
+    /// Orientation columns step by a rotation of the stored quaternion.
+    fn steps_are_additive(&self) -> bool {
+        false
+    }
+
     /// A translation column steps a coordinate of the body's position. A
     /// rotation column steps an angle, of order one: its Jacobian entries
     /// are lever arms, and a rounding of the orientation moves a point by
