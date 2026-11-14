@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 
+use crate::alias::{Aliases, ClassSpace, Classes};
 use crate::diagnosis::{Diagnosis, CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL};
 use crate::numerics::{
     self, gt, householder_qr_column_pivoting, le, solve_normal_equations, AdditiveSpace,
@@ -25,6 +26,20 @@ use crate::numerics::{
 
 /// A sparse row or direction: `(parameter or column index, value)` pairs.
 pub(crate) type SparseRow = Vec<(usize, f64)>;
+
+/// An equation whose residual is linear in at most two parameters with
+/// unit coefficients (see [`Equations::alias`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Alias {
+    /// The residual is `params[param] − params[base] − offset`.
+    Offset {
+        param: usize,
+        base: usize,
+        offset: f64,
+    },
+    /// The residual is `params[param] − value`.
+    Value { param: usize, value: f64 },
+}
 
 /// `Sync` when the connected components of one system may be solved on
 /// several threads (feature `rayon`), nothing otherwise: a family that
@@ -91,6 +106,15 @@ pub(crate) trait Equations: SharedAcrossThreads {
     /// far short of holding relative to it. `None` (the default) keeps the
     /// tolerance absolute.
     fn length_scale(&self, _group: &[usize], _params: &[f64]) -> Option<f64> {
+        None
+    }
+
+    /// Equation `row` of constraint `index`, if its residual is exactly
+    /// one parameter less another and a constant, or one parameter less a
+    /// constant (see [`Alias`]): such an equation is eliminated before the
+    /// solve rather than iterated on. `None` (the default) for any other.
+    /// Only a family whose steps are additive may return one.
+    fn alias(&self, _index: usize, _row: usize) -> Option<Alias> {
         None
     }
 
@@ -170,17 +194,24 @@ struct Assembly {
     slots: Vec<usize>,
 }
 
-impl Assembly {
-    /// Lay out the Jacobian of the constraints `indices` over the columns
-    /// `fixed` does not hold, at `params`: the assembly and the empty
-    /// pattern it fills.
+/// The columns each equation of a component lists, the first pass of an
+/// [`Assembly`].
+struct Listing {
+    /// Row `r` lists entries `entry_starts[r]..entry_starts[r + 1]`.
+    entry_starts: Vec<usize>,
+    /// The column of each listed entry.
+    listed: Vec<usize>,
+    /// The columns listed, ascending, each once.
+    touched: Vec<usize>,
+}
+
+impl Listing {
     fn new<E: Equations + ?Sized>(
         eqs: &E,
         indices: &[usize],
         params: &[f64],
-        fixed: &[bool],
         scratch: &mut Vec<SparseRow>,
-    ) -> (Self, SparseJacobian) {
+    ) -> Self {
         let mut entry_starts = vec![0];
         let mut listed: Vec<usize> = Vec::new();
         for &i in indices {
@@ -192,23 +223,90 @@ impl Assembly {
         let mut touched = listed.clone();
         touched.sort_unstable();
         touched.dedup();
-        let free: Vec<usize> = touched.iter().copied().filter(|&c| !fixed[c]).collect();
-        let mut col_of = vec![HELD; touched.last().map_or(0, |&c| c + 1)];
-        for (k, &c) in free.iter().enumerate() {
-            col_of[c] = k;
+        Self {
+            entry_starts,
+            listed,
+            touched,
         }
+    }
+}
+
+impl Assembly {
+    /// Lay out the Jacobian of the constraints `indices` over the columns
+    /// `fixed` does not hold, at `params`: the assembly and the empty
+    /// pattern it fills.
+    fn new<E: Equations + ?Sized>(
+        eqs: &E,
+        indices: &[usize],
+        params: &[f64],
+        fixed: &[bool],
+        scratch: &mut Vec<SparseRow>,
+    ) -> (Self, SparseJacobian) {
+        Self::lay_out(Listing::new(eqs, indices, params, scratch), fixed, None)
+    }
+
+    /// Lay out the Jacobian of `listing` over the columns `fixed` does not
+    /// hold; with `classes`, over one column per unknown class that an
+    /// equation not absorbed touches, each member's entries summed into it
+    /// and the absorbed rows left empty.
+    fn lay_out(
+        listing: Listing,
+        fixed: &[bool],
+        classes: Option<&Classes>,
+    ) -> (Self, SparseJacobian) {
+        let Listing {
+            entry_starts,
+            listed,
+            touched,
+        } = listing;
+        let mut col_of = vec![HELD; touched.last().map_or(0, |&c| c + 1)];
+        let free: Vec<usize> = match classes {
+            None => {
+                let free: Vec<usize> = touched.iter().copied().filter(|&c| !fixed[c]).collect();
+                for (k, &c) in free.iter().enumerate() {
+                    col_of[c] = k;
+                }
+                free
+            }
+            Some(classes) => {
+                let mut roots: Vec<usize> = Vec::new();
+                for (r, span) in entry_starts.windows(2).enumerate() {
+                    if classes.absorbed[r] {
+                        continue;
+                    }
+                    roots.extend(
+                        listed[span[0]..span[1]]
+                            .iter()
+                            .filter(|&&c| !fixed[c] && !classes.is_known(c))
+                            .map(|&c| classes.root_of(c)),
+                    );
+                }
+                roots.sort_unstable();
+                roots.dedup();
+                for &c in &touched {
+                    if fixed[c] || classes.is_known(c) {
+                        continue;
+                    }
+                    if let Ok(k) = roots.binary_search(&classes.root_of(c)) {
+                        col_of[c] = k;
+                    }
+                }
+                roots
+            }
+        };
 
         // Per row, its free columns ascending and each once, written
         // straight into the pattern's column list.
         let mut starts = Vec::with_capacity(entry_starts.len());
         let mut cols: Vec<usize> = Vec::with_capacity(listed.len());
         starts.push(0);
-        for span in entry_starts.windows(2) {
+        for (r, span) in entry_starts.windows(2).enumerate() {
             let begin = cols.len();
+            let absorbed = classes.is_some_and(|classes| classes.absorbed[r]);
             cols.extend(
                 listed[span[0]..span[1]]
                     .iter()
-                    .map(|&c| col_of[c])
+                    .map(|&c| if absorbed { HELD } else { col_of[c] })
                     .filter(|&k| k != HELD),
             );
             cols[begin..].sort_unstable();
@@ -233,8 +331,13 @@ impl Assembly {
         };
         let mut slots = Vec::with_capacity(assembly.listed.len());
         for r in 0..pattern.n_rows() {
+            let absorbed = classes.is_some_and(|classes| classes.absorbed[r]);
             for e in assembly.entry_starts[r]..assembly.entry_starts[r + 1] {
-                slots.push(assembly.slot(&pattern, r, assembly.listed[e]));
+                slots.push(if absorbed {
+                    HELD
+                } else {
+                    assembly.slot(&pattern, r, assembly.listed[e])
+                });
             }
         }
         assembly.slots = slots;
@@ -673,6 +776,13 @@ const PARALLEL_RUN_EQUATIONS: usize = 96;
 
 /// Solve one connected subsystem: only the free parameters its constraints
 /// touch may move.
+///
+/// The equations that only alias one parameter to another or to a value
+/// are eliminated first (see [`crate::alias`]): the parameters are put where those
+/// equations say, and the solve runs over one column per class of
+/// parameters still unknown. If that solve does not converge, the
+/// parameters are put back and the component is solved over every
+/// parameter, as without the elimination.
 fn solve_one<E: Equations + ?Sized>(
     eqs: &E,
     group: &[usize],
@@ -681,23 +791,94 @@ fn solve_one<E: Equations + ?Sized>(
     options: &CoreOptions,
 ) -> Solved {
     let mut scratch: Vec<SparseRow> = Vec::new();
-    let (assembly, pattern) = Assembly::new(eqs, group, params, fixed, &mut scratch);
+    let listing = Listing::new(eqs, group, params, &mut scratch);
+    let unit = equation_unit(eqs.length_scale(group, params));
+    // A start that is not a number is reported as it stands (`Diverged`),
+    // not mended by putting the parameters where their classes say.
+    let finite = listing.touched.iter().all(|&p| params[p].is_finite());
+    let classes = if finite {
+        Aliases::classes_of(eqs, group, &listing.touched, params, fixed)
+    } else {
+        None
+    };
+    let listing = match classes {
+        Some(classes) => {
+            let movable: Vec<usize> = listing
+                .touched
+                .iter()
+                .copied()
+                .filter(|&p| !fixed[p])
+                .collect();
+            let start: Vec<f64> = movable.iter().map(|&p| params[p]).collect();
+
+            // The debug check of the Jacobian is made over every parameter,
+            // before anything moves.
+            #[cfg(debug_assertions)]
+            if eqs.debug_check_jacobian() {
+                let (assembly, pattern) = Assembly::new(eqs, group, params, fixed, &mut scratch);
+                let free = &assembly.free;
+                if !free.is_empty() {
+                    let space = eqs.step_space(free);
+                    let mut build = |p: &[f64], j: &mut SparseJacobian| {
+                        assembly.assemble(eqs, group, p, j, &mut scratch);
+                    };
+                    debug_check_jacobian(eqs, group, params, free, &*space, &pattern, &mut build);
+                }
+            }
+
+            classes.snap(params, fixed);
+            let touched = listing.touched.clone();
+            let (assembly, pattern) = Assembly::lay_out(listing, fixed, Some(&classes));
+            let space = ClassSpace::new(&classes, &assembly.free, fixed);
+            let mut columns = |p: &[f64], out: &mut [f64]| {
+                out.fill(0.0);
+                for (&member, &k) in space.storage().iter().zip(space.columns()) {
+                    out[k] = out[k].max(eqs.column_magnitude(member, p));
+                }
+            };
+            let result = newton_over(
+                eqs,
+                group,
+                params,
+                &space,
+                &assembly,
+                pattern,
+                &mut columns,
+                unit,
+                &mut scratch,
+                options,
+            );
+            if result.converged {
+                return Solved {
+                    result,
+                    #[cfg(feature = "rayon")]
+                    moved: movable,
+                    touched,
+                };
+            }
+            for (&p, &v) in movable.iter().zip(&start) {
+                params[p] = v;
+            }
+            Listing::new(eqs, group, params, &mut scratch)
+        }
+        None => listing,
+    };
+
+    let (assembly, pattern) = Assembly::lay_out(listing, fixed, None);
     // Only this component's own free columns move: the Newton loop's free
     // list is exactly its movable coordinates.
     let free = &assembly.free;
     let space = eqs.step_space(free);
-
-    let n_eq = equation_total(eqs, group);
-    let mut build = |p: &[f64], j: &mut SparseJacobian| {
-        assembly.assemble(eqs, group, p, j, &mut scratch);
-    };
 
     // One-shot integration check (debug builds): the analytic assembly
     // must agree with central differences at the starting point. The
     // exhaustive per-variant gates live with the constraint definitions;
     // this catches per-call assembly bugs (column mapping, mask filtering).
     #[cfg(debug_assertions)]
-    if n_eq > 0 && !free.is_empty() && eqs.debug_check_jacobian() {
+    if equation_total(eqs, group) > 0 && !free.is_empty() && eqs.debug_check_jacobian() {
+        let mut build = |p: &[f64], j: &mut SparseJacobian| {
+            assembly.assemble(eqs, group, p, j, &mut scratch);
+        };
         debug_check_jacobian(eqs, group, params, free, &*space, &pattern, &mut build);
     }
 
@@ -706,22 +887,16 @@ fn solve_one<E: Equations + ?Sized>(
             *magnitude = eqs.column_magnitude(column, p);
         }
     };
-    let mut rows = |p: &[f64], out: &mut [f64]| row_magnitudes(eqs, group, p, out);
-    let unit = equation_unit(eqs.length_scale(group, params));
-    let result = numerics::newton_solve_in(
+    let result = newton_over(
+        eqs,
+        group,
         params,
         &*space,
-        n_eq,
-        |p, f| eval_residuals_into(eqs, group, p, f),
-        numerics::Jacobian::Analytic {
-            pattern,
-            build: &mut build,
-        },
-        Some(numerics::Magnitudes {
-            columns: &mut columns,
-            rows: &mut rows,
-            unit,
-        }),
+        &assembly,
+        pattern,
+        &mut columns,
+        unit,
+        &mut scratch,
         options,
     );
     Solved {
@@ -730,6 +905,44 @@ fn solve_one<E: Equations + ?Sized>(
         moved: space.storage().to_vec(),
         touched: assembly.touched,
     }
+}
+
+/// The Newton solve of the constraints `group` over the columns of
+/// `space`, whose Jacobian `assembly` builds into `pattern`.
+#[allow(clippy::too_many_arguments)]
+fn newton_over<E: Equations + ?Sized>(
+    eqs: &E,
+    group: &[usize],
+    params: &mut [f64],
+    space: &dyn StepSpace,
+    assembly: &Assembly,
+    pattern: SparseJacobian,
+    columns: &mut dyn FnMut(&[f64], &mut [f64]),
+    unit: f64,
+    scratch: &mut Vec<SparseRow>,
+    options: &CoreOptions,
+) -> SolveResult {
+    let n_eq = equation_total(eqs, group);
+    let mut build = |p: &[f64], j: &mut SparseJacobian| {
+        assembly.assemble(eqs, group, p, j, scratch);
+    };
+    let mut rows = |p: &[f64], out: &mut [f64]| row_magnitudes(eqs, group, p, out);
+    numerics::newton_solve_in(
+        params,
+        space,
+        n_eq,
+        |p, f| eval_residuals_into(eqs, group, p, f),
+        numerics::Jacobian::Analytic {
+            pattern,
+            build: &mut build,
+        },
+        Some(numerics::Magnitudes {
+            columns,
+            rows: &mut rows,
+            unit,
+        }),
+        options,
+    )
 }
 
 /// The unit a component's equations are measured in, from its

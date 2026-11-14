@@ -132,16 +132,28 @@ fn converged_solve_reports_converged_status() {
     assert_eq!(result.status, SolveStatus::Converged);
 }
 
+/// The apex of a 3-4-5 triangle on a held base, started off its place:
+/// after the fixed points are eliminated two distance rows remain, which
+/// take several Newton iterations. (A single distance from one fixed point
+/// does not: once that point is in place the row is linear along the step.)
+fn triangle_apex() -> Sketch {
+    let mut sk = Sketch::new();
+    let a = sk.add_point(0.3, -0.2);
+    let b = sk.add_point(3.7, 0.4);
+    let apex = sk.add_point(0.8, 2.0);
+    sk.add_constraint(Constraint::fix_point(a, 0.0, 0.0));
+    sk.add_constraint(Constraint::fix_point(b, 4.0, 0.0));
+    sk.add_constraint(Constraint::point_distance(a, apex, 3.0));
+    sk.add_constraint(Constraint::point_distance(b, apex, 5.0));
+    sk
+}
+
 #[test]
 fn iteration_limit_is_reported_and_restores() {
-    let mut sk = Sketch::new();
-    let p1 = sk.add_point(0.3, -0.2);
-    let p2 = sk.add_point(2.0, 3.0);
-    sk.add_constraint(Constraint::fix_point(p1, 0.0, 0.0));
-    sk.add_constraint(Constraint::point_distance(p1, p2, 5.0));
+    let mut sk = triangle_apex();
     let before = sk.params_snapshot();
 
-    // One iteration is not enough for the nonlinear distance row.
+    // One iteration is not enough for the nonlinear distance rows.
     let result = sk.solve_with(&SolveOptions {
         max_iterations: 1,
         ..SolveOptions::default()
@@ -155,14 +167,7 @@ fn iteration_limit_is_reported_and_restores() {
 
 #[test]
 fn looser_tolerance_is_honoured() {
-    let build = || {
-        let mut sk = Sketch::new();
-        let p1 = sk.add_point(0.3, -0.2);
-        let p2 = sk.add_point(2.0, 3.0);
-        sk.add_constraint(Constraint::fix_point(p1, 0.0, 0.0));
-        sk.add_constraint(Constraint::point_distance(p1, p2, 5.0));
-        sk
-    };
+    let build = triangle_apex;
     let strict = build().solve();
     let loose = build().solve_with(&SolveOptions {
         tolerance: 1e-2,

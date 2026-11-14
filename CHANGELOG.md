@@ -231,6 +231,37 @@ through them from a host's side.
   fields were already the same; serialized key order now follows
   `Diagnosis`), and the 3D threshold constants are re-exports of the 2D
   ones.
+- **A 2D solve eliminates the trivial equations first.** A coincidence, a
+  fixed point or an axis distance between stored points (not the derived
+  ends of an arc), a horizontal or vertical line, equal radii, concentric
+  circles, a radius and a diameter each say that one parameter is another
+  plus a constant, or a value. Each component now groups its parameters
+  into classes by those equations (a union–find with offsets), puts every
+  member where its class says — a known class at its value, an unknown one
+  at the mean of what its members say, which is the nearest point where
+  those equations hold — and iterates only on the remaining equations,
+  with one column per class still unknown. An equation that would close a
+  cycle of such equations, or join two known classes, is not eliminated:
+  it stays an ordinary equation, so a consistent duplicate holds to
+  rounding and a contradiction leaves a residual nothing can move. If the
+  reduced solve does not converge, the component is put back and solved
+  over every parameter as before, so a failing solve ends exactly as it
+  used to. The diagnosis still reads the full system and names every
+  constraint. On the 2D corpus this removes 88% of the unknowns (46 223 →
+  5 371; per case the median is 86%, and the angle family, which has no
+  such equations, 0%). What a host sees: a solve takes fewer iterations
+  (the corpus's well-constrained cases 5 020 → 2 825 from where they were
+  drawn), geometry those equations tie together ends exactly equal rather
+  than equal to the tolerance, and the solution picked from a distant
+  start changes — on the corpus's large-drift probe, 71 of 256 re-solves
+  came back on another branch (mostly mirrored rectangles) and now 5 do,
+  and the worst small-drift round trip went from 1.59e-4 to 6.79e-5. An
+  under-constrained sketch can settle in a slightly different place: on
+  open distance chains up to 1.6e-3 from where it used to after a drift of
+  0.05, and moving 2–9% less from its start after a drift of 3. A
+  coordinate that is not a number is still reported `Diverged` (the
+  elimination is skipped, rather than mending it). The 3D and rigid-pose
+  families are unchanged.
 
 ### Added
 
@@ -424,6 +455,18 @@ through them from a host's side.
 
 ### Performance
 
+- **2D solves of sketches built from coincidences, fixed points and
+  horizontal / vertical lines are many times faster**, because those
+  equations are eliminated before the solve (see "Changed"). The
+  benchmark fixtures are rectangles, of whose 18 parameters 2 are left to
+  iterate on: a chain of 44 rectangles (792 parameters) solves in 0.77 ms
+  instead of 198 ms, of 11 (198) in 0.14 ms instead of 3.1 ms, of 3 (54)
+  in 0.041 ms instead of 0.137 ms; fields of 20 and 200 independent
+  rectangles take 42% and 34% less. A sketch of distances and angles has
+  nothing to eliminate and gains nothing. The 3D and rigid-pose families
+  are unchanged in what they compute; their benchmarks moved by −0.7% to
+  +9.5% (the assembly chain +4–10%, the 3D truss +1.5–3%), for a cause not
+  identified (`benches/BASELINE.md`).
 - **The Jacobian of a solve is stored sparse.** It was a dense
   equations × free-parameters matrix: every iteration zeroed it, the
   analytic rows were written into it through a hash map from parameter to

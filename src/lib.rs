@@ -47,6 +47,7 @@
 //! assert!(result.converged);
 //! ```
 
+mod alias;
 pub mod constraint;
 pub mod diagnosis;
 pub mod edit;

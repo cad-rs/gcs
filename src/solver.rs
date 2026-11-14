@@ -83,6 +83,14 @@ impl Equations for SketchEquations<'_> {
         }
     }
 
+    fn alias(&self, index: usize, row: usize) -> Option<system::Alias> {
+        if self.is_active(index) {
+            self.constraints[index].alias(row, self.entities)
+        } else {
+            None
+        }
+    }
+
     /// Every 2D equation is a length (the angular relations are scaled by
     /// the lengths of their lines). The size of a component is the larger
     /// side of the box around the entities its active constraints refer

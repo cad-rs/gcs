@@ -22,6 +22,21 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   equations are ill-conditioned is therefore taken by a dense QR of `J`
   instead, which a sparse QR would make affordable for large components
   too.
+- **Elimination of trivial equations, beyond what 2D solving does.** A 2D
+  solve groups its parameters into classes by the equations that only
+  alias one parameter to another or to a value, and iterates on the rest
+  (`src/alias.rs`). Not yet: the 3D-geometric family (its coincidences,
+  fixed points and axis-aligned relations are the same kind of equation);
+  equations with other unit coefficients — a midpoint, a point symmetric
+  about another (`p1 + p2 = 2·about`) — and points derived from an arc's
+  angle, which a general linear elimination would cover; the diagnosis,
+  which still factors the full system (the same reduction would shrink its
+  rank-revealing factorisation, but its reports have to be mapped back to
+  every constraint); and keeping the classes between solves of an
+  unchanged topology (they are rebuilt per solve). A component whose
+  reduced solve fails is solved a second time over every parameter, so
+  that it fails exactly as it used to: a conflicting sketch pays for two
+  solves.
 - **Small geometry outside 2D solving.** A 2D component is solved at any
   size: every 2D equation is a length, and a component smaller than one
   unit is held to the tolerance in proportion to its size

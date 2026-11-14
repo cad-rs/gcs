@@ -16,17 +16,24 @@ Each family reduces to `F(x) = 0` over a parameter vector:
 1. the constraint graph is split into connected components, and each
    component is solved on its own (so an edit re-solves only the components
    it touches);
-2. residuals and **analytic** Jacobian rows come from the constraint set —
+2. in 2D, the equations that only tie one parameter to another plus a
+   constant, or to a value (coincidences, fixed points, axis distances,
+   horizontal / vertical lines, equal radii, concentric circles, radii and
+   diameters), are eliminated first: the parameters they tie are put in
+   place and move as one, and only the remaining equations are iterated
+   on. An equation that closes a cycle of them is kept and checked like
+   any other, and the diagnosis still reads the full system;
+3. residuals and **analytic** Jacobian rows come from the constraint set —
    a CI test keeps every derivative in lockstep with its residual by
    comparing against finite differences; no row is finite-differenced in
    a solve;
-3. the step comes from the Tikhonov-regularised normal equations
+4. the step comes from the Tikhonov-regularised normal equations
    `(JᵀJ + λI) Δx = Jᵀ(−F)` — under-constrained systems get the
    minimum-norm step instead of diverging;
-4. the step is taken inside a trust radius (Powell's dogleg): whole while
+5. the step is taken inside a trust radius (Powell's dogleg): whole while
    it fits, otherwise bent toward steepest descent; a step that does not
    lower the residual is discarded and the radius shrunk;
-5. iterate until the RMS residual drops below `RESIDUAL_TOL = 1e-10`
+6. iterate until the RMS residual drops below `RESIDUAL_TOL = 1e-10`
    (rigid-pose family: L2 norm < `tolerance`). Far from the origin, where
    that is finer than the coordinates are stored, each equation is held to
    a few rounding units of its own numbers instead, and the solve reports
@@ -55,12 +62,16 @@ handed back where they started, and `PoseSolveOptions::on_failure` chooses
 otherwise.
 
 Known scaling limit: the linear algebra is dense. The normal equations are
-solved by Gaussian elimination, cubic in the number of free parameters of
-one connected component: on the reference machine a component of about 200
-parameters solves in about 8 ms and one of about 800 in about 0.36 s (see
-[benches/BASELINE.md](benches/BASELINE.md)). Independent components do not
-compound — 200 separate rectangles (3600 parameters) solve in about 9 ms.
-A sparse factorisation is the next planned core upgrade.
+solved by Gaussian elimination, cubic in the number of unknowns of one
+connected component that are left after the elimination: on the reference
+machine a 3D truss of 240 parameters solves in about 7.8 ms and one of 780
+in about 0.37 s, while a 2D chain of 44 rectangles (792 parameters, 88 left
+after the elimination) solves in about 0.8 ms (see
+[benches/BASELINE.md](benches/BASELINE.md)). A 2D sketch of distances and
+angles keeps all its unknowns and scales like the truss. Independent
+components do not compound — 200 separate rectangles (3600 parameters)
+solve in about 3.5 ms. A sparse factorisation is the next planned core
+upgrade.
 
 ## Quick start
 

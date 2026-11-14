@@ -420,6 +420,48 @@ machine, which is two to ten small components' worth of work; one task
 per component spends more on that than it saves. At 128, 20 rectangles
 make two tasks, and the larger sets the time.
 
+### After the trivial equations of a 2D solve were eliminated (P3.1)
+
+Same machine, all benchmarks, the previous commit (`d1bf6e1`) and this
+change alternately, three rounds each; medians, rounds of one build within
+a few percent of each other.
+
+| Benchmark | before | after | change |
+|---|---:|---:|---:|
+| `sketch/solve_chain/54` | 0.137 ms | 0.0405 ms | −70% |
+| `sketch/solve_chain/198` | 3.12 ms | 0.142 ms | −95% (22×) |
+| `sketch/solve_chain/792` | 198 ms | 0.770 ms | −99.6% (257×) |
+| `sketch/resolve_chain/54` | 0.136 ms | 0.0399 ms | −71% |
+| `sketch/resolve_chain/198` | 3.08 ms | 0.143 ms | −95% |
+| `sketch/resolve_chain/792` | 199 ms | 0.751 ms | −99.6% |
+| `sketch/solve_field/360` | 0.531 ms | 0.307 ms | −42% |
+| `sketch/solve_field/3600` | 5.21 ms | 3.46 ms | −34% |
+| `sketch/diagnose_*` | | | −0.3% to −6.7% (not changed) |
+| `space/solve_truss/60`, `/240`, `/780` | | | +1.5%, +2.9%, +2.7% |
+| `assembly/solve_chain/5`, `/20`, `/40` | | | +9.5%, +3.7%, +4.7% |
+| `assembly/solve_star/*` | | | −0.7% to 0.0% |
+| `space/diagnose_*`, `assembly/diagnose_*` | | | −5.5% to +5.0% |
+
+The fixtures are rectangles, the friendliest case there is: of a
+rectangle's 18 parameters the elimination leaves 2 unknowns (the x of the
+right side and the y of the top, under the two lengths), so the 792
+parameter chain is solved over 88 columns and its dense factorisation all
+but disappears. Over the whole 2D corpus the unknowns fall by 88%, but
+the angle family keeps all of them; sketches made of distances and angles
+gain nothing. The fields of independent rectangles gain less because what
+is left per component is the fixed cost of laying it out.
+
+The 3D and rigid-pose families do not eliminate anything, and their
+iteration counts are unchanged (the assembly corpus is identical). What
+the change adds to their solves is, per component, one pass over its
+equations asking whether any is an alias (each call returns `None` at
+once), a check that its parameters are finite, and the layout split into
+two functions; their Newton iterations run the same code. The pass was
+not timed on its own, and the cause of the 0.1–0.2 ms the assembly chain
+and the 3D truss lost in all three rounds was not looked for; differences
+of this size between builds of unchanged code have been seen on these
+fixtures before (P2.2, P2.7 above).
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.

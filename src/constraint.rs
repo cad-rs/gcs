@@ -7,6 +7,7 @@
 
 use crate::entity::{Entity, EntityId, EntityKind, PointRef};
 use crate::solver::SOLVER_NORM_TOL;
+use crate::system::Alias;
 
 /// A geometric constraint between sketch entities.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -968,6 +969,57 @@ const LINE: &[EntityKind] = &[EntityKind::Line];
 const CIRCULAR: &[EntityKind] = &[EntityKind::Circle, EntityKind::Arc];
 
 impl Constraint {
+    /// Equation `row` as an [`Alias`], when its residual is exactly one
+    /// parameter less another and a constant, or one parameter less a
+    /// constant: a coincidence, fixed point or axis distance of stored
+    /// points (not the derived ends of an arc), horizontal and vertical
+    /// lines, equal radii, concentric circles, a radius or a diameter.
+    pub(crate) fn alias(&self, row: usize, entities: &[Entity]) -> Option<Alias> {
+        let stored = |p: &PointRef| match p {
+            PointRef::ArcStart(_) | PointRef::ArcEnd(_) => None,
+            _ => {
+                let (x, y) = p.param_indices(entities);
+                Some(if row == 0 { x } else { y })
+            }
+        };
+        let offset = |param: usize, base: usize, offset: f64| {
+            Some(Alias::Offset {
+                param,
+                base,
+                offset,
+            })
+        };
+        let p = |id: &EntityId, k: usize| entities[*id].param(k);
+        match self {
+            Constraint::Coincident(p1, p2) => offset(stored(p1)?, stored(p2)?, 0.0),
+            Constraint::Fixed { point, x, y } => Some(Alias::Value {
+                param: stored(point)?,
+                value: if row == 0 { *x } else { *y },
+            }),
+            // One equation each: on the x, resp. the y coordinates.
+            Constraint::DistanceX { p1, p2, distance } => {
+                offset(stored(p1)?, stored(p2)?, *distance)
+            }
+            Constraint::DistanceY { p1, p2, distance } => {
+                let y = |q: &PointRef| stored(q).map(|_| q.param_indices(entities).1);
+                offset(y(p1)?, y(p2)?, *distance)
+            }
+            Constraint::Horizontal(l) => offset(p(l, 1), p(l, 3), 0.0),
+            Constraint::Vertical(l) => offset(p(l, 0), p(l, 2), 0.0),
+            Constraint::EqualRadius(c1, c2) => offset(p(c1, 2), p(c2, 2), 0.0),
+            Constraint::Concentric(c1, c2) => offset(p(c1, row), p(c2, row), 0.0),
+            Constraint::Radius { circle, radius } => Some(Alias::Value {
+                param: p(circle, 2),
+                value: *radius,
+            }),
+            Constraint::Diameter { circle, diameter } => Some(Alias::Value {
+                param: p(circle, 2),
+                value: diameter / 2.0,
+            }),
+            _ => None,
+        }
+    }
+
     /// Every entity this constraint refers to, each with the entity kinds
     /// that reference is valid for. An entity referred to twice is listed
     /// twice.
