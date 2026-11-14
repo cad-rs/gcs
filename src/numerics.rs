@@ -294,17 +294,148 @@ where
     )
 }
 
-/// Analytic Jacobian assembly callback: writes the m × n_free dense matrix
-/// (pre-zeroed by the loop) at the given parameters.
-pub(crate) type JacobianBuilder<'a> = dyn FnMut(&[f64], &mut [Vec<f64>]) + 'a;
+/// Analytic Jacobian assembly callback: writes the derivatives at the given
+/// parameters into the values of the [`SparseJacobian`] whose pattern it was
+/// handed with (zeroed by the loop before each call).
+pub(crate) type JacobianBuilder<'a> = dyn FnMut(&[f64], &mut SparseJacobian) + 'a;
 
 /// Where the Newton loop sources its Jacobian each iteration.
 pub(crate) enum Jacobian<'a> {
     /// Central finite differences over the residual closure (for callers
-    /// without analytic derivatives).
+    /// without analytic derivatives), over a dense pattern.
     FiniteDifference,
-    /// Analytic assembly (solver roadmap M2), see [`JacobianBuilder`].
-    Analytic(&'a mut JacobianBuilder<'a>),
+    /// Analytic assembly (solver roadmap M2) into a fixed pattern, see
+    /// [`JacobianBuilder`].
+    Analytic {
+        /// The entries every build may write: one row per equation, one
+        /// column per free coordinate.
+        pattern: SparseJacobian,
+        build: &'a mut JacobianBuilder<'a>,
+    },
+}
+
+/// A Jacobian in compressed sparse rows: per equation, the columns it may
+/// have a derivative in (ascending) and the derivatives.
+///
+/// A constraint touches a handful of parameters, so a row has a handful of
+/// entries however large the component is, and which ones is fixed for a
+/// solve. The pattern is laid out once; each Jacobian rewrites the values.
+/// An entry of the pattern may hold an exact zero (a derivative that
+/// vanishes at this point); every product skips those, as a dense matrix
+/// skipped its zeros, so the arithmetic is the same.
+#[derive(Clone)]
+pub(crate) struct SparseJacobian {
+    n_cols: usize,
+    /// Row `r` is entries `starts[r]..starts[r + 1]`.
+    starts: Vec<usize>,
+    cols: Vec<usize>,
+    vals: Vec<f64>,
+}
+
+impl SparseJacobian {
+    /// The pattern of rows `rows` (columns ascending, each listed once), over
+    /// `n_cols` columns, with every value zero.
+    pub(crate) fn from_rows<R: AsRef<[usize]>>(n_cols: usize, rows: &[R]) -> Self {
+        let mut starts = Vec::with_capacity(rows.len() + 1);
+        let mut cols = Vec::new();
+        starts.push(0);
+        for row in rows {
+            let row = row.as_ref();
+            debug_assert!(row.windows(2).all(|w| w[0] < w[1]));
+            debug_assert!(row.iter().all(|&c| c < n_cols));
+            cols.extend_from_slice(row);
+            starts.push(cols.len());
+        }
+        let vals = vec![0.0; cols.len()];
+        Self {
+            n_cols,
+            starts,
+            cols,
+            vals,
+        }
+    }
+
+    /// Every column of every row: the pattern of a Jacobian whose entries
+    /// are not known in advance (finite differences).
+    pub(crate) fn dense(n_rows: usize, n_cols: usize) -> Self {
+        let all: Vec<usize> = (0..n_cols).collect();
+        Self::from_rows(n_cols, &vec![all; n_rows])
+    }
+
+    /// The non-zero entries of a dense matrix.
+    #[cfg(test)]
+    pub(crate) fn from_dense(j: &[Vec<f64>], n_cols: usize) -> Self {
+        let rows: Vec<Vec<usize>> = j
+            .iter()
+            .map(|row| (0..n_cols).filter(|&c| row[c] != 0.0).collect())
+            .collect();
+        let mut sparse = Self::from_rows(n_cols, &rows);
+        sparse.copy_from_dense(j);
+        sparse
+    }
+
+    pub(crate) fn n_rows(&self) -> usize {
+        self.starts.len() - 1
+    }
+
+    /// The first entry of row `r`: the slot of the `k`-th column of the
+    /// row's pattern is `row_start(r) + k`.
+    pub(crate) fn row_start(&self, r: usize) -> usize {
+        self.starts[r]
+    }
+
+    /// The columns of row `r`'s pattern.
+    pub(crate) fn row_cols(&self, r: usize) -> &[usize] {
+        &self.cols[self.starts[r]..self.starts[r + 1]]
+    }
+
+    /// The values, slot by slot (see [`SparseJacobian::row_start`]).
+    pub(crate) fn values_mut(&mut self) -> &mut [f64] {
+        &mut self.vals
+    }
+
+    /// The non-zero entries of row `r`, as `(column, value)`, columns
+    /// ascending.
+    fn row(&self, r: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
+        let span = self.starts[r]..self.starts[r + 1];
+        self.cols[span.clone()]
+            .iter()
+            .zip(&self.vals[span])
+            .filter(|(_, v)| **v != 0.0)
+            .map(|(c, v)| (*c, *v))
+    }
+
+    /// The non-zero entries of every row, row by row.
+    fn rows(&self) -> impl Iterator<Item = impl Iterator<Item = (usize, f64)> + '_> + '_ {
+        (0..self.n_rows()).map(|r| self.row(r))
+    }
+
+    fn clear_values(&mut self) {
+        self.vals.fill(0.0);
+    }
+
+    /// Take the values of the pattern's entries from a dense matrix.
+    fn copy_from_dense(&mut self, j: &[Vec<f64>]) {
+        for (r, row) in j.iter().enumerate() {
+            let span = self.starts[r]..self.starts[r + 1];
+            for (v, &c) in self.vals[span.clone()].iter_mut().zip(&self.cols[span]) {
+                *v = row[c];
+            }
+        }
+    }
+
+    /// The matrix with every row written out in full.
+    #[cfg(debug_assertions)]
+    pub(crate) fn to_dense(&self) -> Vec<Vec<f64>> {
+        let mut dense = vec![vec![0.0_f64; self.n_cols]; self.n_rows()];
+        for (r, row) in dense.iter_mut().enumerate() {
+            let span = self.starts[r]..self.starts[r + 1];
+            for (&c, &v) in self.cols[span.clone()].iter().zip(&self.vals[span]) {
+                row[c] = v;
+            }
+        }
+        dense
+    }
 }
 
 /// How a step in the free coordinates is applied to the stored parameters.
@@ -453,21 +584,6 @@ fn reweigh(f: &mut [f64], old: &[f64], new: &[f64]) {
     }
 }
 
-/// The non-zero entries of each row of a dense Jacobian, as
-/// `(column, value)`. A constraint touches a handful of parameters, so
-/// products with `J` cost far less over these than over the dense rows.
-fn sparse_rows(j: &[Vec<f64>]) -> Vec<Vec<(usize, f64)>> {
-    j.iter()
-        .map(|row| {
-            row.iter()
-                .enumerate()
-                .filter(|(_, v)| **v != 0.0)
-                .map(|(col, v)| (col, *v))
-                .collect()
-        })
-        .collect()
-}
-
 /// The weights from the Jacobian the loop has just built: `size` is taken
 /// over the free columns only, from rows the loop needs anyway, so an
 /// ordinary solve pays nothing for it. (What the held columns add is found
@@ -475,14 +591,14 @@ fn sparse_rows(j: &[Vec<f64>]) -> Vec<Vec<(usize, f64)>> {
 /// whether any weight is not one.
 fn weights_from_rows(
     weights: &mut [f64],
-    rows: &[Vec<(usize, f64)>],
+    j: &SparseJacobian,
     column: &[f64],
     tolerance: f64,
     unit: f64,
 ) -> bool {
     let mut any = false;
-    for (weight, row) in weights.iter_mut().zip(rows) {
-        let size: f64 = row.iter().map(|&(col, v)| v.abs() * column[col]).sum();
+    for (weight, row) in weights.iter_mut().zip(j.rows()) {
+        let size: f64 = row.map(|(col, v)| v.abs() * column[col]).sum();
         *weight = weight_of(size, tolerance, unit);
         any |= *weight != 1.0;
     }
@@ -530,10 +646,11 @@ fn weigh(f: &mut [f64], weights: &[f64]) {
 }
 
 /// Divide each Jacobian row by the weight of its equation.
-fn weigh_rows(j: &mut [Vec<f64>], weights: &[f64]) {
-    for (row, weight) in j.iter_mut().zip(weights) {
+fn weigh_rows(j: &mut SparseJacobian, weights: &[f64]) {
+    for (r, weight) in weights.iter().enumerate() {
         if *weight != 1.0 {
-            for v in row.iter_mut() {
+            let span = j.starts[r]..j.starts[r + 1];
+            for v in j.vals[span].iter_mut() {
                 *v /= weight;
             }
         }
@@ -552,12 +669,12 @@ fn weigh_rows(j: &mut [Vec<f64>], weights: &[f64]) {
 /// that touch it ([`scale_columns`]), the step is found in those scaled
 /// coordinates, and scaled back before it is applied. A column touched by
 /// an unweighted row has scale one.
-fn column_scales(j: &[Vec<f64>], weights: &[f64], n: usize) -> Vec<f64> {
+fn column_scales(j: &SparseJacobian, weights: &[f64], n: usize) -> Vec<f64> {
     let mut scales = vec![f64::INFINITY; n];
-    for (row, weight) in j.iter().zip(weights) {
-        for (scale, v) in scales.iter_mut().zip(row) {
-            if *v != 0.0 && *weight < *scale {
-                *scale = *weight;
+    for (row, weight) in j.rows().zip(weights) {
+        for (col, _) in row {
+            if *weight < scales[col] {
+                scales[col] = *weight;
             }
         }
     }
@@ -572,11 +689,9 @@ fn column_scales(j: &[Vec<f64>], weights: &[f64], n: usize) -> Vec<f64> {
 
 /// Multiply each column of the Jacobian by its scale: the Jacobian with
 /// respect to the scaled coordinates `y`, where the step is `h = scale·y`.
-fn scale_columns(j: &mut [Vec<f64>], scales: &[f64]) {
-    for row in j.iter_mut() {
-        for (v, scale) in row.iter_mut().zip(scales) {
-            *v *= scale;
-        }
+fn scale_columns(j: &mut SparseJacobian, scales: &[f64]) {
+    for (v, &col) in j.vals.iter_mut().zip(&j.cols) {
+        *v *= scales[col];
     }
 }
 
@@ -687,15 +802,21 @@ where
 
     let mut residual;
     let mut iters = 0;
-    // Hoisted once; re-filled every iteration (FD overwrites fully, the
-    // analytic builder receives it zeroed).
-    let mut j = vec![vec![0.0_f64; n_free]; n_eq];
     // The Jacobian source is matched once (it is consumed by value); the
-    // per-iteration branch checks the option.
-    let mut analytic: Option<&mut JacobianBuilder<'_>> = match jacobian {
-        Jacobian::FiniteDifference => None,
-        Jacobian::Analytic(build) => Some(build),
+    // per-iteration branch checks the option. The pattern is laid out here
+    // and its values rewritten by every Jacobian (the analytic builder
+    // receives them zeroed; differences are taken into a dense scratch
+    // matrix and copied over).
+    let (mut j, mut analytic, mut fd_scratch) = match jacobian {
+        Jacobian::FiniteDifference => (
+            SparseJacobian::dense(n_eq, n_free),
+            None,
+            vec![vec![0.0_f64; n_free]; n_eq],
+        ),
+        Jacobian::Analytic { pattern, build } => (pattern, Some(build), Vec::new()),
     };
+    debug_assert_eq!(j.n_rows(), n_eq);
+    debug_assert_eq!(j.n_cols, n_free);
 
     // The residual vector at the current iterate (weighted, once there are
     // weights). An accepted trial step hands its residuals over, so each
@@ -730,22 +851,20 @@ where
 
             // Jacobian J (n_eq × n_free).
             if let Some(build) = analytic.as_mut() {
-                for row in j.iter_mut() {
-                    row.fill(0.0);
-                }
+                j.clear_values();
                 build(params, &mut j);
             } else {
-                numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
+                numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut fd_scratch);
+                j.copy_from_dense(&fd_scratch);
             }
 
-            let mut rows = sparse_rows(&j);
             if !primed {
                 primed = true;
                 if let Some(magnitudes) = magnitudes.as_mut() {
                     let mut column = vec![0.0_f64; n_free];
                     (magnitudes.columns)(params, &mut column);
                     let before = weighted.then(|| weights.clone());
-                    weighted = weights_from_rows(&mut weights, &rows, &column, tolerance, unit);
+                    weighted = weights_from_rows(&mut weights, &j, &column, tolerance, unit);
                     match &before {
                         Some(before) => reweigh(&mut f, before, &weights),
                         None if weighted => weigh(&mut f, &weights),
@@ -760,7 +879,6 @@ where
             if let Some(scales) = &scales {
                 weigh_rows(&mut j, &weights);
                 scale_columns(&mut j, scales);
-                rows = sparse_rows(&j);
             }
 
             // The linear model f + J·h at this iterate, and a dogleg step
@@ -770,7 +888,7 @@ where
             // it. (With weights, the model, its steps and the radius are in
             // the scaled coordinates.)
             let saved = save(params, storage);
-            let model = LinearModel::new(&j, rows, &f, n_free, options);
+            let model = LinearModel::new(&j, &f, n_free, options);
             // The residuals of the trial step that was accepted, if one was.
             let mut accepted: Option<Vec<f64>> = None;
             for _ in 0..TRUST_ATTEMPTS {
@@ -862,12 +980,11 @@ where
     while residual > 0.0 && residual < tolerance && polish_steps < options.polish_steps {
         if chord.is_none() {
             if let Some(build) = analytic.as_mut() {
-                for row in j.iter_mut() {
-                    row.fill(0.0);
-                }
+                j.clear_values();
                 build(params, &mut j);
             } else {
-                numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut j);
+                numerical_jacobian_for(params, space, n_eq, &mut eval_residuals, &mut fd_scratch);
+                j.copy_from_dense(&fd_scratch);
             }
             let scales = weighted.then(|| column_scales(&j, &weights, n_free));
             if let Some(scales) = &scales {
@@ -879,7 +996,7 @@ where
             // regularised step there instead, so an under-constrained
             // component is polished too (toward its minimum-norm
             // correction). Otherwise there is no polish.
-            let (normal, b) = normal_equations(&j, &f_final, n_free);
+            let (normal, b) = j.normal_equations(&f_final);
             // The matrix is copied only where a regularised retry may
             // need it.
             let factors = if options.polish_singular {
@@ -898,32 +1015,27 @@ where
             };
             chord = Some(Chord {
                 factors,
-                rows: None,
                 scales,
                 first: Some(b),
             });
         }
         let Some(Chord {
             factors,
-            rows,
             scales,
             first,
         }) = &mut chord
         else {
             break;
         };
-        // b = Jᵀ(−f). The first step has it from `normal_equations`; a
-        // later one forms it over the non-zero entries of the same
-        // Jacobian (still in `j`), in the order `normal_equations` sums
-        // them. Most polishes take one step, so the rows are only gathered
-        // for a second.
+        // b = Jᵀ(−f). The first step has it from the normal equations; a
+        // later one forms it over the same Jacobian (still in `j`), in the
+        // order they sum it.
         let mut b = match first.take() {
             Some(b) => b,
             None => {
-                let rows = rows.get_or_insert_with(|| sparse_rows(&j));
                 let mut b = vec![0.0_f64; n_free];
-                for (row, fi) in rows.iter().zip(&f_final) {
-                    for &(col, v) in row {
+                for (row, fi) in j.rows().zip(&f_final) {
+                    for (col, v) in row {
                         b[col] -= v * fi;
                     }
                 }
@@ -1001,9 +1113,6 @@ fn norm(v: &[f64]) -> f64 {
 struct Chord {
     /// The factored normal matrix.
     factors: LuFactors,
-    /// The non-zero entries of the Jacobian it came from, once a second
-    /// step needs them.
-    rows: Option<Vec<Vec<(usize, f64)>>>,
     /// The column scales, when the equations are weighted.
     scales: Option<Vec<f64>>,
     /// The right-hand side of the first step, until it is taken.
@@ -1029,22 +1138,15 @@ pub(crate) const QR_TRIGGER: f64 = 1e-8;
 /// The Gauss–Newton step `h` of `J·h ≈ −f`: from the regularised normal
 /// equations `(JᵀJ + λI)·h = −Jᵀf` while they are well conditioned (the
 /// fast path, bitwise what elimination gives), otherwise from a
-/// rank-truncated QR of `J` (see [`QR_TRIGGER`]). `rows` are the
-/// [`sparse_rows`] of `j`.
-fn gauss_newton_step(
-    j: &[Vec<f64>],
-    rows: &[Vec<(usize, f64)>],
-    f: &[f64],
-    n: usize,
-    lambda: f64,
-) -> Option<Vec<f64>> {
-    let (mut a, mut b) = normal_equations(j, f, n);
+/// rank-truncated QR of `J` (see [`QR_TRIGGER`]).
+fn gauss_newton_step(j: &SparseJacobian, f: &[f64], lambda: f64) -> Option<Vec<f64>> {
+    let (mut a, mut b) = j.normal_equations(f);
     for (i, row) in a.iter_mut().enumerate() {
         row[i] += lambda;
     }
     match LuFactors::factor(a) {
         Some(factors) if factors.pivot_ratio() >= QR_TRIGGER => Some(factors.solve(&mut b)),
-        _ => min_norm_step(rows, f, n),
+        _ => min_norm_step(j, f),
     }
 }
 
@@ -1076,21 +1178,20 @@ fn householder(x: &[f64]) -> Option<(Vec<f64>, f64, f64)> {
 /// Householder QR of `J` decides the rank — columns are taken while the
 /// remaining norm exceeds [`STEP_RCOND`] times the largest — and, when that
 /// rank is short of the column count, a second QR of the leading rows of
-/// `R` gives the shortest of the solutions. `J` enters as its `n` columns'
-/// worth of sparse rows; nothing is squared, so the step is as accurate as
-/// `κ(J)` allows rather than `κ(J)²`.
+/// `R` gives the shortest of the solutions. Nothing is squared, so the step
+/// is as accurate as `κ(J)` allows rather than `κ(J)²`.
 ///
 /// `None` when `J` has no column above the threshold. A `J` or `f` that is
 /// not finite gives a step of NaN, for the caller to report.
-pub(crate) fn min_norm_step(rows: &[Vec<(usize, f64)>], f: &[f64], n: usize) -> Option<Vec<f64>> {
-    let m = f.len();
-    if f.iter().any(|v| !v.is_finite()) || rows.iter().flatten().any(|(_, v)| !v.is_finite()) {
+pub(crate) fn min_norm_step(j: &SparseJacobian, f: &[f64]) -> Option<Vec<f64>> {
+    let (m, n) = (f.len(), j.n_cols);
+    if f.iter().any(|v| !v.is_finite()) || j.vals.iter().any(|v| !v.is_finite()) {
         return Some(vec![f64::NAN; n]);
     }
     // The columns of J, so that the reflectors run over contiguous memory.
     let mut cols = vec![vec![0.0_f64; m]; n];
-    for (i, row) in rows.iter().enumerate() {
-        for &(c, v) in row {
+    for (i, row) in j.rows().enumerate() {
+        for (c, v) in row {
             cols[c][i] += v;
         }
     }
@@ -1198,8 +1299,7 @@ pub(crate) fn min_norm_step(rows: &[Vec<(usize, f64)>], f: &[f64], n: usize) -> 
 /// The linear model `f + J·h` of the residuals around one iterate, with the
 /// two steps a dogleg is drawn between.
 struct LinearModel<'a> {
-    /// The non-zero entries of each row of `J` (see [`sparse_rows`]).
-    rows: Vec<Vec<(usize, f64)>>,
+    j: &'a SparseJacobian,
     f: &'a [f64],
     /// `‖f‖²`.
     cost: f64,
@@ -1216,25 +1316,18 @@ struct LinearModel<'a> {
 }
 
 impl<'a> LinearModel<'a> {
-    /// `rows` are the [`sparse_rows`] of `j`.
-    fn new(
-        j: &[Vec<f64>],
-        rows: Vec<Vec<(usize, f64)>>,
-        f: &'a [f64],
-        n_free: usize,
-        options: &CoreOptions,
-    ) -> Self {
+    fn new(j: &'a SparseJacobian, f: &'a [f64], n_free: usize, options: &CoreOptions) -> Self {
         let mut g = vec![0.0_f64; n_free];
-        for (row, fi) in rows.iter().zip(f) {
-            for &(col, v) in row {
+        for (row, fi) in j.rows().zip(f) {
+            for (col, v) in row {
                 g[col] += v * fi;
             }
         }
         let g_sq = dot(&g, &g);
-        let jg_sq: f64 = rows
-            .iter()
+        let jg_sq: f64 = j
+            .rows()
             .map(|row| {
-                let jg: f64 = row.iter().map(|&(col, v)| v * g[col]).sum();
+                let jg: f64 = row.map(|(col, v)| v * g[col]).sum();
                 jg * jg
             })
             .sum();
@@ -1243,7 +1336,7 @@ impl<'a> LinearModel<'a> {
             g.iter().map(|gk| -alpha * gk).collect()
         });
 
-        let solved = gauss_newton_step(j, &rows, f, n_free, options.lambda);
+        let solved = gauss_newton_step(j, f, options.lambda);
         let non_finite = solved
             .as_ref()
             .is_some_and(|h| h.iter().any(|d| !d.is_finite()));
@@ -1252,7 +1345,7 @@ impl<'a> LinearModel<'a> {
             .map(|h| h.iter().map(|d| options.initial_step * d).collect());
 
         Self {
-            rows,
+            j,
             f,
             cost: dot(f, f),
             g,
@@ -1310,11 +1403,11 @@ impl<'a> LinearModel<'a> {
     /// Negative when the model promised nothing or a number went missing.
     fn gain(&self, step: &[f64], f_new: &[f64]) -> f64 {
         let modelled: f64 = self
-            .rows
-            .iter()
+            .j
+            .rows()
             .zip(self.f)
             .map(|(row, fi)| {
-                let jh: f64 = row.iter().map(|&(col, v)| v * step[col]).sum();
+                let jh: f64 = row.map(|(col, v)| v * step[col]).sum();
                 let r = fi + jh;
                 r * r
             })
@@ -1700,6 +1793,31 @@ pub(crate) fn normal_equations(j: &[Vec<f64>], f: &[f64], n: usize) -> (Vec<Vec<
         }
     }
     (a, b)
+}
+
+impl SparseJacobian {
+    /// The normal-equation pair `A = JᵀJ` and `b = Jᵀ(−F)`: the sums of
+    /// [`normal_equations`], term for term and in the same order, at a cost
+    /// of the squared entries of each row and nothing per empty column.
+    pub(crate) fn normal_equations(&self, f: &[f64]) -> (Vec<Vec<f64>>, Vec<f64>) {
+        let n = self.n_cols;
+        let mut a = vec![vec![0.0_f64; n]; n];
+        let mut b = vec![0.0_f64; n];
+        let mut nonzero: Vec<(usize, f64)> = Vec::new();
+
+        for (r, &fi) in f.iter().enumerate() {
+            nonzero.clear();
+            nonzero.extend(self.row(r));
+            for &(col, v) in &nonzero {
+                b[col] -= v * fi;
+                let a_col = &mut a[col];
+                for &(k, w) in &nonzero {
+                    a_col[k] += v * w;
+                }
+            }
+        }
+        (a, b)
+    }
 }
 
 /// Gaussian elimination with partial pivoting; `None` when a pivot falls
@@ -2099,8 +2217,8 @@ mod tests {
     }
 
     /// Dense rows to the sparse rows `min_norm_step` takes.
-    fn sparse(j: &[Vec<f64>]) -> Vec<Vec<(usize, f64)>> {
-        sparse_rows(j)
+    fn sparse(j: &[Vec<f64>], n: usize) -> SparseJacobian {
+        SparseJacobian::from_dense(j, n)
     }
 
     fn close(a: &[f64], b: &[f64], tol: f64) -> bool {
@@ -2113,7 +2231,7 @@ mod tests {
     fn min_norm_step_solves_a_square_system() {
         let j = sample_matrix();
         let f = [1.0, -2.0, 0.5, 3.0];
-        let h = min_norm_step(&sparse(&j), &f, 4).expect("regular");
+        let h = min_norm_step(&sparse(&j, 4), &f).expect("regular");
         let mut b: Vec<f64> = f.iter().map(|v| -v).collect();
         let direct = gaussian_elimination(&mut j.clone(), &mut b).expect("regular");
         assert!(close(&h, &direct, 1e-13), "{h:?} vs {direct:?}");
@@ -2124,7 +2242,7 @@ mod tests {
         // Two equations, three unknowns, full row rank: h = −Jᵀ(JJᵀ)⁻¹f.
         let j = vec![vec![1.0, 2.0, -1.0], vec![0.5, -1.0, 3.0]];
         let f = [1.0, -2.0];
-        let h = min_norm_step(&sparse(&j), &f, 3).expect("rank 2");
+        let h = min_norm_step(&sparse(&j, 3), &f).expect("rank 2");
         let jjt = [
             [dot(&j[0], &j[0]), dot(&j[0], &j[1])],
             [dot(&j[1], &j[0]), dot(&j[1], &j[1])],
@@ -2141,12 +2259,12 @@ mod tests {
     #[test]
     fn min_norm_step_handles_rank_deficiency() {
         // Two identical columns: consistent, the step splits evenly.
-        let h = min_norm_step(&sparse(&[vec![1.0, 1.0]]), &[-2.0], 2).unwrap();
+        let h = min_norm_step(&sparse(&[vec![1.0, 1.0]], 2), &[-2.0]).unwrap();
         assert!(close(&h, &[1.0, 1.0], 1e-14), "{h:?}");
         // Two identical rows asking for different things: the least-squares
         // compromise (their mean), and of those the shortest.
         let j = vec![vec![1.0, 1.0], vec![1.0, 1.0]];
-        let h = min_norm_step(&sparse(&j), &[-1.0, -3.0], 2).unwrap();
+        let h = min_norm_step(&sparse(&j, 2), &[-1.0, -3.0]).unwrap();
         assert!(close(&h, &[1.0, 1.0], 1e-14), "{h:?}");
         // A dependent column among independent ones.
         let j = vec![
@@ -2155,7 +2273,7 @@ mod tests {
             vec![1.0, 1.0, 2.0],
         ];
         let f = [-1.0, -2.0, -3.0];
-        let h = min_norm_step(&sparse(&j), &f, 3).unwrap();
+        let h = min_norm_step(&sparse(&j, 3), &f).unwrap();
         // Solutions are h = (1, 2, 0) + t·(1, 1, −1); the shortest has t = −1.
         assert!(close(&h, &[0.0, 1.0, 1.0], 1e-13), "{h:?}");
     }
@@ -2164,7 +2282,7 @@ mod tests {
     fn min_norm_step_fits_an_overdetermined_system() {
         let j = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
         let f = [-1.0, -1.0, -3.0];
-        let h = min_norm_step(&sparse(&j), &f, 2).unwrap();
+        let h = min_norm_step(&sparse(&j, 2), &f).unwrap();
         // Normal equations: [[2, 1], [1, 2]]·h = [4, 4] → h = (4/3, 4/3).
         assert!(close(&h, &[4.0 / 3.0, 4.0 / 3.0], 1e-14), "{h:?}");
     }
@@ -2177,7 +2295,7 @@ mod tests {
         let e = 1e-7;
         let j = vec![vec![1.0, e], vec![1.0, -e]];
         let f = [-1.0, -1.0 - 2e-9];
-        let h = min_norm_step(&sparse(&j), &f, 2).unwrap();
+        let h = min_norm_step(&sparse(&j, 2), &f).unwrap();
         let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
         let expect = [
             (-f[0] * j[1][1] + f[1] * j[0][1]) / det,
@@ -2188,8 +2306,8 @@ mod tests {
 
     #[test]
     fn min_norm_step_reports_no_step_and_nan() {
-        assert!(min_norm_step(&sparse(&[vec![0.0, 0.0]]), &[1.0], 2).is_none());
-        let h = min_norm_step(&sparse(&[vec![f64::NAN, 1.0]]), &[1.0], 2).unwrap();
+        assert!(min_norm_step(&sparse(&[vec![0.0, 0.0]], 2), &[1.0]).is_none());
+        let h = min_norm_step(&sparse(&[vec![f64::NAN, 1.0]], 2), &[1.0]).unwrap();
         assert!(h.iter().all(|v| v.is_nan()));
     }
 
@@ -2267,5 +2385,18 @@ mod tests {
             b.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
             b_ref.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
         );
+
+        // The sparse Jacobian gives the same sums, whether its pattern holds
+        // only the non-zero entries or every entry, zeros included.
+        let mut every = SparseJacobian::dense(j.len(), n);
+        every.copy_from_dense(&j);
+        for sparse in [SparseJacobian::from_dense(&j, n), every] {
+            let (a_sparse, b_sparse) = sparse.normal_equations(&f);
+            assert_eq!(bits(&a_sparse), bits(&a_ref));
+            assert_eq!(
+                b_sparse.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                b_ref.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+            );
+        }
     }
 }

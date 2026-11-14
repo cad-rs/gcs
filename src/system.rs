@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use crate::diagnosis::{Diagnosis, CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL};
 use crate::numerics::{
     self, gt, householder_qr_column_pivoting, le, solve_normal_equations, AdditiveSpace,
-    CoreOptions, RowSpaceGram, SolveResult, SolveStatus, StepSpace, LAMBDA,
+    CoreOptions, RowSpaceGram, SolveResult, SolveStatus, SparseJacobian, StepSpace, LAMBDA,
 };
 
 /// A sparse row or direction: `(parameter or column index, value)` pairs.
@@ -102,13 +102,176 @@ pub(crate) fn eval_residuals<E: Equations + ?Sized>(
     params: &[f64],
 ) -> Vec<f64> {
     let mut f = vec![0.0_f64; equation_total(eqs, indices)];
+    eval_residuals_into(eqs, indices, params, &mut f);
+    f
+}
+
+/// [`eval_residuals`] into the caller's buffer, which has one entry per
+/// equation of `indices`.
+pub(crate) fn eval_residuals_into<E: Equations + ?Sized>(
+    eqs: &E,
+    indices: &[usize],
+    params: &[f64],
+    f: &mut [f64],
+) {
     let mut row = 0;
     for &i in indices {
         let count = eqs.equation_count(i);
         eqs.residuals(i, params, &mut f[row..row + count]);
         row += count;
     }
-    f
+    debug_assert_eq!(row, f.len());
+}
+
+/// Sentinel of [`Assembly`]: an entry whose column is held, which the
+/// Jacobian has no column for.
+const HELD: usize = usize::MAX;
+
+/// How the Jacobian of one component is assembled from the per-constraint
+/// rows of [`Equations::jacobian`], laid out once per solve.
+///
+/// Each equation's row of the [`SparseJacobian`] holds the free columns its
+/// constraint lists, and every entry the constraint lists is mapped to its
+/// slot in the values when the layout is made. A build then writes each
+/// derivative straight to its slot, with no lookup of the column. (The
+/// trait promises that a constraint lists the same columns whatever their
+/// values, in a fixed order; an entry that arrives in another order is
+/// still placed, by a search of its row.)
+pub(crate) struct Assembly {
+    /// The columns the constraints touch, held or free, ascending.
+    pub(crate) touched: Vec<usize>,
+    /// The free ones among them, ascending: column `k` of the Jacobian is
+    /// `free[k]`.
+    pub(crate) free: Vec<usize>,
+    /// Per column of the family, its Jacobian column, or [`HELD`].
+    col_of: Vec<usize>,
+    /// Row `r` lists entries `entry_starts[r]..entry_starts[r + 1]`.
+    entry_starts: Vec<usize>,
+    /// The column of each listed entry, as the layout saw it.
+    listed: Vec<usize>,
+    /// The slot of each listed entry in the values, or [`HELD`].
+    slots: Vec<usize>,
+}
+
+impl Assembly {
+    /// Lay out the Jacobian of the constraints `indices` over the columns
+    /// `fixed` does not hold, at `params`: the assembly and the empty
+    /// pattern it fills.
+    pub(crate) fn new<E: Equations + ?Sized>(
+        eqs: &E,
+        indices: &[usize],
+        params: &[f64],
+        fixed: &[bool],
+    ) -> (Self, SparseJacobian) {
+        let mut entry_starts = vec![0];
+        let mut listed: Vec<usize> = Vec::new();
+        let mut scratch: Vec<SparseRow> = Vec::new();
+        for &i in indices {
+            scratch.clear();
+            scratch.resize_with(eqs.equation_count(i), Vec::new);
+            eqs.jacobian(i, params, &mut scratch);
+            for row in &scratch {
+                listed.extend(row.iter().map(|&(column, _)| column));
+                entry_starts.push(listed.len());
+            }
+        }
+        let mut touched = listed.clone();
+        touched.sort_unstable();
+        touched.dedup();
+        let free: Vec<usize> = touched.iter().copied().filter(|&c| !fixed[c]).collect();
+        let mut col_of = vec![HELD; touched.last().map_or(0, |&c| c + 1)];
+        for (k, &c) in free.iter().enumerate() {
+            col_of[c] = k;
+        }
+
+        let rows: Vec<Vec<usize>> = entry_starts
+            .windows(2)
+            .map(|span| {
+                let mut row: Vec<usize> = listed[span[0]..span[1]]
+                    .iter()
+                    .map(|&c| col_of[c])
+                    .filter(|&k| k != HELD)
+                    .collect();
+                row.sort_unstable();
+                row.dedup();
+                row
+            })
+            .collect();
+        let pattern = SparseJacobian::from_rows(free.len(), &rows);
+        let mut assembly = Self {
+            touched,
+            free,
+            col_of,
+            entry_starts,
+            listed,
+            slots: Vec::new(),
+        };
+        assembly.slots = (0..pattern.n_rows())
+            .flat_map(|r| {
+                let span = assembly.entry_starts[r]..assembly.entry_starts[r + 1];
+                span.map(move |e| (r, e))
+            })
+            .map(|(r, e)| assembly.slot(&pattern, r, assembly.listed[e]))
+            .collect();
+        (assembly, pattern)
+    }
+
+    /// The slot of column `column` in row `r` of `pattern`, or [`HELD`].
+    fn slot(&self, pattern: &SparseJacobian, r: usize, column: usize) -> usize {
+        let k = self.col_of.get(column).copied().unwrap_or(HELD);
+        if k == HELD {
+            return HELD;
+        }
+        match pattern.row_cols(r).binary_search(&k) {
+            Ok(at) => pattern.row_start(r) + at,
+            Err(_) => {
+                // Outside the layout: the constraint listed a column it did
+                // not list when the layout was made.
+                debug_assert!(false, "row {r} lists column {column} outside its pattern");
+                HELD
+            }
+        }
+    }
+
+    /// Write the Jacobian of the constraints `indices` (those it was laid
+    /// out for) at `params` into the values of `j`, which arrive zeroed.
+    /// `scratch` is reused between builds.
+    pub(crate) fn assemble<E: Equations + ?Sized>(
+        &self,
+        eqs: &E,
+        indices: &[usize],
+        params: &[f64],
+        j: &mut SparseJacobian,
+        scratch: &mut Vec<SparseRow>,
+    ) {
+        let mut r = 0;
+        for &i in indices {
+            let count = eqs.equation_count(i);
+            if scratch.len() < count {
+                scratch.resize_with(count, Vec::new);
+            }
+            let rows = &mut scratch[..count];
+            for row in rows.iter_mut() {
+                row.clear();
+            }
+            eqs.jacobian(i, params, rows);
+            for row in rows.iter() {
+                let base = self.entry_starts[r];
+                let laid_out = &self.listed[base..self.entry_starts[r + 1]];
+                for (k, &(column, v)) in row.iter().enumerate() {
+                    let slot = if laid_out.get(k) == Some(&column) {
+                        self.slots[base + k]
+                    } else {
+                        self.slot(j, r, column)
+                    };
+                    if slot != HELD {
+                        j.values_mut()[slot] += v;
+                    }
+                }
+                r += 1;
+            }
+        }
+    }
 }
 
 /// Assemble the dense Jacobian (equations of `indices` × the columns of
@@ -353,16 +516,17 @@ fn solve_one<E: Equations + ?Sized>(
     fixed: &[bool],
     options: &CoreOptions,
 ) -> (SolveResult, Vec<usize>) {
-    let touched = touched_params(eqs, group, params);
+    let (assembly, pattern) = Assembly::new(eqs, group, params, fixed);
+    let touched = assembly.touched.clone();
     // Only this component's own free columns move: the Newton loop's free
     // list is exactly its movable coordinates.
-    let free: Vec<usize> = touched.iter().copied().filter(|&p| !fixed[p]).collect();
-    let col_of: HashMap<usize, usize> = free.iter().enumerate().map(|(c, &p)| (p, c)).collect();
-    let space = eqs.step_space(&free);
+    let free = &assembly.free;
+    let space = eqs.step_space(free);
 
     let n_eq = equation_total(eqs, group);
-    let mut build = |p: &[f64], out: &mut [Vec<f64>]| {
-        analytic_jacobian(eqs, group, p, &col_of, out);
+    let mut scratch: Vec<SparseRow> = Vec::new();
+    let mut build = |p: &[f64], j: &mut SparseJacobian| {
+        assembly.assemble(eqs, group, p, j, &mut scratch);
     };
 
     // One-shot integration check (debug builds): the analytic assembly
@@ -371,11 +535,11 @@ fn solve_one<E: Equations + ?Sized>(
     // this catches per-call assembly bugs (column mapping, mask filtering).
     #[cfg(debug_assertions)]
     if n_eq > 0 && !free.is_empty() && eqs.debug_check_jacobian() {
-        debug_check_jacobian(eqs, group, params, &free, &*space, &mut build);
+        debug_check_jacobian(eqs, group, params, free, &*space, &pattern, &mut build);
     }
 
     let mut columns = |p: &[f64], out: &mut [f64]| {
-        for (magnitude, &column) in out.iter_mut().zip(&free) {
+        for (magnitude, &column) in out.iter_mut().zip(free) {
             *magnitude = eqs.column_magnitude(column, p);
         }
     };
@@ -385,10 +549,11 @@ fn solve_one<E: Equations + ?Sized>(
         params,
         &*space,
         n_eq,
-        |p, f| {
-            f.copy_from_slice(&eval_residuals(eqs, group, p));
+        |p, f| eval_residuals_into(eqs, group, p, f),
+        numerics::Jacobian::Analytic {
+            pattern,
+            build: &mut build,
         },
-        numerics::Jacobian::Analytic(&mut build),
         Some(numerics::Magnitudes {
             columns: &mut columns,
             rows: &mut rows,
@@ -431,14 +596,14 @@ fn debug_check_jacobian<E: Equations + ?Sized>(
     params: &mut [f64],
     free: &[usize],
     space: &dyn StepSpace,
+    pattern: &SparseJacobian,
     build: &mut numerics::JacobianBuilder<'_>,
 ) {
     let n_eq = equation_total(eqs, group);
-    let mut eval = |p: &[f64], f: &mut [f64]| {
-        f.copy_from_slice(&eval_residuals(eqs, group, p));
-    };
-    let mut j_analytic = vec![vec![0.0_f64; free.len()]; n_eq];
-    build(params, &mut j_analytic);
+    let mut eval = |p: &[f64], f: &mut [f64]| eval_residuals_into(eqs, group, p, f);
+    let mut built = pattern.clone();
+    build(params, &mut built);
+    let j_analytic = built.to_dense();
     let mut j_fd = vec![vec![0.0_f64; free.len()]; n_eq];
     numerics::numerical_jacobian_for(params, space, n_eq, &mut eval, &mut j_fd);
 

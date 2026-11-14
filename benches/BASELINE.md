@@ -298,6 +298,45 @@ steps that need it. How often that is, counted with temporary counters:
 75 of 18 317 steps in the 2D corpus, 16 of 37 781 in the assembly corpus,
 17 of 41 in the 3D corpus.
 
+### After the Jacobian was stored sparse (P2.1)
+
+Same machine, all benchmarks, the previous commit (`02b6953`) and this
+change alternately, three rounds each. The third round of this change ran
+10–50% slower on every benchmark, the diagnosis ones included, which this
+change does not touch; it is the machine, so the table gives the median of
+the three rounds on each side.
+
+| Benchmark | before | after | change |
+|---|---:|---:|---:|
+| `sketch/solve_chain/54` | 0.228 ms | 0.186 ms | −18% |
+| `sketch/solve_chain/198` | 3.79 ms | 3.59 ms | −5.3% |
+| `sketch/solve_chain/792` | 206 ms | 200 ms | −2.6% |
+| `sketch/resolve_chain/54` | 0.225 ms | 0.186 ms | −17% |
+| `sketch/resolve_chain/198` | 3.84 ms | 3.58 ms | −6.7% |
+| `sketch/resolve_chain/792` | 207 ms | 197 ms | −4.6% |
+| `sketch/solve_field/360` | 0.930 ms | 0.754 ms | −19% |
+| `sketch/solve_field/3600` | 8.22 ms | 7.78 ms | −5.4% |
+| `space/solve_truss/60` | 0.343 ms | 0.245 ms | −29% |
+| `space/solve_truss/240` | 9.57 ms | 8.42 ms | −12% |
+| `space/solve_truss/780` | 369 ms | 347 ms | −6.1% |
+| `assembly/solve_chain/5`, `/20`, `/40` | | | −3.3%, −3.6%, −5.2% |
+| `assembly/solve_star/5`, `/20`, `/40` | | | −4.6%, −3.9%, −6.3% |
+
+The diagnosis benchmarks are +0.1% to +6.3% on the medians, with the
+rounds of the two sides overlapping (`sketch/diagnose_chain/198` 8.78–9.18
+ms before, 8.84–9.42 after, leaving out the slow round); their code is not
+part of this change.
+
+Where the time went before, from temporary timers in the Newton loop
+(release build, per solve, not committed): on the 54-parameter chain the
+dense Jacobian — zeroing it, filling it through the hash map, gathering its
+non-zero entries three times, weighting it, and scanning every column of
+every row to form the normal equations — was a third of the solve, and the
+factorisation 28%; on the 240-parameter truss the factorisation was 72%
+and the dense passes 21%. The factorisation is what is left: it is now 39%
+of the 54-parameter chain and 83% of the 240-parameter truss, and it is
+why the largest fixtures gain least.
+
 ## Corpus gates
 
 Wall time of the metric gates in `tests/`, same machine.

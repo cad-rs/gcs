@@ -399,6 +399,29 @@ through them from a host's side.
 
 ### Performance
 
+- **The Jacobian of a solve is stored sparse.** It was a dense
+  equations × free-parameters matrix: every iteration zeroed it, the
+  analytic rows were written into it through a hash map from parameter to
+  column, and the non-zero entries were then gathered out of it again —
+  once for the linear model, again after weighting, again for the normal
+  equations. A constraint touches a handful of parameters, so all of that
+  was work on zeros, growing with the product of the two sizes. Now each
+  connected component lays out its pattern once (compressed sparse rows:
+  per equation, the free columns its constraint lists) together with the
+  slot of every entry its constraint emits, and each Jacobian writes its
+  derivatives straight into those slots; weighting, the linear model, the
+  normal equations, the QR step and the polish all read the same rows.
+  The residual closure also writes into the loop's buffer instead of a new
+  vector. The arithmetic is unchanged and so are the results, bitwise:
+  every one of the 21 437 solves of the test suite (2D, 3D and assembly
+  corpora included) ends with the same status, iteration count, residual
+  and parameters, compared bit for bit. Solves of one component take
+  13–29% less time at 18–60 parameters (`space/solve_truss/60` −29%,
+  `sketch/solve_chain/54` −18%, `sketch/solve_field/360` −19%), 5–12% at
+  198–240, and 3–6% at 780–792, where the dense factorisation of the normal
+  matrix is most of the work; the assembly fixtures gain 3–6%. Allocations
+  per solve fall by a third to two thirds (temporary counter: 954 → 644
+  on the 54-parameter chain, 8 707 → 3 068 on the 240-parameter truss).
 - **The convergence polish factors once.** After the tolerance is met,
   up to four unregularised Gauss–Newton steps nail the result to rounding;
   each built a Jacobian and factored the normal equations afresh. On an
