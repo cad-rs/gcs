@@ -195,6 +195,12 @@ equations are independent.
 The 3D family discounts storage parameters that are not physical freedoms
 (a plane has four for three, a cylinder seven for five).
 
+A driven (reference) dimension is measured, not enforced:
+`sk.measure_constraint(&c)` reads one that is not in the sketch, and
+`sk.sensitivities(&c)` says how it follows the driving dimensions — `(index,
+∂m/∂v)` for each it depends on — or `None` when the constraints leave it
+free.
+
 `sk.auto_dimensions(None)` suggests dimensions that would define the
 sketch fully as it stands (each set to what it measures, nothing
 redundant): radii, lengths, and the x and y distances of points from a

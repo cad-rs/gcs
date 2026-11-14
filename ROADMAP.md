@@ -137,6 +137,11 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   the 3D sketch has no labelled corpus of freedoms beyond `tests/freedom.rs`;
   the conflicting cases of the assembly corpus are only checked against
   their status, not against labelled motions.
+- **Driven dimensions.** `sensitivities()` (all three families) factors
+  the components it reaches on every call; a probe that keeps the
+  factorisation for many driven dimensions (as `what_if` does) is not
+  there. First order only: at a singular configuration (an exact
+  tangency) the derivative is that of the linearisation.
 - **Automatic dimensioning.** `auto_dimensions()` (2D and 3D sketches)
   offers dimensions only, in a fixed order. Left: geometric relations
   (horizontal, vertical, coincident where the geometry already has them);

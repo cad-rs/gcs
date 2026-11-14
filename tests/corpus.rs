@@ -1841,3 +1841,82 @@ fn auto_dimensions_define_every_case() {
     }
     println!("auto dimensions: {offered} offered");
 }
+
+#[test]
+fn sensitivities_match_finite_differences() {
+    use rcad_gcs::Verdict;
+    let (mut determined, mut free, mut checked, mut skipped) = (0usize, 0usize, 0usize, 0usize);
+    let mut worst = 0.0_f64;
+    for case in generate_all() {
+        if let Some(k) = case.id.strip_prefix("rect-k") {
+            if k.split('-').next().unwrap().parse::<usize>().unwrap() > 2 {
+                continue;
+            }
+        }
+        if matches!(case.expect, Expect::Conflict) {
+            continue;
+        }
+        let mut sk = (case.build)();
+        assert!(sk.solve().converged, "{}", case.id);
+        // Single-valued dimensions at their measured values.
+        let driven: Vec<Constraint> = what_if_candidates(&sk)
+            .into_iter()
+            .filter(|c| c.value().is_some() && c.equation_count() == 1)
+            .filter(|c| (c.value().unwrap() - sk.measure_constraint(c).unwrap()).abs() < 1e-12)
+            .collect();
+        let probe = sk.what_if();
+        let answers: Vec<Option<Vec<(usize, f64)>>> =
+            driven.iter().map(|d| sk.sensitivities(d)).collect();
+        for (d, s) in driven.iter().zip(&answers) {
+            // Not determined exactly when adding it would be independent.
+            let independent = probe.would_add(d).verdict == Verdict::Independent;
+            assert_eq!(s.is_none(), independent, "{}: {d:?}: {s:?}", case.id);
+            if s.is_some() {
+                determined += 1;
+            } else {
+                free += 1;
+            }
+        }
+        drop(probe);
+        // The tangent family solves to the exact tangency (its start is put
+        // at (r, 0)), met only to about √tolerance: a near-singular
+        // configuration where moving a dimension by h moves the solution by
+        // about √h, so finite differences say nothing there.
+        if case.id.starts_with("tangent-") {
+            continue;
+        }
+        // Central differences: each driving dimension moved, re-solved.
+        for j in 0..sk.constraints_len() {
+            let Some(v) = sk.constraint_value(j) else {
+                continue;
+            };
+            let h = 1e-5 * v.abs().max(1.0);
+            let moved = |dv: f64| {
+                let mut t = sk.clone();
+                t.set_constraint_value(j, v + dv);
+                t.solve().converged.then_some(t)
+            };
+            let (Some(up), Some(down)) = (moved(h), moved(-h)) else {
+                skipped += 1;
+                continue;
+            };
+            for (d, s) in driven.iter().zip(&answers) {
+                let Some(s) = s else { continue };
+                let fd = (up.measure_constraint(d).unwrap() - down.measure_constraint(d).unwrap())
+                    / (2.0 * h);
+                let want = s.iter().find(|(c, _)| *c == j).map_or(0.0, |&(_, x)| x);
+                let err = (fd - want).abs() / want.abs().max(1.0);
+                worst = worst.max(err);
+                checked += 1;
+                assert!(
+                    err < 1e-4,
+                    "{}: {d:?} by {j}: {want} vs finite difference {fd}",
+                    case.id
+                );
+            }
+        }
+    }
+    println!(
+        "sensitivities: {determined} determined, {free} not; {checked} derivatives against finite differences (worst {worst:.1e}), {skipped} driving dimensions that do not move alone"
+    );
+}

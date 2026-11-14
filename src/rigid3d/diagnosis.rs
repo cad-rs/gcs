@@ -27,7 +27,7 @@
 
 use crate::rigid3d::equations::{pack, RigidEquations, COLUMNS_PER_BODY};
 use crate::rigid3d::{ConstraintSolver, ConstraintSystem, Point3};
-use crate::system::{self, NoGauge};
+use crate::system::{self, Equations as _, NoGauge};
 use glam::DQuat;
 
 pub use crate::diagnosis::{CONSIST_TOL, PARTIAL_TOL, RANK_REL_TOL};
@@ -204,6 +204,58 @@ pub fn conflicts(
     };
     let groups = crate::conflict::conflicting_groups(&diagnosis);
     crate::conflict::find_conflicts(&components, &groups, &fails)
+}
+
+/// How the driven dimension `driven` (a `Distance` or `Angle` mate, not
+/// necessarily in the system) follows the driving ones at the given pose
+/// (see [`crate::sensitivity`] and [`crate::Sketch::sensitivities`]): for
+/// every active `Distance` and `Angle` it depends on, its slot and
+/// `∂m/∂v`, ascending. `None` when it is not determined or has no value.
+pub fn sensitivities(
+    system: &ConstraintSystem,
+    positions: &[Point3],
+    rots: &[DQuat],
+    driven: &crate::rigid3d::Constraint,
+) -> Option<Vec<(usize, f64)>> {
+    let params = pack(positions, rots);
+    let fixed = system.held_columns();
+    // The diagnosis's view: a full `Fixed` is six equations on its body,
+    // not a body taken out of the unknowns.
+    let eqs = RigidEquations::new(system);
+    // One constraint alone, over the same bodies.
+    let alone = |c: crate::rigid3d::Constraint| {
+        let mut s = ConstraintSystem::with_components(system.num_components);
+        s.add_constraint(c);
+        s
+    };
+    let residual = |c: &crate::rigid3d::Constraint, value: f64| {
+        let mut c = *c;
+        c.kind.set_value(value);
+        let s = alone(c);
+        let mut out = [0.0];
+        RigidEquations::new(&s).residuals(0, &params, &mut out);
+        out[0]
+    };
+    let mut at = *driven;
+    let value = at.kind.measure(positions, rots)?;
+    at.kind.set_value(value);
+    if at.equation_count() != 1 {
+        return None;
+    }
+    let slope = crate::sensitivity::value_slope(value, &|v| residual(&at, v));
+    let s = alone(at);
+    let mut rows: Vec<system::SparseRow> = vec![Vec::new()];
+    RigidEquations::new(&s).jacobian(0, &params, &mut rows);
+    let row = &rows[0];
+    let slope_of = |j: usize| {
+        if system.constraint_state(j) != crate::edit::ConstraintState::Active {
+            return None;
+        }
+        let c = &system.constraints[j];
+        let v = c.kind.value()?;
+        Some(crate::sensitivity::value_slope(v, &|x| residual(c, x)))
+    };
+    crate::sensitivity::sensitivities(&eqs, &params, &fixed, &NoGauge, row, slope, &slope_of)
 }
 
 /// A what-if probe of an assembly at the given pose (see

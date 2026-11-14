@@ -341,6 +341,27 @@ through them from a host's side.
   and tests the others on the pieces that leave, so a hub with forty parts
   is forty small tests; the assembly gate went from 177 s to 2.7 s
   (optimised) with it.
+- Driven dimensions: `Sketch::measure_constraint(&c)` and
+  `SpaceSketch::measure_constraint(&c)` measure a dimension that is not in
+  the sketch; `Sketch::sensitivities(&driven)`,
+  `SpaceSketch::sensitivities(&driven)` and
+  `rigid3d::assembly_sensitivities(system, positions, rotations, &driven)`
+  give, for a single-valued driven dimension, `(index, ∂m/∂v)` for every
+  active driving dimension it depends on — or `None` when the driven
+  dimension is not determined by the constraints (it can change with no
+  driving dimension changing). One solve per call: `∇m = Jᵀ y` over the
+  rows of the components it reaches (an orthonormal basis of the rows by
+  pivoted Gram–Schmidt says whether `∇m` is in their span; a thin QR of
+  `J Qᵀ` gives the `y` of smallest norm, without normal equations, which
+  a near-singular row squares out of reach), then `∂m/∂v_j = −y_j ∂r_j/∂v_j`.
+  Where driving dimensions are redundant the derivative is split between
+  them by that smallest `y`. On the 2D corpus 3 044 driven dimensions are
+  determined and 213 not, exactly those `what_if().would_add()` calls
+  dependent and independent, and 16 609 derivatives agree with central
+  differences (move one dimension, re-solve, measure) to 1.1e-6 (the
+  tangent family, solved at a near-singular tangency, is left out of the
+  differences); likewise on an assembly sample (179 / 15) and on 3D and
+  assembly fixtures.
 - `Sketch::auto_dimensions(datum)` and `SpaceSketch::auto_dimensions(datum)`:
   dimensions that would define the sketch fully as it stands, each set to
   what it measures — the sketch is not changed. Positions are measured

@@ -59,6 +59,7 @@ pub mod graph;
 pub mod mobility;
 pub mod numerics;
 pub mod rigid3d;
+pub mod sensitivity;
 pub mod sketch;
 pub mod solver;
 pub mod space3d;

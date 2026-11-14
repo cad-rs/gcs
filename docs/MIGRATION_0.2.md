@@ -138,6 +138,10 @@ let now = system.measure(index, &next.positions, &next.rotations);
 
 `sk.auto_dimensions(datum)` 给出一组能把草图完全定义的尺寸（类似“完全定义草图”），每个取当前量出的值，草图本身不改，由宿主决定加哪些：位置从基准点量起（给定的点；不给就取第一个动不了的点，再没有就取第一个点，基准点能动时先建议固定它），然后按实体编号依次给半径（圆、圆弧）、线长、以及它的各个点（点、线两端、圆心、圆弧两端）到基准点的 x 距离和 y 距离。每个候选只有在它的每个方程都拿走一个之前没被拿走的自由度时才被采用，所以结果在当前几何上成立、加上后没有任何冗余、方程数之和正好等于 `dof`。只用尺寸类约束（不建议水平 / 竖直 / 重合这类关系）；2D 里点的位置和半径已经覆盖所有自由度，所以没有用到“线对水平的角度”。3D 的 `SpaceSketch::auto_dimensions(datum)` 同理（点到基准点的 x / y / z 距离用 `PointDistanceAlongDir`，平面给法向和到基准点的距离，球 / 圆柱 / 圆 / 圆弧给半径）；圆柱的轴和样条的控制点没有对应的尺寸，留下的自由度会如实留着。
 
+### 3.12 从动尺寸
+
+从动（参考）尺寸就是只量、不驱动的尺寸。宿主可以把它作为被抑制的约束放在草图里用 `measure(index)` 量，或者不加进草图、用新的 `sk.measure_constraint(&c)` 量。`sk.sensitivities(&driven)` 给出它随驱动尺寸怎么变：对它依赖的每个激活的尺寸类约束给出 `(编号, ∂m/∂v)`，即只改这一个驱动尺寸的值时从动值的变化率；从动尺寸不被约束一阶确定（不改任何驱动尺寸它也能变）时返回 `None`，这和 `what_if().would_add(&从动尺寸)` 说 `Independent` 完全对应。冗余的驱动尺寸不能单独改，导数按最小范数分给它们（例如同一个宽度给了两次，各得一半）。每次调用对涉及的分量做一次分解，请在求解后调用。3D 草图 `SpaceSketch::sensitivities`、装配 `rigid3d::assembly_sensitivities(system, positions, rotations, &driven)`（从动是 `Distance` / `Angle` 配合，驱动尺寸按槽位）相同。
+
 ## 4. 这一版没有动的
 
 以下已知问题仍在，迁移时不要指望它们已经解决（都在 [CATCHUP_PLAN.md](CATCHUP_PLAN.md) 里排了阶段）：

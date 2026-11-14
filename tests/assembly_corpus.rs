@@ -1376,3 +1376,40 @@ fn would_add_matches_the_diagnosis() {
         "what-if answers that differ from the diagnosis"
     );
 }
+
+#[test]
+fn sensitivities_are_given_exactly_for_determined_dimensions() {
+    use rcad_gcs::Verdict;
+    let solver = tight_solver();
+    let (mut determined, mut free) = (0usize, 0usize);
+    for (i, case) in generate_all().into_iter().enumerate() {
+        let system = (case.build)();
+        if case.expect == Expect::Conflict
+            || (system.num_components > 4 && i % 20 != 0)
+            || i % 2 != 0
+        {
+            continue;
+        }
+        let r = solver.solve(&system);
+        let (pos, rot) = (r.positions, r.rotations);
+        let probe = rcad_gcs::rigid3d::assembly_what_if(&system, &pos, &rot);
+        for c in what_if_candidates(&system, &pos, &rot) {
+            let Some(m) = c.kind.measure(&pos, &rot) else {
+                continue;
+            };
+            if (c.kind.value().unwrap() - m).abs() > 1e-12 {
+                continue;
+            }
+            let s = rcad_gcs::rigid3d::assembly_sensitivities(&system, &pos, &rot, &c);
+            let independent = probe.would_add(&c).verdict == Verdict::Independent;
+            assert_eq!(s.is_none(), independent, "{}: {c:?}: {s:?}", case.id);
+            if s.is_some() {
+                determined += 1;
+            } else {
+                free += 1;
+            }
+        }
+    }
+    println!("assembly sensitivities: {determined} determined, {free} not");
+    assert!(determined > 0 && free > 0);
+}

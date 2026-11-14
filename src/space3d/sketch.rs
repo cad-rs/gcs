@@ -11,7 +11,7 @@ use crate::space3d::entity::{
     SpaceEntity, SpaceEntityId, SpaceEntityKind, SpaceFrame3, SpacePointRef,
 };
 use crate::space3d::solver::SpaceEquations;
-use crate::system;
+use crate::system::{self, Equations as _};
 
 /// A defect found by [`SpaceSketch::validate`].
 pub type SpaceSketchError = SketchError<SpaceEntityKind>;
@@ -677,6 +677,55 @@ impl SpaceSketch {
     /// part. See [`crate::space3d::diagnosis`].
     pub fn diagnose(&self) -> crate::space3d::diagnosis::SpaceDiagnosis {
         crate::space3d::diagnosis::diagnose_equations(&self.equations(), &self.params, &self.fixed)
+    }
+
+    /// What `constraint` (a dimension, not necessarily in the sketch)
+    /// measures in the current geometry (see [`SpaceConstraint::measure`]).
+    pub fn measure_constraint(&self, constraint: &SpaceConstraint) -> Option<f64> {
+        constraint.measure(&self.params, &self.entities)
+    }
+
+    /// How the driven dimension `driven` follows the driving ones (see
+    /// [`crate::sensitivity`] and [`crate::Sketch::sensitivities`]), over
+    /// the gauge's effective columns.
+    pub fn sensitivities(&self, driven: &SpaceConstraint) -> Option<Vec<(usize, f64)>> {
+        if driven.equation_count() != 1 {
+            return None;
+        }
+        let residual = |c: &SpaceConstraint, value: f64| {
+            let mut c = c.clone();
+            c.set_value(value);
+            let one = [c];
+            let mut out = [0.0];
+            SpaceEquations::new(&self.entities, &one).residuals(0, &self.params, &mut out);
+            out[0]
+        };
+        let mut at = driven.clone();
+        let value = self.measure_constraint(&at)?;
+        at.set_value(value);
+        let slope = crate::sensitivity::value_slope(value, &|v| residual(&at, v));
+        let one = [at];
+        let mut rows: Vec<system::SparseRow> = vec![Vec::new()];
+        SpaceEquations::new(&self.entities, &one).jacobian(0, &self.params, &mut rows);
+        let slope_of = |j: usize| {
+            if self.constraint_state(j) != ConstraintState::Active {
+                return None;
+            }
+            let c = &self.constraints[j];
+            let v = c.value()?;
+            Some(crate::sensitivity::value_slope(v, &|x| residual(c, x)))
+        };
+        crate::sensitivity::sensitivities(
+            &self.equations(),
+            &self.params,
+            &self.fixed,
+            &crate::space3d::diagnosis::SpaceGauge {
+                entities: &self.entities,
+            },
+            &rows[0],
+            slope,
+            &slope_of,
+        )
     }
 
     /// Dimensions that would define the sketch fully, as it stands (see

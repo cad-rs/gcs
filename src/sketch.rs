@@ -9,7 +9,7 @@ use crate::edit::{ConstraintState, SketchError};
 use crate::entity::{Entity, EntityId, EntityKind, PointRef};
 use crate::numerics::CoreOptions;
 use crate::solver::{SketchEquations, SolveOptions, SolveResult};
-use crate::system::{self, NoGauge};
+use crate::system::{self, Equations as _, NoGauge};
 
 /// Detailed DOF analysis result.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -828,9 +828,66 @@ impl WhatIf<'_> {
 }
 
 impl Sketch {
-    /// Dimensions that would define the sketch fully, as it stands: a list of constraints, each set to what it
-    /// measures, that together take away every freedom left — empty when
-    /// the sketch is fully defined. Nothing is added to the sketch.
+    /// What `constraint` (a dimension, not necessarily in the sketch)
+    /// measures in the current geometry (see [`Constraint::measure`]): a
+    /// driven, or reference, dimension. `None` for a constraint without a
+    /// scalar value.
+    pub fn measure_constraint(&self, constraint: &Constraint) -> Option<f64> {
+        constraint.measure(&self.params, &self.entities)
+    }
+
+    /// How the driven dimension `driven` (a single-valued dimension, not
+    /// necessarily in the sketch) follows the driving ones, where the
+    /// sketch stands (see [`crate::sensitivity`]): for every active
+    /// dimensional constraint it depends on, its index and `∂m/∂v`, the
+    /// change of the driven value per unit change of that dimension's
+    /// value with the others held, ascending. `None` when the driven
+    /// dimension is not determined by the constraints (it can change with
+    /// no driving dimension changing) or has no single value. Read it at
+    /// a solved sketch; each call factors the components it reaches.
+    pub fn sensitivities(&self, driven: &Constraint) -> Option<Vec<(usize, f64)>> {
+        if driven.equation_count() != 1 {
+            return None;
+        }
+        let residual = |c: &Constraint, value: f64| {
+            let mut c = c.clone();
+            c.set_value(value);
+            let one = [c];
+            let mut out = [0.0];
+            SketchEquations::new(&self.entities, &one).residuals(0, &self.params, &mut out);
+            out[0]
+        };
+        // Linearized where the driven dimension holds.
+        let mut at = driven.clone();
+        let value = self.measure_constraint(&at)?;
+        at.set_value(value);
+        let slope = crate::sensitivity::value_slope(value, &|v| residual(&at, v));
+        let one = [at];
+        let mut rows: Vec<system::SparseRow> = vec![Vec::new()];
+        SketchEquations::new(&self.entities, &one).jacobian(0, &self.params, &mut rows);
+        let slope_of = |j: usize| {
+            if self.constraint_state(j) != ConstraintState::Active {
+                return None;
+            }
+            let c = &self.constraints[j];
+            let v = c.value()?;
+            Some(crate::sensitivity::value_slope(v, &|x| residual(c, x)))
+        };
+        crate::sensitivity::sensitivities(
+            &self.equations(),
+            &self.params,
+            &self.fixed,
+            &NoGauge,
+            &rows[0],
+            slope,
+            &slope_of,
+        )
+    }
+
+    /// Dimensions that would define the sketch fully, as it stands: a list
+    /// of constraints, each set to what it measures, that together take
+    /// away every freedom left — empty when the sketch is fully defined.
+    /// Nothing is added to the sketch.
     ///
     /// Positions are measured from `datum`: by default the first point that
     /// cannot move, else the first point, which is then suggested a
