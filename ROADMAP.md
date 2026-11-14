@@ -142,8 +142,14 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   one" suggestion are not computed yet.
 - **Diagnosis away from the current point.** The analysis linearizes at the
   current parameters, so a configuration that is singular only where it
-  stands (exact tangency) reads as redundant. Evaluating at a perturbed
-  witness configuration would tell the two apart.
+  stands (exact tangency) reads as redundant. The 2D `status()` tells the
+  two apart at a witness configuration (`ConstraintStatus::Singular`).
+  Left: the 3D sketch and assemblies (neither corpus has a singular case
+  to accept it on yet; assemblies have dependent rows in almost every
+  component, so the witness would run on each); held geometry is not
+  moved for the witness, so a singularity that comes from where a held
+  entity sits together with a geometric relation is not told apart; the
+  witness is one fixed pseudo-random configuration.
 
 ## 3. Constraint vocabulary
 

@@ -142,9 +142,12 @@ reports:
 
 `sk.status()` turns that into one state per entity and per constraint,
 for a UI to colour by: each entity is `WellDefined`, `UnderDefined`,
-`OverDefined` (a redundant constraint on it), `Unsolved` (a constraint on
+`Singular` (a constraint on it depends on others only where the geometry
+stands, as at an exact tangency: at a witness configuration with the same
+relations it is independent), `OverDefined` (a redundant constraint on
+it), `Unsolved` (a constraint on
 it not met, in a component not at a solution) or `Conflicting` — the most
-serious that applies — and each constraint `Met`, `Redundant`,
+serious that applies — and each constraint `Met`, `Singular`, `Redundant`,
 `PartiallyRedundant`, `Unmet`, `Conflicting` or `Inactive`. Every member of
 a conflicting dependency is `Conflicting`, not only the representative the
 diagnosis names. The 3D sketch has the same `status()`; a plane's normal

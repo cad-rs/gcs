@@ -537,8 +537,31 @@ impl Sketch {
     /// over-defined, under-defined and well-defined that applies — and one
     /// [`ConstraintStatus`](crate::ConstraintStatus) per constraint. It
     /// runs [`Sketch::diagnose`] and [`Sketch::mobility`] (a factorisation
-    /// each per component); call it after a solve, not every frame.
+    /// each per component); call it after a solve, not every frame. When
+    /// some constraint could go without lowering the rank, it also builds
+    /// a witness configuration (the free geometry moved off by a fixed
+    /// pseudo-random amount, the geometric relations solved for again,
+    /// every dimension set to what it measures there) and tests those
+    /// constraints there too: one that is independent at the witness is
+    /// [`Singular`](crate::ConstraintStatus::Singular), dependent only
+    /// where the geometry stands.
     pub fn status(&self) -> crate::status::Status {
+        let witness = |candidates: &[usize], rank: usize| {
+            let w = self.witness()?;
+            // At a generic configuration no set of constraints has a lower
+            // rank than here: with the same rank overall, every constraint
+            // that could go here can go there too.
+            if w.diagnose().rank == rank {
+                return Some(candidates.to_vec());
+            }
+            Some(crate::status::removable(
+                &w.equations(),
+                &w.params,
+                &w.fixed,
+                &NoGauge,
+                candidates,
+            ))
+        };
         let movable = crate::status::movable_entities(
             &self.equations(),
             &self.params,
@@ -564,11 +587,86 @@ impl Sketch {
             self.diagnose(),
             crate::status::Entities {
                 count: self.entities.len(),
+                witness: Some(&witness),
                 removed: &removed,
                 movable: &movable_entity,
                 of_constraint: &of_constraint,
             },
         )
+    }
+
+    /// A witness configuration of the sketch (see [`Sketch::status`]): the
+    /// same geometric relations holding at a generic place, every
+    /// dimension (and every `Fixed` target) set to what it measures there.
+    /// `None` when the relations cannot be solved for there, or only by
+    /// degenerate geometry (a line of no length, a circle of no radius).
+    fn witness(&self) -> Option<Sketch> {
+        let mut w = self.clone();
+        let dimensions: Vec<usize> = (0..w.constraints.len())
+            .filter(|&c| w.constraint_state(c) == ConstraintState::Active)
+            .filter(|&c| {
+                w.constraints[c].value().is_some()
+                    || matches!(w.constraints[c], Constraint::Fixed { .. })
+            })
+            .collect();
+        // The size of the drawing: its dimensions, else its extent.
+        let sizes: Vec<f64> = dimensions
+            .iter()
+            .filter(|&&c| !matches!(w.constraints[c], Constraint::Angle { .. }))
+            .filter_map(|&c| w.constraints[c].value())
+            .map(f64::abs)
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .collect();
+        let scale = if sizes.is_empty() {
+            let (lo, hi) = self
+                .params
+                .iter()
+                .filter(|v| v.is_finite())
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                    (lo.min(v), hi.max(v))
+                });
+            if hi > lo {
+                hi - lo
+            } else {
+                1.0
+            }
+        } else {
+            sizes.iter().sum::<f64>() / sizes.len() as f64
+        };
+        for &c in &dimensions {
+            w.set_constraint_enabled(c, false);
+        }
+        w.drift_free_params(0.1 * scale, 0x5717_E55E);
+        if !w.solve().converged {
+            return None;
+        }
+        let degenerate = (0..w.entities.len()).any(|e| {
+            let p = w.entity_params(e);
+            let tiny = 1.0e-6 * scale;
+            match w.entities[e].kind {
+                EntityKind::Line => (p[2] - p[0]).hypot(p[3] - p[1]) < tiny,
+                EntityKind::Circle | EntityKind::Arc => p[2].abs() < tiny,
+                EntityKind::Point => false,
+            }
+        });
+        if degenerate {
+            return None;
+        }
+        for &c in &dimensions {
+            w.set_constraint_enabled(c, true);
+            if let Constraint::Fixed { point, .. } = w.constraints[c] {
+                let at = w.point_coords(point);
+                w.constraints[c] = Constraint::Fixed {
+                    point,
+                    x: at.x,
+                    y: at.y,
+                };
+            } else {
+                let measured = w.measure(c)?;
+                w.constraints[c].set_value(measured);
+            }
+        }
+        Some(w)
     }
 
     /// How each entity can still move, in geometric terms (see
@@ -666,5 +764,70 @@ impl Sketch {
 impl Default for Sketch {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A held circle of radius 2 at the origin and a point on it where
+    /// `x = 2` from the centre: singular there (both rows radial).
+    fn singular_point() -> Sketch {
+        let mut sk = Sketch::new();
+        let circle = sk.add_circle(0.0, 0.0, 2.0);
+        sk.fix_entity(circle);
+        let p = sk.add_point(2.0, 0.0);
+        sk.add_constraint(Constraint::PointOnCircle {
+            point: PointRef::Point(p),
+            circle,
+        });
+        sk.add_constraint(Constraint::DistanceX {
+            p1: PointRef::Point(p),
+            p2: PointRef::Center(circle),
+            distance: 2.0,
+        });
+        sk
+    }
+
+    #[test]
+    fn a_witness_keeps_the_relations_away_from_the_configuration() {
+        let sk = singular_point();
+        let w = sk.witness().expect("a witness");
+        // Moved off the singular point by far more than the edge of the
+        // solve's tolerance (about 1e-5 for a double root) or the rank
+        // tolerance.
+        let at = w.point_coords(PointRef::Point(1));
+        assert!((at - DVec2::new(2.0, 0.0)).length() > 1e-3, "{at}");
+        // On the circle still, with the dimension at what it measures.
+        assert!((at.length() - 2.0).abs() < 1e-9, "{at}");
+        assert_eq!(w.constraint_value(1), w.measure(1));
+        // There the two rows are independent.
+        assert_eq!(w.diagnose().dof, 0);
+        assert_eq!(sk.diagnose().dof, 1);
+        // Every constraint holds there.
+        let mut again = w.clone();
+        let r = again.solve();
+        assert!(r.converged && r.iterations == 0, "{r:?}");
+        // The sketch itself is untouched.
+        assert_eq!(sk.point_coords(PointRef::Point(1)), DVec2::new(2.0, 0.0));
+    }
+
+    #[test]
+    fn no_witness_when_the_relations_only_hold_degenerately() {
+        // Parallel and perpendicular at once: only a line of no length
+        // meets both.
+        let mut sk = Sketch::new();
+        let l1 = sk.add_line(0.0, 0.0, 3.0, 4.0);
+        sk.fix_entity(l1);
+        let l2 = sk.add_line(0.0, 5.0, 1.0, 8.0);
+        sk.add_constraint(Constraint::Parallel(l1, l2));
+        sk.add_constraint(Constraint::Perpendicular(l1, l2));
+        sk.add_constraint(Constraint::Fixed {
+            point: PointRef::LineStart(l2),
+            x: 0.0,
+            y: 5.0,
+        });
+        assert!(sk.witness().is_none());
     }
 }

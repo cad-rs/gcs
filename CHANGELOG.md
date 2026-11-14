@@ -322,7 +322,21 @@ through them from a host's side.
   check the states too. For an assembly the entities are the bodies and
   the constraints are indexed by slot; every body of the assembly corpus
   (4 749, in 333 cases) reports the state its case's construction says
-  (`body_statuses_match_the_labels`). The removal test holds the columns
+  (`body_statuses_match_the_labels`). In 2D a constraint that could go
+  without lowering the rank is also tested at a witness configuration —
+  the free geometry moved off by a fixed pseudo-random amount (a tenth of
+  the drawing's size), the geometric relations solved for again with the
+  dimensions and `Fixed` targets let go, then every dimension set to what
+  it measures there; a witness that needs degenerate geometry (a line of
+  no length, a circle of no radius) is not used. One that is independent
+  there is `ConstraintStatus::Singular` and its entities
+  `EntityStatus::Singular` (between under- and over-defined): dependent
+  only where the geometry stands, as at an exact tangency. The ten exact
+  tangencies of the 2D corpus are singular and no other case has a
+  singular constraint; the redundant cases stay redundant. When the rank
+  at the witness equals the rank here, every candidate can go there too
+  and no further test is made. The witness is only built when some
+  constraint could go; then `status()` costs about one more diagnosis. The removal test holds the columns
   of a constraint that decides them alone (a fixed point, a grounded body)
   and tests the others on the pieces that leave, so a hub with forty parts
   is forty small tests; the assembly gate went from 177 s to 2.7 s

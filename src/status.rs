@@ -20,6 +20,11 @@ pub enum EntityStatus {
     /// Some free parameter of it can still move without breaking any
     /// constraint (it is in the null space of the constraint Jacobian).
     UnderDefined,
+    /// A constraint on it depends on others only where the geometry
+    /// stands: at a configuration that is singular for it (an exact
+    /// tangency), not in general (see [`ConstraintStatus::Singular`]). Its
+    /// first-order motions there need not be real ones.
+    Singular,
     /// A constraint on it is redundant (or partially redundant): removable
     /// without changing the solution.
     OverDefined,
@@ -38,6 +43,15 @@ pub enum EntityStatus {
 pub enum ConstraintStatus {
     /// Met, and independent of the others.
     Met,
+    /// Met, and dependent on others only where the geometry stands: it
+    /// could go without changing the rank here, but at a witness
+    /// configuration — the geometry moved off, with the same geometric
+    /// relations holding and every dimension at what it measures there —
+    /// it is independent. The configuration is singular (an exact
+    /// tangency, a dimension at a special value), not the constraint
+    /// redundant. Only the 2D sketch looks for a witness; elsewhere such a
+    /// constraint is [`ConstraintStatus::Redundant`].
+    Singular,
     /// Dependent on others and consistent with them: removable without
     /// changing the solution. Every member of a consistent dependency group
     /// (see [`Diagnosis::dependency_groups`]) is: each alone could go, not
@@ -95,6 +109,12 @@ impl Status {
 pub(crate) struct Entities<'a> {
     /// Number of entities.
     pub(crate) count: usize,
+    /// Of the constraints given (removable where the geometry stands, of a
+    /// system of rank `.1` there), those that could still go at a witness
+    /// configuration (see [`ConstraintStatus::Singular`]); `None` when the
+    /// family has none or none was found.
+    #[allow(clippy::type_complexity)]
+    pub(crate) witness: Option<&'a dyn Fn(&[usize], usize) -> Option<Vec<usize>>>,
     /// Whether entity `e` was removed.
     pub(crate) removed: &'a dyn Fn(usize) -> bool,
     /// Whether some free parameter of entity `e` can move.
@@ -170,8 +190,17 @@ pub(crate) fn status_of<E: Equations + ?Sized, G: system::Gauge>(
         .collect();
     candidates.sort_unstable();
     candidates.dedup();
-    for c in removable(eqs, params, fixed, gauge, &candidates) {
-        let to = if partial(c) {
+    let here = removable(eqs, params, fixed, gauge, &candidates);
+    // Removable here but not at a witness: dependent only where the
+    // geometry stands.
+    let generic = match entities.witness {
+        Some(witness) if !here.is_empty() => witness(&here, diagnosis.rank),
+        _ => None,
+    };
+    for c in here {
+        let to = if generic.as_ref().is_some_and(|g| !g.contains(&c)) {
+            ConstraintStatus::Singular
+        } else if partial(c) {
             ConstraintStatus::PartiallyRedundant
         } else {
             ConstraintStatus::Redundant
@@ -193,6 +222,7 @@ pub(crate) fn status_of<E: Equations + ?Sized, G: system::Gauge>(
     for (c, &state) in constraints.iter().enumerate() {
         let to = match state {
             ConstraintStatus::Met | ConstraintStatus::Inactive => continue,
+            ConstraintStatus::Singular => EntityStatus::Singular,
             ConstraintStatus::Redundant | ConstraintStatus::PartiallyRedundant => {
                 EntityStatus::OverDefined
             }
@@ -267,7 +297,7 @@ impl<E: Equations + ?Sized> Equations for Only<'_, E> {
 /// without lowering the rank of their component: the rank of the
 /// component's Jacobian with and without it, from the same diagnosis (and
 /// gauge) the status is built from.
-fn removable<E: Equations + ?Sized, G: system::Gauge>(
+pub(crate) fn removable<E: Equations + ?Sized, G: system::Gauge>(
     eqs: &E,
     params: &[f64],
     fixed: &[bool],

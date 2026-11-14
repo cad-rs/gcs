@@ -1275,8 +1275,9 @@ fn expected_entity_status(case: &Case, sk: &Sketch) -> Vec<Option<EntityStatus>>
         Expect::Conflict => all(Conflicting),
         Expect::Redundant => all(OverDefined),
         // At the exact tangency the tangent row depends on the axis
-        // distances to first order: circle and line carry it.
-        Expect::Singular => all(OverDefined),
+        // distances to first order, and only there: at a witness the
+        // relations are independent. Circle and line carry it.
+        Expect::Singular => all(Singular),
         Expect::Solve => all(WellDefined),
         Expect::Under => panic!("{id}: an under-constrained case without a label"),
     }
@@ -1441,4 +1442,34 @@ fn entity_freedoms_match_the_labels() {
         right as f64 / total as f64
     );
     assert_eq!(right, total, "entity freedoms that differ from the labels");
+}
+
+#[test]
+fn only_the_exact_tangencies_are_singular() {
+    // A constraint is singular (dependent only where the geometry stands)
+    // in exactly the cases authored at an exact tangency, and there no
+    // constraint is redundant; the redundant cases keep their redundancy
+    // (it holds at a witness too).
+    use rcad_gcs::ConstraintStatus;
+    let mut singular_cases = 0;
+    for case in generate_all() {
+        let mut sk = (case.build)();
+        if !matches!(case.expect, Expect::Conflict) {
+            assert!(sk.solve().converged, "{}", case.id);
+        }
+        let status = sk.status();
+        let singular = status.constraints_in(ConstraintStatus::Singular);
+        let redundant = status.constraints_in(ConstraintStatus::Redundant);
+        if matches!(case.expect, Expect::Singular) {
+            singular_cases += 1;
+            assert!(!singular.is_empty(), "{}: {status:?}", case.id);
+            assert!(redundant.is_empty(), "{}: {status:?}", case.id);
+        } else {
+            assert!(singular.is_empty(), "{}: {status:?}", case.id);
+        }
+        if matches!(case.expect, Expect::Redundant) {
+            assert!(!redundant.is_empty(), "{}: {status:?}", case.id);
+        }
+    }
+    assert_eq!(singular_cases, 10);
 }

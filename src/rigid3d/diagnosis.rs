@@ -134,6 +134,7 @@ pub fn status(
         diagnosis,
         crate::status::Entities {
             count: system.num_components,
+            witness: None,
             removed: &removed,
             movable: &movable_body,
             of_constraint: &of_constraint,

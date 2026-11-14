@@ -109,10 +109,12 @@ fn a_redundant_dimension_overdefines_only_its_own_geometry() {
 fn the_states_are_ordered_by_seriousness() {
     use EntityStatus::*;
     assert!(WellDefined < UnderDefined);
-    assert!(UnderDefined < OverDefined);
+    assert!(UnderDefined < Singular);
+    assert!(Singular < OverDefined);
     assert!(OverDefined < Unsolved);
     assert!(Unsolved < Conflicting);
-    assert!(ConstraintStatus::Met < ConstraintStatus::Redundant);
+    assert!(ConstraintStatus::Met < ConstraintStatus::Singular);
+    assert!(ConstraintStatus::Singular < ConstraintStatus::Redundant);
     assert!(ConstraintStatus::Unmet < ConstraintStatus::Conflicting);
 }
 
@@ -207,4 +209,66 @@ mod space {
         }
         assert_eq!(fewer.status().entities[c], Some(EntityStatus::UnderDefined));
     }
+}
+
+/// A held circle of radius 2 at the origin and a point on it at (2, 0),
+/// with `second` added.
+fn point_on_circle_and(
+    second: impl Fn(usize, usize) -> Constraint,
+) -> (Sketch, usize, usize, usize) {
+    let mut sk = Sketch::new();
+    let circle = sk.add_circle(0.0, 0.0, 2.0);
+    sk.fix_entity(circle);
+    let p = sk.add_point(2.0, 0.0);
+    let on = sk.add_constraint(PointOnCircle {
+        point: PointRef::Point(p),
+        circle,
+    });
+    let second = sk.add_constraint(second(p, circle));
+    assert!(sk.solve().converged);
+    (sk, p, on, second)
+}
+
+#[test]
+fn a_dimension_at_a_special_value_is_singular_and_a_repeated_one_redundant() {
+    // x = 2 from the centre puts the point where the circle is vertical:
+    // both rows are radial there, but at any other x they are independent
+    // (the point is at one of two intersections). Singular, not redundant.
+    let (sk, _, on, second) = point_on_circle_and(|p, circle| DistanceX {
+        p1: PointRef::Point(p),
+        p2: PointRef::Center(circle),
+        distance: 2.0,
+    });
+    let status = sk.status();
+    assert_eq!(
+        status.constraints[on],
+        ConstraintStatus::Singular,
+        "{status:?}"
+    );
+    assert_eq!(
+        status.constraints[second],
+        ConstraintStatus::Singular,
+        "{status:?}"
+    );
+    assert_eq!(status.entities, vec![Some(EntityStatus::Singular); 2]);
+    // The diagnosis itself is that of the configuration.
+    assert_eq!(sk.diagnose().dof, 1);
+
+    // The same value as a distance from the centre says what the circle
+    // already says, wherever the point is: redundant.
+    let (sk, p, on, again) = point_on_circle_and(|p, circle| {
+        Constraint::point_distance(PointRef::Point(p), PointRef::Center(circle), 2.0)
+    });
+    let status = sk.status();
+    assert_eq!(
+        status.constraints[on],
+        ConstraintStatus::Redundant,
+        "{status:?}"
+    );
+    assert_eq!(
+        status.constraints[again],
+        ConstraintStatus::Redundant,
+        "{status:?}"
+    );
+    assert_eq!(status.entities[p], Some(EntityStatus::OverDefined));
 }

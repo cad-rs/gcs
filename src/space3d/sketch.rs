@@ -721,6 +721,7 @@ impl SpaceSketch {
             self.diagnose(),
             crate::status::Entities {
                 count: self.entities.len(),
+                witness: None,
                 removed: &removed,
                 movable: &movable_entity,
                 of_constraint: &of_constraint,
