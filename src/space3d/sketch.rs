@@ -677,6 +677,22 @@ impl SpaceSketch {
         crate::space3d::diagnosis::diagnose_equations(&self.equations(), &self.params, &self.fixed)
     }
 
+    /// A what-if probe of the sketch at its current parameters (see
+    /// [`crate::whatif`] and [`crate::Sketch::what_if`]).
+    pub fn what_if(&self) -> SpaceWhatIf<'_> {
+        SpaceWhatIf {
+            sketch: self,
+            spaces: crate::whatif::RowSpaces::new(
+                self.equations(),
+                self.params.clone(),
+                self.fixed.clone(),
+                crate::space3d::diagnosis::SpaceGauge {
+                    entities: &self.entities,
+                },
+            ),
+        }
+    }
+
     /// The constraints that conflict, as minimal sets with a suggestion
     /// each (see [`crate::conflict`] and [`crate::Sketch::conflicts`]). A
     /// solve that only gets there by collapsing geometry (a line of no
@@ -909,5 +925,27 @@ impl SpaceSketch {
             structural_dof: free_param_indices.len() as i64 - equations as i64,
             free_param_indices,
         }
+    }
+}
+
+/// A what-if probe of a [`SpaceSketch`] (see [`crate::whatif`] and
+/// [`crate::WhatIf`]). Made by [`SpaceSketch::what_if`].
+pub struct SpaceWhatIf<'a> {
+    sketch: &'a SpaceSketch,
+    spaces: crate::whatif::RowSpaces<SpaceEquations<'a>, crate::space3d::diagnosis::SpaceGauge<'a>>,
+}
+
+impl SpaceWhatIf<'_> {
+    /// What adding `constraint` (on entities of the sketch) would do (see
+    /// [`crate::WhatIf::would_add`]). Representation freedoms count as in
+    /// [`SpaceSketch::diagnose`]: a constraint that only pins a cylinder's
+    /// axis slide takes a rank but no freedom.
+    pub fn would_add(&self, constraint: &SpaceConstraint) -> crate::whatif::Addition {
+        let sk = self.sketch;
+        let mut constraints = sk.constraints.clone();
+        constraints.push(constraint.clone());
+        let with = SpaceEquations::with_states(&sk.entities, &constraints, &sk.states);
+        self.spaces
+            .would_add(&with, &sk.fixed, sk.constraints.len(), false)
     }
 }

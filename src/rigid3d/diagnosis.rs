@@ -206,7 +206,49 @@ pub fn conflicts(
     crate::conflict::find_conflicts(&components, &groups, &fails)
 }
 
-/// Which of each body's six coordinates can still move, at the given pose.
+/// A what-if probe of an assembly at the given pose (see
+/// [`crate::whatif`]): [`AssemblyWhatIf::would_add`] tells what one more
+/// mate would do without diagnosing the assembly again.
+pub fn what_if<'a>(
+    system: &'a ConstraintSystem,
+    positions: &[Point3],
+    rots: &[DQuat],
+) -> AssemblyWhatIf<'a> {
+    let eqs = RigidEquations::new(system);
+    AssemblyWhatIf {
+        system,
+        grounded: eqs.grounded_bodies().to_vec(),
+        spaces: crate::whatif::RowSpaces::new(
+            eqs,
+            pack(positions, rots),
+            system.held_columns(),
+            NoGauge,
+        ),
+    }
+}
+
+/// A what-if probe of an assembly (see [`what_if`]).
+pub struct AssemblyWhatIf<'a> {
+    system: &'a ConstraintSystem,
+    grounded: Vec<bool>,
+    spaces: crate::whatif::RowSpaces<RigidEquations<'a>, NoGauge>,
+}
+
+impl AssemblyWhatIf<'_> {
+    /// What adding `constraint` would do, as [`diagnose`] would have it
+    /// with the constraint added (see [`crate::WhatIf::would_add`]). A
+    /// `Fixed` that grounds a body changes which columns are unknowns: it
+    /// is diagnosed exactly on the clusters it touches.
+    pub fn would_add(&self, constraint: &crate::rigid3d::Constraint) -> crate::whatif::Addition {
+        let mut with = self.system.clone();
+        let slot = with.add_constraint(*constraint);
+        let eqs = RigidEquations::new(&with);
+        let grounds = eqs.grounded_bodies() != self.grounded.as_slice();
+        self.spaces
+            .would_add(&eqs, &with.held_columns(), slot, grounds)
+    }
+}
+
 ///
 /// Entry `[body][k]` is `true` when the constraints, linearized at the
 /// pose, leave some motion that changes coordinate `k` of that body:

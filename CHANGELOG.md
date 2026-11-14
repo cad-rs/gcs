@@ -341,6 +341,39 @@ through them from a host's side.
   and tests the others on the pieces that leave, so a hub with forty parts
   is forty small tests; the assembly gate went from 177 s to 2.7 s
   (optimised) with it.
+- `Sketch::what_if()`, `SpaceSketch::what_if()`,
+  `rigid3d::assembly_what_if()` and the module `whatif`: a probe that
+  tells what one more constraint would do — `would_add(&constraint)`
+  gives an `Addition { verdict, removes }`, the verdict (`Independent`,
+  `Redundant`, `PartiallyRedundant`, `Conflicting`) being what the
+  diagnosis would say with the constraint added (independent when the
+  rank grows by its number of equations; otherwise conflicting or
+  partially redundant when it would name a constraint so that it does not
+  now; else redundant) and `removes` the drop of `dof`. The probe keeps,
+  per connected component (built on the first question about it), an
+  orthonormal basis of the equilibrated independent rows, their
+  least-squares step and how far each dependent row is from it, and
+  projects the candidate's rows: an independent row extends the basis and
+  the step, a dependent one is classified as the diagnosis classifies
+  one. Where the answer could hang on how a re-pivoted factorisation
+  picks its rows — the component poorly conditioned or already
+  inconsistent, a row within a factor of the rank tolerance or of a
+  classification threshold — and where the candidate changes more than
+  rows (an assembly `Fixed` that grounds a body, effective columns that
+  change, a component with nothing free), the components it touches are
+  diagnosed exactly instead. On the 2D corpus 10 096 candidates of every
+  kind (dimensions at their measured values and off them) and on a
+  sample of the assembly corpus 1 443 get the diagnosis's answer, as do
+  129 on 3D fixtures (plane normal length, cylinder slide included);
+  about nine in ten take the incremental path. On a chain of 44
+  rectangles (792 parameters) an answer takes 3.3–3.7 ms against 0.72–
+  0.98 s for adding the constraint to a copy and diagnosing it (193–299×;
+  42–53× on 11 rectangles); the first question about a component costs
+  1.6–2× a diagnosis. `diagnose()` now runs one shared per-component step
+  with the probe; its results are unchanged (every diagnosis and status
+  of the 2D and assembly corpora compared byte for byte).
+- `rigid3d::Constraint::equation_count()`: the scalar equations a mate
+  contributes to the diagnosis (the 2D and 3D constraints have it).
 - `Sketch::conflicts()`, `SpaceSketch::conflicts()`,
   `rigid3d::assembly_conflicts()` and the module `conflict`: for every
   connected component that does not solve from the current geometry,

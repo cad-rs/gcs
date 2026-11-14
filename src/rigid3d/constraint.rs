@@ -556,6 +556,12 @@ impl Constraint {
     pub fn dof_removed(&self) -> usize {
         self.kind.dof_removed()
     }
+
+    /// The number of scalar equations the constraint contributes to the
+    /// diagnosis (the rows [`crate::rigid3d::diagnose_assembly`] factors).
+    pub fn equation_count(&self) -> usize {
+        crate::rigid3d::ConstraintSolver::equation_count_of(self)
+    }
 }
 
 /// A defect found by [`ConstraintSystem::validate`]. `constraint` is the

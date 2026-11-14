@@ -247,9 +247,9 @@ pub(crate) fn status_of<E: Equations + ?Sized, G: system::Gauge>(
 
 /// The constraints of `eqs` that `active` marks; the others have no
 /// equations.
-struct Only<'a, E: ?Sized> {
-    eqs: &'a E,
-    active: Vec<bool>,
+pub(crate) struct Only<'a, E: ?Sized> {
+    pub(crate) eqs: &'a E,
+    pub(crate) active: Vec<bool>,
 }
 
 impl<E: Equations + ?Sized> Equations for Only<'_, E> {

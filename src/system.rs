@@ -1864,116 +1864,239 @@ where
         for &gi in group {
             f_c.extend_from_slice(&f[row_of[gi]..row_of[gi] + eqs.equation_count(gi)]);
         }
+        let part = diagnose_component(
+            eqs,
+            params,
+            fixed,
+            gauge,
+            group,
+            f_c,
+            &soft,
+            &mut soft_seen,
+            false,
+        );
+        total_rank += part.rank as i64;
+        soft_free += part.soft_unpinned;
+        d.conflicting.extend(part.conflicting);
+        d.redundant.extend(part.redundant);
+        d.partially_redundant.extend(part.partially_redundant);
+        d.dependency_groups.extend(part.dependency_groups);
+    }
 
-        // Touched free parameters of this component.
-        let mut touched = touched_params(eqs, group, params);
-        touched.retain(|&p| !fixed[p]);
+    // Soft gauge directions no component touches are unpinned by definition.
+    soft_free += soft_seen.iter().filter(|seen| !**seen).count();
+    d.rank = total_rank.max(0) as usize;
+    d.dof = free_total as i64 - removed as i64 - soft_free as i64 - total_rank;
+    d
+}
 
-        // Map component-local rows back to global constraint indices.
-        let mut row_constraint: Vec<usize> = Vec::with_capacity(n_eq_c);
-        for &gi in group {
-            for _ in 0..eqs.equation_count(gi) {
-                row_constraint.push(gi);
+/// What [`diagnose`] finds in one component, and — when asked to keep it —
+/// what it takes to test one more constraint against the component
+/// without factoring it again ([`RowBasis`]).
+pub(crate) struct ComponentDiagnosis {
+    pub(crate) rank: usize,
+    /// Soft gauge directions the component touches and does not pin.
+    pub(crate) soft_unpinned: usize,
+    pub(crate) conflicting: Vec<usize>,
+    pub(crate) redundant: Vec<usize>,
+    pub(crate) partially_redundant: Vec<usize>,
+    pub(crate) dependency_groups: Vec<Vec<usize>>,
+    /// Kept only on request, and only for a component with free columns
+    /// and a non-zero rank (the others are classified by their residuals
+    /// alone).
+    pub(crate) basis: Option<RowBasis>,
+}
+
+/// The row space of a component's equilibrated Jacobian, as the diagnosis
+/// saw it.
+pub(crate) struct RowBasis {
+    /// The free parameters the component's rows list.
+    pub(crate) touched: Vec<usize>,
+    /// The effective columns, as combinations of global parameters.
+    pub(crate) columns: Vec<SparseRow>,
+    /// An orthonormal basis of the span of the independent rows, over
+    /// `columns`.
+    pub(crate) q: Vec<Vec<f64>>,
+    /// The largest norm of an equilibrated row (the QR's yardstick).
+    pub(crate) max0: f64,
+    /// The smallest pivot of the independent rows relative to `max0`
+    /// (how well they are conditioned).
+    pub(crate) min_pivot: f64,
+    /// The least-squares step of the independent rows.
+    pub(crate) z: Vec<f64>,
+    /// Per dependent row: its constraint and how far it is from that step,
+    /// `|f + j·z|`.
+    pub(crate) dependent: Vec<(usize, f64)>,
+    /// The largest equilibrated residual.
+    pub(crate) f_max: f64,
+    /// The raw Jacobian rows, over global parameters (for the soft gauge
+    /// count).
+    pub(crate) j_raw: Vec<SparseRow>,
+}
+
+/// The per-component step of [`diagnose`]: `f_c` are the raw residuals of
+/// the rows of `group` in order; `soft` the soft gauge directions, of which
+/// those the component touches are flagged in `soft_seen`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn diagnose_component<E, G>(
+    eqs: &E,
+    params: &[f64],
+    fixed: &[bool],
+    gauge: &G,
+    group: &[usize],
+    mut f_c: Vec<f64>,
+    soft: &[SparseRow],
+    soft_seen: &mut [bool],
+    keep: bool,
+) -> ComponentDiagnosis
+where
+    E: Equations + ?Sized,
+    G: Gauge + ?Sized,
+{
+    let mut part = ComponentDiagnosis {
+        rank: 0,
+        soft_unpinned: 0,
+        conflicting: Vec::new(),
+        redundant: Vec::new(),
+        partially_redundant: Vec::new(),
+        dependency_groups: Vec::new(),
+        basis: None,
+    };
+    let n_eq_c = f_c.len();
+
+    // Touched free parameters of this component.
+    let mut touched = touched_params(eqs, group, params);
+    touched.retain(|&p| !fixed[p]);
+
+    // Map component-local rows back to global constraint indices.
+    let mut row_constraint: Vec<usize> = Vec::with_capacity(n_eq_c);
+    for &gi in group {
+        for _ in 0..eqs.equation_count(gi) {
+            row_constraint.push(gi);
+        }
+    }
+
+    // What the thresholds are relative to: the larger of the largest
+    // residual and the unit the equations are measured in (one, or the
+    // size of a component smaller than one; see `equation_unit`). With
+    // a floor of one, a contradiction of 0.2% on a triangle 1e-6 across
+    // read as partially redundant.
+    let unit = equation_unit(eqs.length_scale(group, params));
+
+    // Nothing in this component can move: any unsatisfied residual is a
+    // genuine conflict.
+    let flag_unsatisfied = |part: &mut ComponentDiagnosis, f_c: &[f64]| {
+        let scale = f_c.iter().fold(unit, |m, v| m.max(v.abs()));
+        for (r, fi) in f_c.iter().enumerate() {
+            if fi.abs() > CONSIST_TOL * scale {
+                part.conflicting.push(row_constraint[r]);
             }
         }
+    };
+    if touched.is_empty() {
+        flag_unsatisfied(&mut part, &f_c);
+        return part;
+    }
 
-        // What the thresholds are relative to: the larger of the largest
-        // residual and the unit the equations are measured in (one, or the
-        // size of a component smaller than one; see `equation_unit`). With
-        // a floor of one, a contradiction of 0.2% on a triangle 1e-6 across
-        // read as partially redundant.
-        let unit = equation_unit(eqs.length_scale(group, params));
+    // Raw Jacobian over the touched local columns.
+    let col_of: HashMap<usize, usize> = touched.iter().enumerate().map(|(c, &p)| (p, c)).collect();
+    let mut j_raw = vec![vec![0.0_f64; touched.len()]; n_eq_c];
+    analytic_jacobian(eqs, group, params, &col_of, &mut j_raw);
 
-        // Nothing in this component can move: any unsatisfied residual is a
-        // genuine conflict.
-        let flag_unsatisfied = |d: &mut Diagnosis, f_c: &[f64]| {
-            let scale = f_c.iter().fold(unit, |m, v| m.max(v.abs()));
-            for (r, fi) in f_c.iter().enumerate() {
-                if fi.abs() > CONSIST_TOL * scale {
-                    d.conflicting.push(row_constraint[r]);
-                }
-            }
-        };
-        if touched.is_empty() {
-            flag_unsatisfied(&mut d, &f_c);
-            continue;
-        }
+    // Soft gauge directions this component touches but does not pin.
+    part.soft_unpinned = unpinned_gauge_dims(&j_raw, &col_of, soft, soft_seen);
 
-        // Raw Jacobian over the touched local columns.
-        let col_of: HashMap<usize, usize> =
-            touched.iter().enumerate().map(|(c, &p)| (p, c)).collect();
-        let mut j_raw = vec![vec![0.0_f64; touched.len()]; n_eq_c];
-        analytic_jacobian(eqs, group, params, &col_of, &mut j_raw);
-
-        // Soft gauge directions this component touches but does not pin.
-        soft_free += unpinned_gauge_dims(&j_raw, &col_of, &soft, &mut soft_seen);
-
-        // Effective free directions: hard gauge is removed here.
-        let mut j = match gauge.effective_columns(params, fixed, &touched) {
-            None => j_raw,
-            Some(columns) => {
-                let mut j = vec![vec![0.0_f64; columns.len()]; n_eq_c];
-                for (row, jr) in j_raw.iter().enumerate() {
-                    for (c, col) in columns.iter().enumerate() {
-                        let mut v = 0.0_f64;
-                        for &(lc, coeff) in col {
-                            v += jr[lc] * coeff;
-                        }
-                        j[row][c] = v;
-                    }
-                }
-                j
-            }
-        };
-        let n_cols = j.first().map_or(0, |row| row.len());
-        if n_cols == 0 {
-            flag_unsatisfied(&mut d, &f_c);
-            continue;
-        }
-
-        // Row-equilibrate the Jacobian and the residuals together so a
-        // distance in mm and an angle in radians contribute comparable
-        // column norms to the rank decision.
-        for (row, fi) in j.iter_mut().zip(f_c.iter_mut()) {
-            let s = row.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-            if s > 0.0 {
-                for v in row.iter_mut() {
-                    *v /= s;
-                }
-                *fi /= s;
-            }
-        }
-
-        // A = Jᵀ: column i of A is component row i (equilibrated).
-        let mut a = vec![vec![0.0_f64; n_eq_c]; n_cols];
-        for (i, row) in j.iter().enumerate() {
-            for (p, v) in row.iter().enumerate() {
-                a[p][i] = *v;
-            }
-        }
-        // The QR mutates `a` in place; the group extraction needs the
-        // ORIGINAL columns, so keep a copy for it.
-        let a_original = a.clone();
-        let (pivots, rank) = householder_qr_column_pivoting(&mut a, RANK_REL_TOL);
-        total_rank += rank as i64;
-
-        let independent = &pivots[..rank];
-        let dependent: Vec<usize> = (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
-        if dependent.is_empty() || rank == 0 {
-            continue;
-        }
-
-        // Dependency groups: the dependency lives in ROW space — find
-        // coefficients y with Σ y_j·row_j = dep_row via the row-space Gram
-        // system (G + λI) y = rows·dep, G[i][j] = row_i·row_j. The
-        // coefficient support is the whole mutually-dependent row group,
-        // invariant to pivot tie-breaking. One Gram matrix serves every
-        // dependent row: it is built and factored once.
-        let rows: Vec<Vec<f64>> = independent
+    // Effective free directions: hard gauge is removed here.
+    let effective = gauge.effective_columns(params, fixed, &touched);
+    let raw_rows: Vec<SparseRow> = if keep {
+        j_raw
             .iter()
-            .map(|&col| (0..n_cols).map(|rr| a_original[rr][col]).collect())
-            .collect();
-        let r = rows.len();
+            .map(|row| {
+                row.iter()
+                    .enumerate()
+                    .filter(|(_, v)| **v != 0.0)
+                    .map(|(lc, &v)| (touched[lc], v))
+                    .collect()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let columns: Vec<SparseRow> = match &effective {
+        None => (0..touched.len())
+            .map(|c| vec![(touched[c], 1.0)])
+            .collect(),
+        Some(columns) => columns
+            .iter()
+            .map(|col| col.iter().map(|&(lc, w)| (touched[lc], w)).collect())
+            .collect(),
+    };
+    let mut j = match effective {
+        None => j_raw,
+        Some(columns) => {
+            let mut j = vec![vec![0.0_f64; columns.len()]; n_eq_c];
+            for (row, jr) in j_raw.iter().enumerate() {
+                for (c, col) in columns.iter().enumerate() {
+                    let mut v = 0.0_f64;
+                    for &(lc, coeff) in col {
+                        v += jr[lc] * coeff;
+                    }
+                    j[row][c] = v;
+                }
+            }
+            j
+        }
+    };
+    let n_cols = j.first().map_or(0, |row| row.len());
+    if n_cols == 0 {
+        flag_unsatisfied(&mut part, &f_c);
+        return part;
+    }
+
+    // Row-equilibrate the Jacobian and the residuals together so a
+    // distance in mm and an angle in radians contribute comparable
+    // column norms to the rank decision.
+    for (row, fi) in j.iter_mut().zip(f_c.iter_mut()) {
+        let s = row.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        if s > 0.0 {
+            for v in row.iter_mut() {
+                *v /= s;
+            }
+            *fi /= s;
+        }
+    }
+
+    // A = Jᵀ: column i of A is component row i (equilibrated).
+    let mut a = vec![vec![0.0_f64; n_eq_c]; n_cols];
+    for (i, row) in j.iter().enumerate() {
+        for (p, v) in row.iter().enumerate() {
+            a[p][i] = *v;
+        }
+    }
+    // The QR mutates `a` in place; the group extraction needs the
+    // ORIGINAL columns, so keep a copy for it.
+    let a_original = a.clone();
+    let (pivots, rank) = householder_qr_column_pivoting(&mut a, RANK_REL_TOL);
+    part.rank = rank;
+
+    let independent = &pivots[..rank];
+    let dependent: Vec<usize> = (0..n_eq_c).filter(|&i| !independent.contains(&i)).collect();
+    if (dependent.is_empty() && !keep) || rank == 0 {
+        return part;
+    }
+
+    // Dependency groups: the dependency lives in ROW space — find
+    // coefficients y with Σ y_j·row_j = dep_row via the row-space Gram
+    // system (G + λI) y = rows·dep, G[i][j] = row_i·row_j. The
+    // coefficient support is the whole mutually-dependent row group,
+    // invariant to pivot tie-breaking. One Gram matrix serves every
+    // dependent row: it is built and factored once.
+    let rows: Vec<Vec<f64>> = independent
+        .iter()
+        .map(|&col| (0..n_cols).map(|rr| a_original[rr][col]).collect())
+        .collect();
+    let r = rows.len();
+    if !dependent.is_empty() {
         let gram = RowSpaceGram::new(&rows, n_cols, LAMBDA);
         for &dep in &dependent {
             let dep_row: Vec<f64> = (0..n_cols).map(|rr| a_original[rr][dep]).collect();
@@ -2001,40 +2124,76 @@ where
                 .collect();
             group.sort_unstable();
             group.dedup();
-            if group.len() > 1 && !d.dependency_groups.contains(&group) {
-                d.dependency_groups.push(group);
-            }
-        }
-
-        // Least-squares step of the independent rows (minimizes |Jₛ z + fₛ|).
-        let j_sub: Vec<Vec<f64>> = independent.iter().map(|&i| j[i].clone()).collect();
-        let f_sub: Vec<f64> = independent.iter().map(|&i| f_c[i]).collect();
-        let z = solve_normal_equations(&j_sub, &f_sub, n_cols);
-
-        let scale = f_c.iter().fold(unit, |m, v| m.max(v.abs()));
-        for &r in &dependent {
-            let drive: f64 = j[r].iter().zip(z.iter()).map(|(ji, zi)| ji * zi).sum();
-            let e = (f_c[r] + drive).abs();
-            let global = row_constraint[r];
-            if e <= CONSIST_TOL * scale {
-                if !d.redundant.contains(&global) {
-                    d.redundant.push(global);
-                }
-            } else if e <= PARTIAL_TOL * scale {
-                if !d.partially_redundant.contains(&global) {
-                    d.partially_redundant.push(global);
-                }
-            } else if !d.conflicting.contains(&global) {
-                d.conflicting.push(global);
+            if group.len() > 1 && !part.dependency_groups.contains(&group) {
+                part.dependency_groups.push(group);
             }
         }
     }
 
-    // Soft gauge directions no component touches are unpinned by definition.
-    soft_free += soft_seen.iter().filter(|seen| !**seen).count();
-    d.rank = total_rank.max(0) as usize;
-    d.dof = free_total as i64 - removed as i64 - soft_free as i64 - total_rank;
-    d
+    // Least-squares step of the independent rows (minimizes |Jₛ z + fₛ|).
+    let j_sub: Vec<Vec<f64>> = independent.iter().map(|&i| j[i].clone()).collect();
+    let f_sub: Vec<f64> = independent.iter().map(|&i| f_c[i]).collect();
+    let z = solve_normal_equations(&j_sub, &f_sub, n_cols);
+
+    let scale = f_c.iter().fold(unit, |m, v| m.max(v.abs()));
+    let mut kept_dependent = Vec::new();
+    for &r in &dependent {
+        let drive: f64 = j[r].iter().zip(z.iter()).map(|(ji, zi)| ji * zi).sum();
+        let e = (f_c[r] + drive).abs();
+        let global = row_constraint[r];
+        if keep {
+            kept_dependent.push((global, e));
+        }
+        if e <= CONSIST_TOL * scale {
+            if !part.redundant.contains(&global) {
+                part.redundant.push(global);
+            }
+        } else if e <= PARTIAL_TOL * scale {
+            if !part.partially_redundant.contains(&global) {
+                part.partially_redundant.push(global);
+            }
+        } else if !part.conflicting.contains(&global) {
+            part.conflicting.push(global);
+        }
+    }
+    if keep {
+        // An orthonormal basis of the independent rows (modified
+        // Gram–Schmidt, twice).
+        let mut q: Vec<Vec<f64>> = Vec::with_capacity(r);
+        let mut smallest = f64::INFINITY;
+        for row in &rows {
+            let mut v = row.clone();
+            for _ in 0..2 {
+                for u in &q {
+                    let d: f64 = v.iter().zip(u).map(|(a, b)| a * b).sum();
+                    for (a, b) in v.iter_mut().zip(u) {
+                        *a -= d * b;
+                    }
+                }
+            }
+            let n = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+            smallest = smallest.min(n);
+            if n > 0.0 {
+                q.push(v.iter().map(|x| x / n).collect());
+            }
+        }
+        let max0 = j
+            .iter()
+            .map(|row| row.iter().map(|x| x * x).sum::<f64>().sqrt())
+            .fold(0.0_f64, f64::max);
+        part.basis = Some(RowBasis {
+            touched: touched.clone(),
+            columns,
+            q,
+            max0,
+            min_pivot: if max0 > 0.0 { smallest / max0 } else { 0.0 },
+            z,
+            dependent: kept_dependent,
+            f_max: f_c.iter().fold(0.0_f64, |m, v| m.max(v.abs())),
+            j_raw: raw_rows,
+        });
+    }
+    part
 }
 
 /// Number of soft gauge directions that this component touches and that no
@@ -2047,7 +2206,7 @@ where
 /// directions no component touches at all. The count is `k − rank(J·G)` for
 /// the `k` touched directions `G`: the dimension of their span inside the
 /// null space.
-fn unpinned_gauge_dims(
+pub(crate) fn unpinned_gauge_dims(
     j_raw: &[Vec<f64>],
     col_of: &HashMap<usize, usize>,
     gauges: &[SparseRow],

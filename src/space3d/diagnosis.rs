@@ -84,8 +84,8 @@ pub(crate) fn diagnose_equations(
 }
 
 /// The representation gauge of the 3D entities (see the module docs).
-struct SpaceGauge<'a> {
-    entities: &'a [SpaceEntity],
+pub(crate) struct SpaceGauge<'a> {
+    pub(crate) entities: &'a [SpaceEntity],
 }
 
 impl Gauge for SpaceGauge<'_> {

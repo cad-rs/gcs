@@ -130,6 +130,10 @@ let now = system.measure(index, &next.positions, &next.rotations);
 
 草图解不出来时，`Sketch::conflicts()` 告诉宿主该去掉什么：对每个从当前位置解不出的连通分量，给出若干个 `Conflict`，每个是一个最小冲突集（这些约束不能同时成立，但去掉其中任何一个，其余的就能解），约束编号按添加顺序最新在前，`suggested()`（第一个）就是建议移除项；把每个冲突的建议项都去掉，草图就能解。做法是删除过滤：在草图的副本上从最新的约束开始逐个停用，停用后仍解不出的就不再放回（诊断里有冲突依赖组且它单独就解不出时，在组内做，少解几次）。草图本身不动。和 `diagnose().conflicting` 的区别：后者是当前点的线性代数，只点名一个代表，也看不到非线性的冲突（例如两段距离够不着两个固定点——在那里两行是独立的）；`conflicts()` 靠求解判断，所以代价是每个冲突大约“集合大小”次求解，请在用户要求时调用；“解不出”指从当前几何出发求解不收敛，所以从退化起点解不动的也算冲突（例如两个姿态都是单位阵的刚体，同心配合要对齐的两根轴恰好垂直）；只靠把线缩成零长度、半径或法向缩成零才“解出”的不算解出。3D 的 `SpaceSketch::conflicts()`、装配的 `rigid3d::assembly_conflicts(system, positions, rotations)`（约束按槽位，用默认求解选项）相同。`status()` 不变（非线性冲突在那里仍是 `Unmet` / `Unsolved`）。
 
+### 3.10 加一个约束之前先问
+
+`let probe = sk.what_if();` 之后 `probe.would_add(&constraint)` 告诉宿主这个约束加上去会怎样：`Addition { verdict, removes }`，`verdict` 是 `Independent`（每个方程都独立，拿走和方程数一样多的自由度）、`Redundant`（有方程与现有的相关且一致）、`PartiallyRedundant`（几乎一致）或 `Conflicting`（相关且矛盾），口径与“加到副本上再 `diagnose()`”的结论相同；`removes` 是 `dof` 会减少多少。适合做“拖一个尺寸 / 选一个约束工具时提示会不会过定义”。探针借用草图（活着时草图不能改），按连通分量在第一次被问到时分解一次（约 1.6–2 次诊断的代价），之后每次只做投影：792 个参数的分量上每问一次 3–4 ms，而“副本 + 诊断”要近 1 s。分量病态、本身已有冲突、或候选恰好在阈值附近时，它自动改为对涉及的分量做精确诊断，结论仍然一致。3D 草图 `SpaceSketch::what_if()`、装配 `rigid3d::assembly_what_if(system, positions, rotations)`（返回 `AssemblyWhatIf`）相同；装配里让一个刚体接地的 `Fixed`（带姿态）本身不产生方程行，按“秩增加等于方程数”它通常读作 `Redundant`，真正拿走的自由度看 `removes`。与 `status()` 的区别：不做 P4.3 的见证（`would_add` 说 `Redundant` 的，加上后 `status()` 在 2D 里可能是 `Singular`），也不做“单独可去掉”的测试。
+
 ## 4. 这一版没有动的
 
 以下已知问题仍在，迁移时不要指望它们已经解决（都在 [CATCHUP_PLAN.md](CATCHUP_PLAN.md) 里排了阶段）：

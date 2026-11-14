@@ -801,6 +801,48 @@ impl Sketch {
     }
 }
 
+/// A what-if probe of a [`Sketch`] as it stands (see [`crate::whatif`]):
+/// [`WhatIf::would_add`] tells what one more constraint would do without
+/// diagnosing the sketch again. Made by [`Sketch::what_if`]; it borrows the
+/// sketch, so the sketch cannot change while it is alive.
+pub struct WhatIf<'a> {
+    sketch: &'a Sketch,
+    spaces: crate::whatif::RowSpaces<SketchEquations<'a>, NoGauge>,
+}
+
+impl WhatIf<'_> {
+    /// What adding `constraint` (on entities of the sketch) would do: its
+    /// [`Verdict`](crate::whatif::Verdict) — independent, redundant,
+    /// partially redundant or conflicting, as [`Sketch::diagnose`] would
+    /// have it with the constraint added — and how many degrees of freedom
+    /// it would take away. The first question about a connected component
+    /// factors it once; later ones only project.
+    pub fn would_add(&self, constraint: &Constraint) -> crate::whatif::Addition {
+        let sk = self.sketch;
+        let mut constraints = sk.constraints.clone();
+        constraints.push(constraint.clone());
+        let with = SketchEquations::with_states(&sk.entities, &constraints, &sk.states);
+        self.spaces
+            .would_add(&with, &sk.fixed, sk.constraints.len(), false)
+    }
+}
+
+impl Sketch {
+    /// A what-if probe of the sketch at its current parameters (see
+    /// [`WhatIf`]). Read it at a solved configuration, as the diagnosis.
+    pub fn what_if(&self) -> WhatIf<'_> {
+        WhatIf {
+            sketch: self,
+            spaces: crate::whatif::RowSpaces::new(
+                self.equations(),
+                self.params.clone(),
+                self.fixed.clone(),
+                NoGauge,
+            ),
+        }
+    }
+}
+
 impl Default for Sketch {
     fn default() -> Self {
         Self::new()

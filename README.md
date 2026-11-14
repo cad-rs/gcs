@@ -195,6 +195,22 @@ equations are independent.
 The 3D family discounts storage parameters that are not physical freedoms
 (a plane has four for three, a cylinder seven for five).
 
+`sk.what_if()` answers "what would this constraint do?" before it is
+added: `probe.would_add(&c)` gives the verdict the diagnosis would give
+with it (`Independent`, `Redundant`, `PartiallyRedundant`, `Conflicting`)
+and how many freedoms it would take, by projecting its rows onto the
+row space the probe keeps per component (a few milliseconds on a
+792-parameter component, against about a second for a fresh diagnosis).
+
+```rust
+use rcad_gcs::Verdict;
+
+let probe = sk.what_if();
+if probe.would_add(&candidate).verdict == Verdict::Conflicting {
+    // grey out the tool: it would over-constrain the sketch
+}
+```
+
 `sk.conflicts()` says what to take out when the sketch cannot be solved:
 for each connected component that does not solve from where it stands,
 minimal sets of constraints that cannot all hold while any one of them

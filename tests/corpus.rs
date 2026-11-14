@@ -1528,3 +1528,202 @@ fn conflicts_match_the_labels() {
     }
     assert_eq!(checked, 20);
 }
+
+/// Candidate constraints on the first few points, lines and circles of a
+/// sketch, of every kind, each dimension at what it measures and off it.
+fn what_if_candidates(sk: &Sketch) -> Vec<Constraint> {
+    use rcad_gcs::EntityKind;
+    let (mut points, mut lines, mut circles) = (Vec::new(), Vec::new(), Vec::new());
+    for e in 0..sk.entities.len() {
+        match sk.entities[e].kind {
+            EntityKind::Point => points.push(PointRef::Point(e)),
+            EntityKind::Line => {
+                points.push(PointRef::LineStart(e));
+                points.push(PointRef::LineEnd(e));
+                lines.push(e);
+            }
+            EntityKind::Circle => {
+                points.push(PointRef::Center(e));
+                circles.push(e);
+            }
+            EntityKind::Arc => points.push(PointRef::Center(e)),
+        }
+    }
+    points.truncate(4);
+    lines.truncate(3);
+    circles.truncate(2);
+    let params = sk.params_snapshot();
+    let measured = |c: &Constraint| c.measure(&params, &sk.entities).expect("a dimension");
+    let with = |mut c: Constraint, off: f64| {
+        let m = measured(&c);
+        c.set_value(m + off);
+        c
+    };
+    let mut out = Vec::new();
+    for &p in &points {
+        let at = sk.point_coords(p);
+        out.push(Fixed {
+            point: p,
+            x: at.x,
+            y: at.y,
+        });
+        out.push(Fixed {
+            point: p,
+            x: at.x + 0.5,
+            y: at.y,
+        });
+    }
+    for (i, &a) in points.iter().enumerate() {
+        for &b in &points[i + 1..] {
+            out.push(Coincident(a, b));
+            for off in [0.0, 0.7] {
+                out.push(with(Constraint::point_distance(a, b, 1.0), off));
+                out.push(with(
+                    DistanceX {
+                        p1: a,
+                        p2: b,
+                        distance: 0.0,
+                    },
+                    off * 0.4,
+                ));
+            }
+            out.push(with(
+                DistanceY {
+                    p1: a,
+                    p2: b,
+                    distance: 0.0,
+                },
+                0.0,
+            ));
+        }
+    }
+    for (i, &l) in lines.iter().enumerate() {
+        out.push(Horizontal(l));
+        out.push(Vertical(l));
+        for off in [0.0, 1.0] {
+            out.push(with(
+                LineLength {
+                    line: l,
+                    length: 1.0,
+                },
+                off,
+            ));
+        }
+        for &m in &lines[i + 1..] {
+            out.push(Parallel(l, m));
+            out.push(Perpendicular(l, m));
+            for off in [0.0, 0.2] {
+                out.push(with(
+                    Angle {
+                        l1: l,
+                        l2: m,
+                        angle_rad: 0.0,
+                    },
+                    off,
+                ));
+            }
+        }
+    }
+    for (i, &c) in circles.iter().enumerate() {
+        for off in [0.0, 0.5] {
+            out.push(with(
+                Radius {
+                    circle: c,
+                    radius: 1.0,
+                },
+                off,
+            ));
+        }
+        for &p in points.iter().take(2) {
+            out.push(PointOnCircle {
+                point: p,
+                circle: c,
+            });
+        }
+        for &l in lines.iter().take(2) {
+            out.push(Tangent { circle: c, line: l });
+        }
+        for &d in &circles[i + 1..] {
+            out.push(EqualRadius(c, d));
+        }
+    }
+    out
+}
+
+/// What the diagnosis says about adding `c` to `sk` (diagnosis `before`):
+/// independent when the rank grows by its equations; else conflicting or
+/// partially redundant when it names a constraint so that it did not;
+/// else redundant.
+fn diagnosed_addition(
+    sk: &Sketch,
+    before: &rcad_gcs::Diagnosis,
+    c: &Constraint,
+) -> rcad_gcs::Addition {
+    use rcad_gcs::{Addition, Verdict};
+    let mut with = sk.clone();
+    with.add_constraint(c.clone());
+    let after = with.diagnose();
+    let grew = |now: &[usize], then: &[usize]| now.iter().any(|x| !then.contains(x));
+    let verdict = if after.rank as i64 - before.rank as i64 == c.equation_count() as i64 {
+        Verdict::Independent
+    } else if grew(&after.conflicting, &before.conflicting) {
+        Verdict::Conflicting
+    } else if grew(&after.partially_redundant, &before.partially_redundant) {
+        Verdict::PartiallyRedundant
+    } else {
+        Verdict::Redundant
+    };
+    Addition {
+        verdict,
+        removes: (before.dof - after.dof).max(0) as usize,
+    }
+}
+
+#[test]
+fn would_add_matches_the_diagnosis() {
+    use std::collections::BTreeMap;
+    use std::time::{Duration, Instant};
+    let (mut total, mut right) = (0usize, 0usize);
+    let mut by_verdict: BTreeMap<String, usize> = BTreeMap::new();
+    let (mut probe_time, mut full_time) = (Duration::ZERO, Duration::ZERO);
+    for case in generate_all() {
+        // The rectangle family repeats itself; a few are enough.
+        if let Some(k) = case.id.strip_prefix("rect-k") {
+            let k: usize = k.split('-').next().unwrap().parse().unwrap();
+            if k > 4 {
+                continue;
+            }
+        }
+        let mut sk = (case.build)();
+        if !matches!(case.expect, Expect::Conflict) {
+            assert!(sk.solve().converged, "{}", case.id);
+        }
+        let before = sk.diagnose();
+        let t = Instant::now();
+        let probe = sk.what_if();
+        let candidates = what_if_candidates(&sk);
+        let answers: Vec<_> = candidates.iter().map(|c| probe.would_add(c)).collect();
+        probe_time += t.elapsed();
+        for (c, got) in candidates.iter().zip(answers) {
+            let t = Instant::now();
+            let want = diagnosed_addition(&sk, &before, c);
+            full_time += t.elapsed();
+            total += 1;
+            *by_verdict.entry(format!("{:?}", want.verdict)).or_default() += 1;
+            if got == want {
+                right += 1;
+            } else {
+                println!("{}: {c:?}: would_add {got:?}, diagnosis {want:?}", case.id);
+            }
+        }
+    }
+    println!(
+        "would_add: {right}/{total} as the diagnosis {by_verdict:?}; probe {:.1} ms, diagnosis {:.1} ms",
+        probe_time.as_secs_f64() * 1e3,
+        full_time.as_secs_f64() * 1e3
+    );
+    assert_eq!(
+        right, total,
+        "what-if answers that differ from the diagnosis"
+    );
+}

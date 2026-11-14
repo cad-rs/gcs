@@ -1267,3 +1267,112 @@ fn conflicts_match_the_labels() {
     println!("assembly conflicts: {checked} conflicting cases as labelled");
     assert!(checked >= 20, "{checked}");
 }
+
+// ── what-if (P4.5) ──────────────────────────────────────────────────────────
+
+/// Candidate mates between the first bodies of a system at a pose: each
+/// kind, dimensions at what they measure and off it, and a grounding.
+fn what_if_candidates(system: &ConstraintSystem, pos: &[DVec3], rot: &[DQuat]) -> Vec<Constraint> {
+    let n = system.num_components.min(3);
+    let local = |b: usize, world: DVec3| rot[b].inverse() * (world - pos[b]);
+    let world = |b: usize, p: DVec3| pos[b] + rot[b] * p;
+    let mut out = Vec::new();
+    let id = 1000;
+    for b in 0..n {
+        out.push(Constraint::fixed(id, b, pos[b]));
+        out.push(Constraint::fixed(id, b, pos[b] + DVec3::new(0.4, 0.0, 0.0)));
+        out.push(Constraint::fixed_with_orientation(id, b, pos[b], rot[b]));
+        for c in b + 1..n {
+            let a = DVec3::new(0.5, 0.2, 0.0);
+            let w = world(b, a);
+            out.push(Constraint::coincident(id, b, a, c, local(c, w)));
+            out.push(Constraint::coincident(
+                id,
+                b,
+                a,
+                c,
+                local(c, w) + DVec3::new(0.3, 0.0, 0.0),
+            ));
+            let q = DVec3::new(0.0, 0.7, 0.1);
+            let d = (world(c, q) - w).length();
+            for off in [0.0, 0.6] {
+                out.push(Constraint::distance(id, b, a, c, q, d + off));
+            }
+            let x = DVec3::X;
+            let along = local(c, pos[c] + rot[b] * x);
+            out.push(Constraint::parallel(id, b, x, c, along.normalize()));
+            out.push(Constraint::perpendicular(id, b, x, c, DVec3::Y));
+            let angle = (rot[b] * x).angle_between(rot[c] * DVec3::Y);
+            for off in [0.0, 0.25] {
+                out.push(Constraint::angle(id, b, x, c, DVec3::Y, angle + off));
+            }
+            out.push(Constraint::concentric(
+                id,
+                b,
+                a,
+                DVec3::Z,
+                c,
+                local(c, w),
+                rot[c].inverse() * (rot[b] * DVec3::Z),
+            ));
+        }
+    }
+    out
+}
+
+#[test]
+fn would_add_matches_the_diagnosis() {
+    use rcad_gcs::{Addition, Verdict};
+    let solver = tight_solver();
+    let (mut total, mut right, mut cases) = (0usize, 0usize, 0usize);
+    let mut by_verdict: std::collections::BTreeMap<String, usize> = Default::default();
+    for (i, case) in generate_all().into_iter().enumerate() {
+        let system = (case.build)();
+        // The families repeat themselves: every other small case, every
+        // twentieth large one.
+        if (system.num_components > 4 && i % 20 != 0) || i % 2 != 0 {
+            continue;
+        }
+        let (mut pos, mut rot) = ConstraintSolver::seed_fixed(&system);
+        if case.expect != Expect::Conflict {
+            let r = solver.solve(&system);
+            pos = r.positions;
+            rot = r.rotations;
+        }
+        cases += 1;
+        let before = diagnose_assembly(&system, &pos, &rot);
+        let probe = rcad_gcs::rigid3d::assembly_what_if(&system, &pos, &rot);
+        for c in what_if_candidates(&system, &pos, &rot) {
+            let got = probe.would_add(&c);
+            let mut with = system.clone();
+            with.add_constraint(c);
+            let after = diagnose_assembly(&with, &pos, &rot);
+            let grew = |now: &[usize], then: &[usize]| now.iter().any(|x| !then.contains(x));
+            let verdict = if after.rank as i64 - before.rank as i64 == c.equation_count() as i64 {
+                Verdict::Independent
+            } else if grew(&after.conflicting, &before.conflicting) {
+                Verdict::Conflicting
+            } else if grew(&after.partially_redundant, &before.partially_redundant) {
+                Verdict::PartiallyRedundant
+            } else {
+                Verdict::Redundant
+            };
+            let want = Addition {
+                verdict,
+                removes: (before.dof - after.dof).max(0) as usize,
+            };
+            total += 1;
+            *by_verdict.entry(format!("{verdict:?}")).or_default() += 1;
+            if got == want {
+                right += 1;
+            } else {
+                println!("{}: {c:?}: would_add {got:?}, diagnosis {want:?}", case.id);
+            }
+        }
+    }
+    println!("assembly would_add: {right}/{total} as the diagnosis, {cases} cases {by_verdict:?}");
+    assert_eq!(
+        right, total,
+        "what-if answers that differ from the diagnosis"
+    );
+}

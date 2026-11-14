@@ -64,6 +64,7 @@ pub mod space3d;
 pub mod status;
 mod structure;
 mod system;
+pub mod whatif;
 
 pub use conflict::Conflict;
 pub use constraint::Constraint;
@@ -72,9 +73,10 @@ pub use edit::{ConstraintState, SketchError};
 pub use entity::{Entity, EntityId, EntityKind, PointRef};
 pub use freedom::{EntityFreedom, Measure, Motion2, Motion3};
 pub use numerics::{FailurePolicy, SolveOptions, SolveResult, SolveStatus};
-pub use sketch::{DofReport, Sketch};
+pub use sketch::{DofReport, Sketch, WhatIf};
 pub use space3d::SpaceSketch;
 pub use status::{ConstraintStatus, EntityStatus, Status};
+pub use whatif::{Addition, Verdict};
 
 /// The curated public surface in one `use`.
 pub mod prelude {
