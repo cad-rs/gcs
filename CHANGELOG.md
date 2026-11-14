@@ -341,6 +341,26 @@ through them from a host's side.
   and tests the others on the pieces that leave, so a hub with forty parts
   is forty small tests; the assembly gate went from 177 s to 2.7 s
   (optimised) with it.
+- `Sketch::auto_dimensions(datum)` and `SpaceSketch::auto_dimensions(datum)`:
+  dimensions that would define the sketch fully as it stands, each set to
+  what it measures — the sketch is not changed. Positions are measured
+  from a datum (the given point, else the first point that cannot move,
+  else the first point, suggested a `Fixed` first when it can move); then
+  entity by entity a radius (2D circles and arcs; 3D spheres, cylinders,
+  circles, arcs), a line's length, a 3D plane's normal and its distance
+  from the datum, and the x and y (3D: x, y, z) distances of its points
+  from the datum. A candidate is taken when each of its equations takes
+  a freedom no earlier one took: the null space of the Jacobian (over the
+  gauge's effective columns, unpinned soft gauge directions taken out,
+  so its dimension is the diagnosis's `dof`) is kept as an orthonormal
+  basis of sparse vectors, a candidate's rows are projected onto it, and
+  the directions taken are removed from the basis vectors they touch. So
+  the suggestions hold where the geometry stands, add nothing redundant,
+  and their equations add up to the `dof`. Every solvable case of the 2D
+  corpus comes out fully defined with them (117 suggested), the
+  under-constrained ones with exactly what their construction lacks. In
+  3D nothing in the vocabulary dimensions a cylinder's axis or a
+  spline's control points: those freedoms are left.
 - `Sketch::what_if()`, `SpaceSketch::what_if()`,
   `rigid3d::assembly_what_if()` and the module `whatif`: a probe that
   tells what one more constraint would do — `would_add(&constraint)`

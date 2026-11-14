@@ -137,6 +137,13 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   the 3D sketch has no labelled corpus of freedoms beyond `tests/freedom.rs`;
   the conflicting cases of the assembly corpus are only checked against
   their status, not against labelled motions.
+- **Automatic dimensioning.** `auto_dimensions()` (2D and 3D sketches)
+  offers dimensions only, in a fixed order. Left: geometric relations
+  (horizontal, vertical, coincident where the geometry already has them);
+  a preference for dimensions a person would draw (chained, baseline,
+  symmetric) rather than distances from one datum; a cylinder's axis and
+  a spline's control points in 3D (nothing in the vocabulary dimensions
+  them); the assembly family (automatic mates).
 - **What-if.** `what_if().would_add()` agrees with the diagnosis on every
   candidate tried (2D corpus, an assembly sample, 3D fixtures). Left: it
   does not apply the witness of `status()` (a redundant answer may be

@@ -195,6 +195,11 @@ equations are independent.
 The 3D family discounts storage parameters that are not physical freedoms
 (a plane has four for three, a cylinder seven for five).
 
+`sk.auto_dimensions(None)` suggests dimensions that would define the
+sketch fully as it stands (each set to what it measures, nothing
+redundant): radii, lengths, and the x and y distances of points from a
+datum. Add the ones you want.
+
 `sk.what_if()` answers "what would this constraint do?" before it is
 added: `probe.would_add(&c)` gives the verdict the diagnosis would give
 with it (`Independent`, `Redundant`, `PartiallyRedundant`, `Conflicting`)

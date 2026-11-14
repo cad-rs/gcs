@@ -7,7 +7,9 @@
 use crate::edit::{ConstraintState, SketchError};
 use crate::numerics::{SolveOptions, SolveResult};
 use crate::space3d::constraint::SpaceConstraint;
-use crate::space3d::entity::{SpaceEntity, SpaceEntityId, SpaceEntityKind, SpaceFrame3};
+use crate::space3d::entity::{
+    SpaceEntity, SpaceEntityId, SpaceEntityKind, SpaceFrame3, SpacePointRef,
+};
 use crate::space3d::solver::SpaceEquations;
 use crate::system;
 
@@ -675,6 +677,157 @@ impl SpaceSketch {
     /// part. See [`crate::space3d::diagnosis`].
     pub fn diagnose(&self) -> crate::space3d::diagnosis::SpaceDiagnosis {
         crate::space3d::diagnosis::diagnose_equations(&self.equations(), &self.params, &self.fixed)
+    }
+
+    /// Dimensions that would define the sketch fully, as it stands (see
+    /// [`crate::Sketch::auto_dimensions`]): a datum (the first point that
+    /// cannot move, else the first point, `Fixed` first if it can move);
+    /// then entity by entity a line's length, a sphere's, cylinder's,
+    /// circle's or arc's radius, a plane's normal and its distance from the
+    /// datum, and the x, y and z distances of its points from the datum.
+    /// Nothing here dimensions a cylinder's axis or a spline's control
+    /// points: freedoms of those are left.
+    pub fn auto_dimensions(&self, datum: Option<SpacePointRef>) -> Vec<SpaceConstraint> {
+        let eqs = self.equations();
+        let gauge = crate::space3d::diagnosis::SpaceGauge {
+            entities: &self.entities,
+        };
+        let mut space = crate::autodim::NullBasis::of(&eqs, &self.params, &self.fixed, &gauge);
+        let mut out = Vec::new();
+        if space.dimension() == 0 {
+            return out;
+        }
+        let live: Vec<usize> = (0..self.entities.len())
+            .filter(|&e| !self.is_entity_removed(e))
+            .collect();
+        let points_of = |e: usize| -> Vec<SpacePointRef> {
+            match self.entities[e].kind {
+                SpaceEntityKind::SpacePoint => vec![SpacePointRef::Point(e)],
+                SpaceEntityKind::SpaceLine => {
+                    vec![SpacePointRef::LineStart(e), SpacePointRef::LineEnd(e)]
+                }
+                SpaceEntityKind::Sphere => vec![SpacePointRef::SphereCenter(e)],
+                SpaceEntityKind::SpaceCircle => vec![SpacePointRef::CircleCenter(e)],
+                SpaceEntityKind::SpaceArc => vec![SpacePointRef::ArcCenter(e)],
+                _ => Vec::new(),
+            }
+        };
+        let stored = |p: SpacePointRef| -> [usize; 3] {
+            let (e, k) = match p {
+                SpacePointRef::LineEnd(e) => (e, 3),
+                other => (other.entity(), 0),
+            };
+            let start = self.entities[e].param_start;
+            [start + k, start + k + 1, start + k + 2]
+        };
+        let held = |p: SpacePointRef, space: &crate::autodim::NullBasis| {
+            stored(p).iter().all(|&q| !space.moves(q))
+        };
+        let all: Vec<SpacePointRef> = live.iter().flat_map(|&e| points_of(e)).collect();
+        let Some(datum) = datum
+            .or_else(|| all.iter().copied().find(|&p| held(p, &space)))
+            .or_else(|| all.first().copied())
+        else {
+            return out;
+        };
+        let mut offer = |c: SpaceConstraint, space: &mut crate::autodim::NullBasis| {
+            let one = [c];
+            let rows = crate::autodim::rows_of(
+                &SpaceEquations::new(&self.entities, &one),
+                &self.params,
+                &self.fixed,
+            );
+            let [c] = one;
+            if space.take(&rows) {
+                out.push(c);
+            }
+        };
+        let measured = |mut c: SpaceConstraint| {
+            if let Some(m) = c.measure(&self.params, &self.entities) {
+                c.set_value(m);
+            }
+            c
+        };
+        if !held(datum, &space) {
+            let (x, y, z) = datum.point_coords(&self.params, &self.entities);
+            offer(SpaceConstraint::fix_point(datum, x, y, z), &mut space);
+        }
+        for &e in &live {
+            if space.dimension() == 0 {
+                break;
+            }
+            let start = self.entities[e].param_start;
+            match self.entities[e].kind {
+                SpaceEntityKind::SpaceLine => offer(
+                    measured(SpaceConstraint::LineLength {
+                        line: e,
+                        length: 0.0,
+                    }),
+                    &mut space,
+                ),
+                SpaceEntityKind::Sphere => offer(
+                    measured(SpaceConstraint::SphereRadius {
+                        sphere: e,
+                        radius: 0.0,
+                    }),
+                    &mut space,
+                ),
+                SpaceEntityKind::Cylinder => offer(
+                    measured(SpaceConstraint::CylinderRadius {
+                        cylinder: e,
+                        radius: 0.0,
+                    }),
+                    &mut space,
+                ),
+                SpaceEntityKind::SpaceCircle | SpaceEntityKind::SpaceArc => offer(
+                    measured(SpaceConstraint::CircleRadius {
+                        circle: e,
+                        radius: 0.0,
+                    }),
+                    &mut space,
+                ),
+                SpaceEntityKind::Plane => {
+                    let n = &self.params[start..start + 3];
+                    offer(
+                        SpaceConstraint::PlaneNormal {
+                            plane: e,
+                            nx: n[0],
+                            ny: n[1],
+                            nz: n[2],
+                        },
+                        &mut space,
+                    );
+                    offer(
+                        measured(SpaceConstraint::PointPlaneDistance {
+                            point: datum,
+                            plane: e,
+                            distance: 0.0,
+                        }),
+                        &mut space,
+                    );
+                }
+                _ => {}
+            }
+            for p in points_of(e) {
+                if p == datum {
+                    continue;
+                }
+                for (dx, dy, dz) in [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)] {
+                    offer(
+                        measured(SpaceConstraint::PointDistanceAlongDir {
+                            p1: p,
+                            p2: datum,
+                            dx,
+                            dy,
+                            dz,
+                            distance: 0.0,
+                        }),
+                        &mut space,
+                    );
+                }
+            }
+        }
+        out
     }
 
     /// A what-if probe of the sketch at its current parameters (see

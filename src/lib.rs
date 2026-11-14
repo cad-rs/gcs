@@ -48,6 +48,7 @@
 //! ```
 
 mod alias;
+mod autodim;
 pub mod conflict;
 pub mod constraint;
 pub mod diagnosis;

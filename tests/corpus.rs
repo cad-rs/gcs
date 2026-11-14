@@ -1727,3 +1727,117 @@ fn would_add_matches_the_diagnosis() {
         "what-if answers that differ from the diagnosis"
     );
 }
+
+/// The dimensions each under-constrained case should be offered (P4.6),
+/// from how it is built; `None` for the cases only checked to come out
+/// fully defined.
+fn expected_dimensions(id: &str, sk: &Sketch) -> Option<Vec<Constraint>> {
+    let params = sk.params_snapshot();
+    let measured = |mut c: Constraint| {
+        let m = c.measure(&params, &sk.entities).expect("a dimension");
+        c.set_value(m);
+        c
+    };
+    let dx = |p: PointRef, datum: PointRef| {
+        measured(DistanceX {
+            p1: p,
+            p2: datum,
+            distance: 0.0,
+        })
+    };
+    let dy = |p: PointRef, datum: PointRef| {
+        measured(DistanceY {
+            p1: p,
+            p2: datum,
+            distance: 0.0,
+        })
+    };
+    let radius = |c: usize| {
+        measured(Radius {
+            circle: c,
+            radius: 0.0,
+        })
+    };
+    let anchor = PointRef::Point(0);
+    if let Some(drop) = id
+        .strip_prefix("under-margin-")
+        .and_then(|rest| rest.rsplit_once("-drop"))
+        .map(|(_, d)| d.parse::<usize>().expect("drop index"))
+    {
+        // The hole gets what it lacks; the bore its radius and y (and x
+        // when its one constraint is dropped). Positions from the anchor.
+        let (hole, bore) = (PointRef::Center(2), PointRef::Center(3));
+        let mut v = match drop {
+            0 => vec![radius(2)],
+            1 => vec![dx(hole, anchor)],
+            2 => vec![dy(hole, anchor)],
+            _ => Vec::new(),
+        };
+        v.push(radius(3));
+        if drop == 3 {
+            v.push(dx(bore, anchor));
+        }
+        v.push(dy(bore, anchor));
+        return Some(v);
+    }
+    if id.starts_with("under-tangent-") {
+        // The held circle's centre is the datum; the line's start, which
+        // rolls round it, gets its x.
+        return Some(vec![dx(PointRef::LineStart(1), PointRef::Center(0))]);
+    }
+    if id.starts_with("under-chain-") {
+        // Every point after the anchor swings across the chain: its x.
+        return Some(
+            (1..sk.entities.len())
+                .map(|i| dx(PointRef::Point(i), anchor))
+                .collect(),
+        );
+    }
+    None
+}
+
+#[test]
+fn auto_dimensions_define_every_case() {
+    use rcad_gcs::ConstraintStatus;
+    let mut offered = 0usize;
+    for case in generate_all() {
+        if matches!(case.expect, Expect::Conflict) {
+            continue;
+        }
+        let mut sk = (case.build)();
+        assert!(sk.solve().converged, "{}", case.id);
+        let dof = sk.diagnose().dof;
+        let suggestions = sk.auto_dimensions(None);
+        if let Some(want) = expected_dimensions(&case.id, &sk) {
+            assert_eq!(
+                format!("{suggestions:?}"),
+                format!("{want:?}"),
+                "{}",
+                case.id
+            );
+        }
+        let equations: usize = suggestions.iter().map(|c| c.equation_count()).sum();
+        assert_eq!(equations as i64, dof, "{}: {suggestions:?}", case.id);
+        offered += suggestions.len();
+        let mut defined = sk.clone();
+        let first = defined.constraints_len();
+        for c in &suggestions {
+            defined.add_constraint(c.clone());
+        }
+        assert_eq!(defined.diagnose().dof, 0, "{}", case.id);
+        let status = defined.status();
+        for c in first..defined.constraints_len() {
+            assert_eq!(
+                status.constraints[c],
+                ConstraintStatus::Met,
+                "{}: {:?}",
+                case.id,
+                defined.constraints()[c]
+            );
+        }
+        // Met where the geometry stands (above), so a solve has nothing to
+        // undo.
+        assert!(defined.solve().converged, "{}", case.id);
+    }
+    println!("auto dimensions: {offered} offered");
+}

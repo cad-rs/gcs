@@ -134,6 +134,10 @@ let now = system.measure(index, &next.positions, &next.rotations);
 
 `let probe = sk.what_if();` 之后 `probe.would_add(&constraint)` 告诉宿主这个约束加上去会怎样：`Addition { verdict, removes }`，`verdict` 是 `Independent`（每个方程都独立，拿走和方程数一样多的自由度）、`Redundant`（有方程与现有的相关且一致）、`PartiallyRedundant`（几乎一致）或 `Conflicting`（相关且矛盾），口径与“加到副本上再 `diagnose()`”的结论相同；`removes` 是 `dof` 会减少多少。适合做“拖一个尺寸 / 选一个约束工具时提示会不会过定义”。探针借用草图（活着时草图不能改），按连通分量在第一次被问到时分解一次（约 1.6–2 次诊断的代价），之后每次只做投影：792 个参数的分量上每问一次 3–4 ms，而“副本 + 诊断”要近 1 s。分量病态、本身已有冲突、或候选恰好在阈值附近时，它自动改为对涉及的分量做精确诊断，结论仍然一致。3D 草图 `SpaceSketch::what_if()`、装配 `rigid3d::assembly_what_if(system, positions, rotations)`（返回 `AssemblyWhatIf`）相同；装配里让一个刚体接地的 `Fixed`（带姿态）本身不产生方程行，按“秩增加等于方程数”它通常读作 `Redundant`，真正拿走的自由度看 `removes`。与 `status()` 的区别：不做 P4.3 的见证（`would_add` 说 `Redundant` 的，加上后 `status()` 在 2D 里可能是 `Singular`），也不做“单独可去掉”的测试。
 
+### 3.11 自动标注
+
+`sk.auto_dimensions(datum)` 给出一组能把草图完全定义的尺寸（类似“完全定义草图”），每个取当前量出的值，草图本身不改，由宿主决定加哪些：位置从基准点量起（给定的点；不给就取第一个动不了的点，再没有就取第一个点，基准点能动时先建议固定它），然后按实体编号依次给半径（圆、圆弧）、线长、以及它的各个点（点、线两端、圆心、圆弧两端）到基准点的 x 距离和 y 距离。每个候选只有在它的每个方程都拿走一个之前没被拿走的自由度时才被采用，所以结果在当前几何上成立、加上后没有任何冗余、方程数之和正好等于 `dof`。只用尺寸类约束（不建议水平 / 竖直 / 重合这类关系）；2D 里点的位置和半径已经覆盖所有自由度，所以没有用到“线对水平的角度”。3D 的 `SpaceSketch::auto_dimensions(datum)` 同理（点到基准点的 x / y / z 距离用 `PointDistanceAlongDir`，平面给法向和到基准点的距离，球 / 圆柱 / 圆 / 圆弧给半径）；圆柱的轴和样条的控制点没有对应的尺寸，留下的自由度会如实留着。
+
 ## 4. 这一版没有动的
 
 以下已知问题仍在，迁移时不要指望它们已经解决（都在 [CATCHUP_PLAN.md](CATCHUP_PLAN.md) 里排了阶段）：

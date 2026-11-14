@@ -828,6 +828,137 @@ impl WhatIf<'_> {
 }
 
 impl Sketch {
+    /// Dimensions that would define the sketch fully, as it stands: a list of constraints, each set to what it
+    /// measures, that together take away every freedom left — empty when
+    /// the sketch is fully defined. Nothing is added to the sketch.
+    ///
+    /// Positions are measured from `datum`: by default the first point that
+    /// cannot move, else the first point, which is then suggested a
+    /// `Fixed` first (as a given datum is when it can move). Then, entity
+    /// by entity: a circle's or arc's radius, a line's length, and the x
+    /// and y distances of its points from the datum (a point, a line's two
+    /// ends, a centre, an arc's ends). A candidate is taken when each of
+    /// its equations takes a freedom no earlier one took, so the result
+    /// holds where the geometry stands and adds nothing redundant. A datum
+    /// already held in one coordinate is not fixed: the distances of the
+    /// points that cannot move from it measure it.
+    pub fn auto_dimensions(&self, datum: Option<PointRef>) -> Vec<Constraint> {
+        let mut space =
+            crate::autodim::NullBasis::of(&self.equations(), &self.params, &self.fixed, &NoGauge);
+        let mut out = Vec::new();
+        if space.dimension() == 0 {
+            return out;
+        }
+        let live: Vec<usize> = (0..self.entities.len())
+            .filter(|&e| !self.is_entity_removed(e))
+            .collect();
+        let points_of = |e: usize| -> Vec<PointRef> {
+            match self.entities[e].kind {
+                EntityKind::Point => vec![PointRef::Point(e)],
+                EntityKind::Line => vec![PointRef::LineStart(e), PointRef::LineEnd(e)],
+                EntityKind::Circle => vec![PointRef::Center(e)],
+                EntityKind::Arc => vec![
+                    PointRef::Center(e),
+                    PointRef::ArcStart(e),
+                    PointRef::ArcEnd(e),
+                ],
+            }
+        };
+        // The stored coordinates of a point (an arc's ends are derived).
+        let stored = |p: PointRef| -> Option<[usize; 2]> {
+            let (e, k) = match p {
+                PointRef::Point(e) | PointRef::LineStart(e) | PointRef::Center(e) => (e, 0),
+                PointRef::LineEnd(e) => (e, 2),
+                PointRef::ArcStart(_) | PointRef::ArcEnd(_) => return None,
+            };
+            let start = self.entities[e].param_start;
+            Some([start + k, start + k + 1])
+        };
+        let held = |p: PointRef, space: &crate::autodim::NullBasis| {
+            stored(p).is_some_and(|[x, y]| !space.moves(x) && !space.moves(y))
+        };
+        let all: Vec<PointRef> = live.iter().flat_map(|&e| points_of(e)).collect();
+        let Some(datum) = datum
+            .or_else(|| all.iter().copied().find(|&p| held(p, &space)))
+            .or_else(|| all.iter().copied().find(|&p| stored(p).is_some()))
+        else {
+            return out;
+        };
+        let mut offer = |c: Constraint, space: &mut crate::autodim::NullBasis| {
+            let one = [c];
+            let rows = crate::autodim::rows_of(
+                &SketchEquations::new(&self.entities, &one),
+                &self.params,
+                &self.fixed,
+            );
+            let [c] = one;
+            if space.take(&rows) {
+                out.push(c);
+            }
+        };
+        let measured = |mut c: Constraint| {
+            if let Some(m) = c.measure(&self.params, &self.entities) {
+                c.set_value(m);
+            }
+            c
+        };
+        if !held(datum, &space) {
+            let at = self.point_coords(datum);
+            offer(
+                Constraint::Fixed {
+                    point: datum,
+                    x: at.x,
+                    y: at.y,
+                },
+                &mut space,
+            );
+        }
+        for &e in &live {
+            if space.dimension() == 0 {
+                break;
+            }
+            match self.entities[e].kind {
+                EntityKind::Circle | EntityKind::Arc => offer(
+                    measured(Constraint::Radius {
+                        circle: e,
+                        radius: 0.0,
+                    }),
+                    &mut space,
+                ),
+                EntityKind::Line => offer(
+                    measured(Constraint::LineLength {
+                        line: e,
+                        length: 0.0,
+                    }),
+                    &mut space,
+                ),
+                EntityKind::Point => {}
+            }
+            for p in points_of(e) {
+                if p == datum {
+                    continue;
+                }
+                offer(
+                    measured(Constraint::DistanceX {
+                        p1: p,
+                        p2: datum,
+                        distance: 0.0,
+                    }),
+                    &mut space,
+                );
+                offer(
+                    measured(Constraint::DistanceY {
+                        p1: p,
+                        p2: datum,
+                        distance: 0.0,
+                    }),
+                    &mut space,
+                );
+            }
+        }
+        out
+    }
+
     /// A what-if probe of the sketch at its current parameters (see
     /// [`WhatIf`]). Read it at a solved configuration, as the diagnosis.
     pub fn what_if(&self) -> WhatIf<'_> {
