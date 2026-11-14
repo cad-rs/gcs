@@ -539,8 +539,15 @@ impl Sketch {
     /// runs [`Sketch::diagnose`] and [`Sketch::mobility`] (a factorisation
     /// each per component); call it after a solve, not every frame.
     pub fn status(&self) -> crate::status::Status {
-        let movable = self.mobility();
-        let movable_entity = |e: usize| self.entity_param_range(e).any(|p| movable[p]);
+        let movable = crate::status::movable_entities(
+            &self.equations(),
+            &self.params,
+            &self.fixed,
+            &NoGauge,
+            self.entities.len(),
+            &|e| self.entity_param_range(e),
+        );
+        let movable_entity = |e: usize| movable[e];
         let removed = |e: usize| self.is_entity_removed(e);
         let of_constraint = |c: usize| {
             self.constraints[c]

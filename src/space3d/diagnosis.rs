@@ -261,6 +261,25 @@ fn cross(a: (f64, f64, f64), b: (f64, f64, f64)) -> (f64, f64, f64) {
     )
 }
 
+/// Per entity, whether a physical motion of it is left (see
+/// [`crate::status::movable_entities`]; the gauge of planes and cylinders
+/// is not counted as motion).
+pub(crate) fn movable_entities(
+    eqs: &SpaceEquations<'_>,
+    params: &[f64],
+    fixed: &[bool],
+) -> Vec<bool> {
+    let entities = eqs.entities;
+    crate::status::movable_entities(
+        eqs,
+        params,
+        fixed,
+        &SpaceGauge { entities },
+        entities.len(),
+        &|e| entities[e].param(0)..entities[e].param(0) + entities[e].param_count(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use crate::numerics::householder_qr_column_pivoting;

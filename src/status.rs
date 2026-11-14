@@ -186,6 +186,134 @@ pub(crate) fn status_of<E: Equations + ?Sized>(
     }
 }
 
+/// Per entity (`count` of them, entity `e` stored in the parameters
+/// `params_of(e)`), whether some motion of it that no constraint resists
+/// is physical, not just another way of storing it: a direction of the
+/// null space of the constraint Jacobian — over the effective columns of
+/// `gauge`, which leave out what a representation stores twice (a plane's
+/// normal length) — that, restricted to the entity's parameters and with
+/// the entity's own soft gauge directions taken out (a cylinder's axis
+/// point sliding along the axis), still moves something. A free parameter
+/// that no constraint touches makes its entity movable outright. Without a
+/// gauge this is "some parameter of it is movable" (see
+/// [`crate::mobility`]).
+pub(crate) fn movable_entities<E: Equations + ?Sized, G: system::Gauge>(
+    eqs: &E,
+    params: &[f64],
+    fixed: &[bool],
+    gauge: &G,
+    count: usize,
+    params_of: &dyn Fn(usize) -> std::ops::Range<usize>,
+) -> Vec<bool> {
+    use std::collections::HashMap;
+    let tol = crate::diagnosis::RANK_REL_TOL;
+    let mut owner = vec![usize::MAX; params.len()];
+    for e in 0..count {
+        for p in params_of(e) {
+            owner[p] = e;
+        }
+    }
+    let soft = gauge.soft_directions(params, fixed);
+    let mut movable = vec![false; count];
+    let mut touched_any = vec![false; params.len()];
+    for group in system::components(eqs, params) {
+        let mut touched = system::touched_params(eqs, &group, params);
+        for &p in &touched {
+            touched_any[p] = true;
+        }
+        touched.retain(|&p| !fixed[p]);
+        if touched.is_empty() {
+            continue;
+        }
+        let n_eq = system::equation_total(eqs, &group);
+        let col_of: HashMap<usize, usize> =
+            touched.iter().enumerate().map(|(c, &p)| (p, c)).collect();
+        let mut j_raw = vec![vec![0.0_f64; touched.len()]; n_eq];
+        system::analytic_jacobian(eqs, &group, params, &col_of, &mut j_raw);
+        // Effective columns as combinations of the local ones (the local
+        // ones themselves without a gauge).
+        let columns: Vec<Vec<(usize, f64)>> = gauge
+            .effective_columns(params, fixed, &touched)
+            .unwrap_or_else(|| (0..touched.len()).map(|c| vec![(c, 1.0)]).collect());
+        let j: Vec<Vec<f64>> = j_raw
+            .iter()
+            .map(|row| {
+                columns
+                    .iter()
+                    .map(|col| col.iter().map(|&(lc, w)| row[lc] * w).sum())
+                    .collect()
+            })
+            .collect();
+        let basis = if n_eq == 0 {
+            (0..columns.len())
+                .map(|c| {
+                    let mut v = vec![0.0; columns.len()];
+                    v[c] = 1.0;
+                    v
+                })
+                .collect()
+        } else {
+            numerics::null_space_basis(&j, tol)
+        };
+        for b in basis {
+            // The motion in the stored parameters.
+            let mut motion: HashMap<usize, f64> = HashMap::new();
+            for (c, &coeff) in b.iter().enumerate() {
+                if coeff != 0.0 {
+                    for &(lc, w) in &columns[c] {
+                        *motion.entry(touched[lc]).or_insert(0.0) += coeff * w;
+                    }
+                }
+            }
+            let scale = motion.values().fold(0.0_f64, |m, v| m.max(v.abs()));
+            if scale == 0.0 {
+                continue;
+            }
+            let mut by_entity: HashMap<usize, Vec<(usize, f64)>> = HashMap::new();
+            for (&p, &v) in &motion {
+                if owner[p] != usize::MAX {
+                    by_entity.entry(owner[p]).or_default().push((p, v / scale));
+                }
+            }
+            for (e, mut part) in by_entity {
+                if movable[e] {
+                    continue;
+                }
+                // Take out the entity's own soft gauge directions (unit
+                // vectors with disjoint supports).
+                for g in soft
+                    .iter()
+                    .filter(|g| g.iter().all(|&(p, _)| owner[p] == e))
+                {
+                    let along: f64 = g
+                        .iter()
+                        .map(|&(p, w)| {
+                            part.iter()
+                                .find(|(q, _)| *q == p)
+                                .map_or(0.0, |(_, v)| v * w)
+                        })
+                        .sum();
+                    for &(p, w) in g {
+                        if let Some(entry) = part.iter_mut().find(|(q, _)| *q == p) {
+                            entry.1 -= along * w;
+                        }
+                    }
+                }
+                if part.iter().any(|(_, v)| v.abs() > tol) {
+                    movable[e] = true;
+                }
+            }
+        }
+    }
+    // A free parameter no constraint touches can move as it likes.
+    for (p, &e) in owner.iter().enumerate() {
+        if e != usize::MAX && !fixed[p] && !touched_any[p] {
+            movable[e] = true;
+        }
+    }
+    movable
+}
+
 /// Per constraint, whether it is not met where the geometry stands: some
 /// equation of it is off by more than `tolerance` in its own units (the
 /// size of a small component, the precision of its numbers — as a solve

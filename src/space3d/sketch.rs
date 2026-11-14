@@ -677,6 +677,36 @@ impl SpaceSketch {
         crate::space3d::diagnosis::diagnose_equations(&self.equations(), &self.params, &self.fixed)
     }
 
+    /// The state of every entity and constraint at the current parameters
+    /// (see [`crate::status`] and [`crate::Sketch::status`]). An entity is
+    /// under-defined only by a physical motion: a plane's normal length
+    /// and a cylinder's axis point sliding along its axis are the way they
+    /// are stored, not freedoms.
+    pub fn status(&self) -> crate::status::Status {
+        let eqs = self.equations();
+        let movable = crate::space3d::diagnosis::movable_entities(&eqs, &self.params, &self.fixed);
+        let removed = |e: usize| self.is_entity_removed(e);
+        let movable_entity = |e: usize| movable[e];
+        let of_constraint = |c: usize| {
+            self.constraints[c]
+                .references()
+                .into_iter()
+                .map(|(e, _)| e)
+                .collect()
+        };
+        crate::status::status_of(
+            &eqs,
+            &self.params,
+            self.diagnose(),
+            crate::status::Entities {
+                count: self.entities.len(),
+                removed: &removed,
+                movable: &movable_entity,
+                of_constraint: &of_constraint,
+            },
+        )
+    }
+
     // ── Solver ────────────────────────────────────────────────────────────────
 
     /// Run the Newton-Raphson solver on this sketch (per connected

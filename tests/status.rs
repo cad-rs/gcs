@@ -115,3 +115,96 @@ fn the_states_are_ordered_by_seriousness() {
     assert!(ConstraintStatus::Met < ConstraintStatus::Redundant);
     assert!(ConstraintStatus::Unmet < ConstraintStatus::Conflicting);
 }
+
+// ── 3D ──────────────────────────────────────────────────────────────────────
+
+mod space {
+    use rcad_gcs::space3d::constraint::SpaceConstraint;
+    use rcad_gcs::space3d::entity::SpacePointRef;
+    use rcad_gcs::space3d::SpaceSketch;
+    use rcad_gcs::EntityStatus;
+
+    #[test]
+    fn a_pinned_plane_is_well_defined_whatever_its_normal_length() {
+        // Four stored numbers, three freedoms: the normal's length is how
+        // the plane is stored, not a way it can move.
+        let mut sk = SpaceSketch::new();
+        let plane = sk.add_plane(0.1, -0.2, 1.3, 0.4);
+        let p = sk.add_point(0.0, 0.0, 2.0);
+        sk.fix_entity(p);
+        sk.add_constraint(SpaceConstraint::PlaneNormal {
+            plane,
+            nx: 0.0,
+            ny: 0.0,
+            nz: 1.0,
+        });
+        sk.add_constraint(SpaceConstraint::PointOnPlane {
+            point: SpacePointRef::Point(p),
+            plane,
+        });
+        assert!(sk.solve().converged);
+        let status = sk.status();
+        assert_eq!(
+            status.entities[plane],
+            Some(EntityStatus::WellDefined),
+            "{status:?}"
+        );
+        assert_eq!(status.dof, 0);
+
+        let mut free = SpaceSketch::new();
+        let plane = free.add_plane(0.3, -0.4, 0.5, 1.2);
+        assert_eq!(
+            free.status().entities[plane],
+            Some(EntityStatus::UnderDefined)
+        );
+    }
+
+    #[test]
+    fn a_cylinder_through_five_points_is_well_defined_though_its_axis_point_slides() {
+        // Five held points on the surface of a cylinder of radius 1 about
+        // the z axis fix its five freedoms; sliding the stored axis point
+        // along the axis, or rescaling the axis, moves nothing.
+        let mut sk = SpaceSketch::new();
+        let c = sk.add_cylinder(0.0, 0.0, 0.5, 0.0, 0.0, 2.0, 1.0);
+        for (x, y, z) in [
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 1.0),
+            (-1.0, 0.0, 2.0),
+            (0.0, -1.0, 3.0),
+            (0.6, 0.8, 4.0),
+        ] {
+            let p = sk.add_point(x, y, z);
+            sk.fix_entity(p);
+            sk.add_constraint(SpaceConstraint::PointOnCylinder {
+                point: SpacePointRef::Point(p),
+                cylinder: c,
+            });
+        }
+        assert!(sk.solve().converged);
+        let status = sk.status();
+        assert_eq!(status.dof, 0, "{status:?}");
+        assert_eq!(
+            status.entities[c],
+            Some(EntityStatus::WellDefined),
+            "{status:?}"
+        );
+
+        // With one point fewer it has a freedom left.
+        let mut fewer = SpaceSketch::new();
+        let c = fewer.add_cylinder(0.0, 0.0, 0.5, 0.0, 0.0, 2.0, 1.0);
+        for (x, y, z) in [
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 1.0),
+            (-1.0, 0.0, 2.0),
+            (0.0, -1.0, 3.0),
+        ] {
+            let p = fewer.add_point(x, y, z);
+            fewer.fix_entity(p);
+            fewer.add_constraint(SpaceConstraint::PointOnCylinder {
+                point: SpacePointRef::Point(p),
+                cylinder: c,
+            });
+        }
+        assert_eq!(fewer.status().entities[c], Some(EntityStatus::UnderDefined));
+    }
+}

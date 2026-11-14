@@ -147,7 +147,9 @@ it not met, in a component not at a solution) or `Conflicting` — the most
 serious that applies — and each constraint `Met`, `Redundant`,
 `PartiallyRedundant`, `Unmet`, `Conflicting` or `Inactive`. Every member of
 a conflicting dependency is `Conflicting`, not only the representative the
-diagnosis names. (2D for now.)
+diagnosis names. The 3D sketch has the same `status()`; a plane's normal
+length and a cylinder's axis-point slide are how they are stored, not
+freedoms. (Not yet for assemblies.)
 
 ```rust
 use rcad_gcs::EntityStatus;

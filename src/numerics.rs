@@ -1643,8 +1643,23 @@ pub(crate) fn householder_qr_column_pivoting(
 pub(crate) fn null_space_support(j: &[Vec<f64>], rel_tol: f64) -> Vec<bool> {
     let n_cols = j.first().map_or(0, |row| row.len());
     let mut movable = vec![false; n_cols];
-    if n_cols == 0 || j.is_empty() {
-        return movable;
+    for v in null_space_basis(j, rel_tol) {
+        for (m, x) in movable.iter_mut().zip(&v) {
+            *m |= x.abs() > rel_tol;
+        }
+    }
+    movable
+}
+
+/// A basis of the null space of `j` (rows of equal length), from the same
+/// reduced row echelon form as [`null_space_support`]: one vector per free
+/// column, 1 there and the negated RREF entry at every pivot column.
+/// Entries at or below `rel_tol` (relative to the equilibrated rows) are
+/// left as computed; an empty `j` has every column free.
+pub(crate) fn null_space_basis(j: &[Vec<f64>], rel_tol: f64) -> Vec<Vec<f64>> {
+    let n_cols = j.first().map_or(0, |row| row.len());
+    if n_cols == 0 {
+        return Vec::new();
     }
     // Row equilibration: a distance row in mm and an angle row in radians
     // then contribute comparable pivot norms.
@@ -1706,15 +1721,18 @@ pub(crate) fn null_space_support(j: &[Vec<f64>], rel_tol: f64) -> Vec<bool> {
         pivot_cols.push(pcol);
         pivot_row += 1;
     }
-    for &free in &remaining {
-        movable[free] = true;
-        for (row, &pivot) in pivot_cols.iter().enumerate() {
-            if r[row][free].abs() > rel_tol {
-                movable[pivot] = true;
+    remaining.sort_unstable();
+    remaining
+        .iter()
+        .map(|&free| {
+            let mut v = vec![0.0_f64; n_cols];
+            v[free] = 1.0;
+            for (row, &pivot) in pivot_cols.iter().enumerate() {
+                v[pivot] = -r[row][free];
             }
-        }
-    }
-    movable
+            v
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -292,7 +292,7 @@ through them from a host's side.
 
 ### Added
 
-- `Sketch::status()` and the module `status`: one state per entity
+- `Sketch::status()`, `SpaceSketch::status()` and the module `status`: one state per entity
   (`EntityStatus`: well-defined, under-defined, over-defined, unsolved,
   conflicting — the most serious that applies; `None` for a removed
   entity) and per constraint (`ConstraintStatus`: met, redundant,
@@ -307,8 +307,14 @@ through them from a host's side.
   component and the precision of its numbers), and only in a component
   that is not at a solution. Every entity of the 2D corpus (13 075, in 320
   cases) reports the state its case's construction says it should
-  (`entity_statuses_match_the_labels` in `tests/corpus.rs`). 2D only so
-  far.
+  (`entity_statuses_match_the_labels` in `tests/corpus.rs`). In 3D an
+  entity is under-defined only by a physical motion: the null space is
+  taken over the effective columns that leave out a plane's normal length,
+  and a cylinder's own gauge directions (its axis point sliding along the
+  axis, the axis rescaled) are taken out before a motion counts; a plane
+  pinned by a normal and a point, and a cylinder through five held points,
+  are well-defined. The 3D corpus's conflict, redundancy and DOF cases
+  check the states too. Not yet for assemblies.
 - Feature `rayon` (off by default): the connected components of a solve
   run on several threads. Consecutive components are grouped into one
   task per 96 equations, at most one per thread, each holding about the

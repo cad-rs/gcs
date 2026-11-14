@@ -11,6 +11,7 @@ use std::time::Instant;
 use rcad_gcs::space3d::constraint::SpaceConstraint;
 use rcad_gcs::space3d::entity::SpacePointRef;
 use rcad_gcs::space3d::SpaceSketch;
+use rcad_gcs::EntityStatus;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -347,6 +348,7 @@ fn conflict_double_fixed_point() {
     sk.add_constraint(SpaceConstraint::fix_point(p, 1.0, 1.0, 1.0));
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
+    assert_every_entity(&sk, EntityStatus::Conflicting);
 }
 
 #[test]
@@ -359,6 +361,7 @@ fn conflict_distance_beyond_pinned_span() {
     sk.add_constraint(SpaceConstraint::point_distance(p0, p1, 5.0));
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
+    assert_every_entity(&sk, EntityStatus::Conflicting);
 }
 
 #[test]
@@ -383,6 +386,7 @@ fn conflict_line_length_vs_pinned_ends() {
     });
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
+    assert_every_entity(&sk, EntityStatus::Conflicting);
 }
 
 #[test]
@@ -396,6 +400,7 @@ fn conflict_parallel_and_perpendicular() {
     sk.add_constraint(SpaceConstraint::LinePerpendicularLine(l1, l2));
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
+    assert_every_entity(&sk, EntityStatus::Conflicting);
 }
 
 #[test]
@@ -416,6 +421,7 @@ fn conflict_plane_normals() {
     });
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
+    assert_every_entity(&sk, EntityStatus::Conflicting);
 }
 
 #[test]
@@ -432,6 +438,7 @@ fn conflict_sphere_radius() {
     });
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
+    assert_every_entity(&sk, EntityStatus::Conflicting);
 }
 
 #[test]
@@ -448,6 +455,7 @@ fn conflict_cylinder_radius() {
     });
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
+    assert_every_entity(&sk, EntityStatus::Conflicting);
 }
 
 #[test]
@@ -463,6 +471,7 @@ fn conflict_point_pinned_off_plane() {
     });
     let d = sk.diagnose();
     assert!(!d.conflicting.is_empty(), "{d:?}");
+    assert_every_entity(&sk, EntityStatus::Conflicting);
 }
 
 // ── redundancy corpus ────────────────────────────────────────────────────────
@@ -477,6 +486,20 @@ fn assert_redundant(sk: &SpaceSketch, label: &str) {
         d.conflicting.is_empty(),
         "{label}: misclassified as conflicting: {d:?}"
     );
+    // Every entity of these cases carries the duplicated constraint;
+    // solved, that is all there is to say about it (as authored it is
+    // also unsolved, which outranks over-defined).
+    let mut solved = sk.clone();
+    assert!(solved.solve().converged, "{label}");
+    assert_every_entity(&solved, EntityStatus::OverDefined);
+}
+
+/// Every entity of `sk` reports `state` (P4.1).
+fn assert_every_entity(sk: &SpaceSketch, state: EntityStatus) {
+    let status = sk.status();
+    for (e, got) in status.entities.iter().enumerate() {
+        assert_eq!(*got, Some(state), "entity {e}: {status:?}");
+    }
 }
 
 #[test]
@@ -608,9 +631,11 @@ fn rank_based_dof_corpus() {
     let mut sk = SpaceSketch::new();
     let p = sk.add_point(1.0, 2.0, 3.0);
     assert_eq!(sk.diagnose().dof, 3, "free point has three DOF");
+    assert_every_entity(&sk, EntityStatus::UnderDefined);
     sk.add_constraint(SpaceConstraint::fix_point(p, 1.0, 2.0, 3.0));
     assert_eq!(sk.diagnose().dof, 0, "fixed point has zero DOF");
     assert_eq!(sk.diagnose().rank, 3, "fixed point has rank three");
+    assert_every_entity(&sk, EntityStatus::WellDefined);
 
     let mut sk = SpaceSketch::new();
     let a = sk.add_point(0.0, 0.0, 0.0);
@@ -626,16 +651,19 @@ fn rank_based_dof_corpus() {
     let mut sk = SpaceSketch::new();
     sk.add_line(0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
     assert_eq!(sk.diagnose().dof, 6, "free line has six DOF");
+    assert_every_entity(&sk, EntityStatus::UnderDefined);
 
     let mut sk = SpaceSketch::new();
     sk.add_sphere(0.0, 0.0, 0.0, 1.0);
     assert_eq!(sk.diagnose().dof, 4, "free sphere has four DOF");
+    assert_every_entity(&sk, EntityStatus::UnderDefined);
 
     // A free plane has four storage coordinates but only three physical
     // DOF: the (normal, offset) scale direction is gauge.
     let mut sk = SpaceSketch::new();
     sk.add_plane(0.3, -0.4, 0.5, 1.2);
     assert_eq!(sk.diagnose().dof, 3, "free plane has three DOF");
+    assert_every_entity(&sk, EntityStatus::UnderDefined);
 
     // Plane with a fixed offset: the gauge orbit is unavailable, the normal's
     // three coordinates are all physical.
@@ -648,6 +676,7 @@ fn rank_based_dof_corpus() {
         3,
         "offset-fixed plane keeps three normal DOF"
     );
+    assert_every_entity(&sk, EntityStatus::UnderDefined);
 }
 
 // ── determinism ──────────────────────────────────────────────────────────────
