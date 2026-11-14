@@ -1680,6 +1680,13 @@ pub(crate) fn null_space_support(j: &[Vec<f64>], rel_tol: f64) -> Vec<bool> {
             break;
         }
         let pcol = remaining.remove(best_pos);
+        // The row with the largest entry in the pivot column becomes the
+        // pivot row (the column was chosen over all the rows left; the row
+        // standing at the pivot position may have a zero there).
+        let best_row = (pivot_row..n_rows)
+            .max_by(|&a, &b| r[a][pcol].abs().total_cmp(&r[b][pcol].abs()))
+            .expect("rows remain");
+        r.swap(pivot_row, best_row);
         let pivot = r[pivot_row][pcol];
         for v in r[pivot_row].iter_mut() {
             *v /= pivot;
@@ -1730,6 +1737,18 @@ mod null_space_tests {
     fn pinned_pair_leaves_only_the_untouched_column() {
         let j = vec![vec![1.0, 1.0, 0.0], vec![1.0, -1.0, 0.0]];
         assert_eq!(null_space_support(&j, 1e-9), vec![false, false, true]);
+    }
+
+    #[test]
+    fn a_pivot_column_missing_from_the_pivot_row_is_found_below() {
+        // Column 1 has the largest norm but no entry in row 0: x0 pinned,
+        // then x1 − x0 + x2 = 0 and x1 = 0 pin x1 and x2 too.
+        let j = vec![
+            vec![1.0, 0.0, 0.0],
+            vec![-1.0, 2.0, 1.0],
+            vec![0.0, 2.0, 0.0],
+        ];
+        assert_eq!(null_space_support(&j, 1e-9), vec![false, false, false]);
     }
 
     #[test]

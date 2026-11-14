@@ -158,6 +158,21 @@ fn null_space_support_sparse(j: &[Vec<(usize, f64)>], n_cols: usize, rel_tol: f6
         }
         let pcol = remaining.remove(best_pos);
 
+        // Bring the row with the largest entry in the pivot column up to
+        // the pivot position: the column was chosen over all the rows left,
+        // and the row that happens to stand there may not contain it at all
+        // (eliminating with such a row would subtract rows that have no
+        // pivot to cancel).
+        let entry = |row: &[(usize, f64)]| {
+            row.iter()
+                .find(|(c, _)| *c == pcol)
+                .map_or(0.0, |(_, v)| v.abs())
+        };
+        let best_row = (pivot_row..n_rows)
+            .max_by(|&a, &b| entry(&r[a]).total_cmp(&entry(&r[b])))
+            .expect("rows remain");
+        r.swap(pivot_row, best_row);
+
         // Normalize the pivot row.
         let pivot = r[pivot_row]
             .iter()
@@ -290,6 +305,27 @@ mod tests {
         );
         assert!(!m[2], "x is fixed by the DistanceX row");
         assert!(m[3], "y remains free");
+    }
+
+    #[test]
+    fn an_anchor_stays_locked_under_an_open_chain() {
+        // The anchor's rows hold one column each; the pivot column chosen
+        // first is a chain point's, which the anchor's row does not
+        // contain. Eliminating with it used to mark the anchor's y movable.
+        let mut sk = Sketch::new();
+        let anchor = sk.add_point(0.0, 0.0);
+        let p1 = sk.add_point(0.96, 0.29);
+        let p2 = sk.add_point(1.92, 0.57);
+        sk.add_constraint(Constraint::fix_point(PointRef::Point(anchor), 0.0, 0.0));
+        sk.add_constraint(Constraint::point_distance(anchor, p1, 1.0));
+        sk.add_constraint(Constraint::point_distance(p1, p2, 1.0));
+
+        let m = mobility(&sk.params, &sk.fixed, &sk.entities, &sk.constraints);
+        assert_eq!(&m[0..2], &[false, false], "the anchor is pinned: {m:?}");
+        assert!(
+            m[2..6].iter().all(|&movable| movable),
+            "the chain swings: {m:?}"
+        );
     }
 
     #[test]

@@ -391,6 +391,16 @@ through them from a host's side.
 
 ### Fixed
 
+- **`mobility()` could report a held parameter as movable** (2D, 3D and
+  assemblies). Its elimination chose each pivot column over all the rows
+  left but then eliminated with whatever row stood at the pivot position,
+  which need not contain that column; the rows below were then corrupted
+  and a parameter that nothing lets move could come out movable. Seen on
+  the 2D corpus in all ten open distance chains (`under-chain-*`), whose
+  anchor — fixed by a `Fixed` constraint — had its y reported movable; the
+  other 310 cases are unchanged. The row with the largest entry in the
+  pivot column is now brought to the pivot position first. The same fix is
+  in the dense routine of the same algorithm, which only its tests use.
 - **`LineLength` on a line of zero length divided zero by zero.** Its
   derivative was `dx / |d|` with no guard, so the solve ended at once as
   `Diverged`, the status for numbers that are not numbers. A line of zero
