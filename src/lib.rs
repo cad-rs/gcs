@@ -52,6 +52,7 @@ pub mod constraint;
 pub mod diagnosis;
 pub mod edit;
 pub mod entity;
+pub mod freedom;
 pub mod graph;
 pub mod mobility;
 pub mod numerics;
@@ -67,6 +68,7 @@ pub use constraint::Constraint;
 pub use diagnosis::Diagnosis;
 pub use edit::{ConstraintState, SketchError};
 pub use entity::{Entity, EntityId, EntityKind, PointRef};
+pub use freedom::{EntityFreedom, Measure, Motion2, Motion3};
 pub use numerics::{FailurePolicy, SolveOptions, SolveResult, SolveStatus};
 pub use sketch::{DofReport, Sketch};
 pub use space3d::SpaceSketch;
@@ -77,6 +79,7 @@ pub mod prelude {
     pub use crate::constraint::Constraint;
     pub use crate::diagnosis::Diagnosis;
     pub use crate::entity::{Entity, EntityId, EntityKind, PointRef};
+    pub use crate::freedom::{EntityFreedom, Measure, Motion2, Motion3};
     pub use crate::numerics::{
         FailurePolicy, SolveOptions, SolveResult, SolveStatus, RESIDUAL_TOL,
     };

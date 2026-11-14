@@ -677,6 +677,26 @@ impl SpaceSketch {
         crate::space3d::diagnosis::diagnose_equations(&self.equations(), &self.params, &self.fixed)
     }
 
+    /// How each entity can still move, in geometric terms (see
+    /// [`crate::freedom`] and [`crate::Sketch::freedoms`]). A plane's
+    /// normal length and a cylinder's axis point sliding along its axis are
+    /// the way they are stored, not motions.
+    pub fn freedoms(&self) -> Vec<Option<crate::freedom::EntityFreedom<crate::freedom::Motion3>>> {
+        let eqs = self.equations();
+        let spaces = crate::space3d::diagnosis::motion_spaces(&eqs, &self.params, &self.fixed);
+        let frame = |e: usize| {
+            (!self.is_entity_removed(e)).then(|| {
+                let entity = &self.entities[e];
+                let start = entity.param(0);
+                crate::freedom::frame_3d(
+                    entity.kind,
+                    &self.params[start..start + entity.param_count()],
+                )
+            })
+        };
+        crate::freedom::freedoms_of(&spaces, &frame, crate::freedom::to_3d)
+    }
+
     /// The state of every entity and constraint at the current parameters
     /// (see [`crate::status`] and [`crate::Sketch::status`]). An entity is
     /// under-defined only by a physical motion: a plane's normal length

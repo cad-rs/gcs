@@ -24,7 +24,7 @@ use rcad_gcs::constraint::Constraint;
 use rcad_gcs::constraint::Constraint::*;
 use rcad_gcs::entity::PointRef;
 use rcad_gcs::sketch::Sketch;
-use rcad_gcs::EntityStatus;
+use rcad_gcs::{EntityStatus, Measure, Motion2};
 use serde_json::json;
 
 const CONTRACT_TOL: f64 = 1e-9;
@@ -1307,4 +1307,138 @@ fn entity_statuses_match_the_labels() {
         right as f64 / total as f64
     );
     assert_eq!(right, total, "entity statuses that differ from the labels");
+}
+
+/// One motion an entity of the corpus should report (P4.2), from how its
+/// case is built.
+#[derive(Debug)]
+enum Moves {
+    /// Slides along this direction (either sign).
+    Along(f64, f64),
+    /// Turns rigidly about this centre (`None`: not checked).
+    About(Option<(f64, f64)>),
+    /// This measure changes.
+    Resizes(Measure),
+}
+
+/// What each entity of a case should report as its motions — with the
+/// rest moving along and with the rest held, the same in every case of
+/// this corpus — after the solve, conflicting cases as authored.
+fn expected_motions(case: &Case, sk: &Sketch) -> Vec<Vec<Moves>> {
+    use Moves::*;
+    let none = || {
+        (0..sk.entities.len())
+            .map(|_| Vec::new())
+            .collect::<Vec<_>>()
+    };
+    let id = case.id.as_str();
+    let mut v = none();
+    if let Some(drop) = id
+        .strip_prefix("under-margin-")
+        .and_then(|rest| rest.rsplit_once("-drop"))
+        .map(|(_, d)| d.parse::<usize>().expect("drop index"))
+    {
+        // The hole lacks its radius, x or y; the bore its y and radius,
+        // and its x too when its one constraint is dropped.
+        v[2] = match drop {
+            0 => vec![Resizes(Measure::Radius)],
+            1 => vec![Along(1.0, 0.0)],
+            2 => vec![Along(0.0, 1.0)],
+            _ => Vec::new(),
+        };
+        v[3] = if drop == 3 {
+            vec![Along(1.0, 0.0), Along(0.0, 1.0), Resizes(Measure::Radius)]
+        } else {
+            vec![Along(0.0, 1.0), Resizes(Measure::Radius)]
+        };
+    } else if id.starts_with("under-tangent-") {
+        // Start on the circle, tangent, length: one rigid motion of the
+        // line (it rolls round the circle). The tangency is only met to
+        // about √tolerance, and the first-order turn at a near-singular
+        // configuration is not where the finite one is: centre unchecked.
+        v[1] = vec![About(None)];
+    } else if id.starts_with("under-chain-") {
+        // A straight chain from a fixed anchor: every other point swings
+        // across the chain (1, 0.3), first order, with or without the
+        // others held.
+        for moves in v.iter_mut().skip(1) {
+            *moves = vec![Along(-0.3, 1.0)];
+        }
+    } else if id.starts_with("tangent-") && matches!(case.expect, Expect::Singular) {
+        // Exactly at the tangency the line turns about its start, at
+        // (r, 0), to first order.
+        let r: f64 = id["tangent-r".len()..]
+            .split('-')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        v[1] = vec![About(Some((r, 0.0)))];
+    } else if id.starts_with("conflict-radius-vs-diameter-")
+        || id.starts_with("redundant-consistent-radius-diameter-")
+    {
+        // Only the radius is constrained: the centre is free.
+        v[0] = vec![Along(1.0, 0.0), Along(0.0, 1.0)];
+    } else if id.starts_with("conflict-margins-") {
+        // Both margins hold the hole's x; its y and radius are free.
+        v[2] = vec![Along(0.0, 1.0), Resizes(Measure::Radius)];
+    }
+    v
+}
+
+fn motion_matches(got: &Motion2, want: &Moves) -> bool {
+    match (got, want) {
+        (Motion2::Translate { direction }, Moves::Along(x, y)) => {
+            let w = glam::DVec2::new(*x, *y).normalize();
+            (direction.length() - 1.0).abs() < 1e-9 && direction.dot(w).abs() > 1.0 - 1e-6
+        }
+        (Motion2::Rotate { center }, Moves::About(at)) => {
+            at.is_none_or(|(x, y)| (center.x - x).abs() < 1e-6 && (center.y - y).abs() < 1e-6)
+        }
+        (Motion2::Resize { what }, Moves::Resizes(m)) => what == m,
+        _ => false,
+    }
+}
+
+#[test]
+fn entity_freedoms_match_the_labels() {
+    let (mut total, mut right) = (0usize, 0usize);
+    for case in generate_all() {
+        let mut sk = (case.build)();
+        if !matches!(case.expect, Expect::Conflict) {
+            assert!(sk.solve().converged, "{}", case.id);
+        }
+        let expected = expected_motions(&case, &sk);
+        let freedoms = sk.freedoms();
+        let status = sk.status().entities;
+        assert_eq!(freedoms.len(), expected.len(), "{}", case.id);
+        for (e, (got, want)) in freedoms.iter().zip(&expected).enumerate() {
+            total += 1;
+            let got = got.as_ref().expect("no entity is removed");
+            let fits = |motions: &[Motion2]| {
+                motions.len() == want.len()
+                    && motions.iter().zip(want).all(|(g, w)| motion_matches(g, w))
+            };
+            // The motions agree with the status: an under-defined entity
+            // has some, a well-defined one none.
+            let consistent = match status[e] {
+                Some(EntityStatus::UnderDefined) => !got.motions.is_empty(),
+                Some(EntityStatus::WellDefined) => got.motions.is_empty(),
+                _ => true,
+            };
+            if fits(&got.motions) && fits(&got.own) && consistent {
+                right += 1;
+            } else {
+                println!(
+                    "{} entity {e}: motions {:?}, own {:?}, status {:?}; expected {want:?}",
+                    case.id, got.motions, got.own, status[e]
+                );
+            }
+        }
+    }
+    println!(
+        "entity freedoms: {right}/{total} as labelled ({:.4})",
+        right as f64 / total as f64
+    );
+    assert_eq!(right, total, "entity freedoms that differ from the labels");
 }

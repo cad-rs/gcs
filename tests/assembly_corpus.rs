@@ -16,7 +16,7 @@ use glam::{DQuat, DVec3};
 use rcad_gcs::rigid3d::{
     diagnose_assembly, Constraint, ConstraintSolver, ConstraintSystem, PoseSolveOptions,
 };
-use rcad_gcs::EntityStatus;
+use rcad_gcs::{EntityStatus, Motion3};
 use serde_json::json;
 
 const CONTRACT_TOL: f64 = 1e-9;
@@ -972,4 +972,232 @@ fn body_statuses_match_the_labels() {
         right as f64 / total as f64
     );
     assert_eq!(right, total, "body statuses that differ from the labels");
+}
+
+// ── body freedoms (P4.2) ────────────────────────────────────────────────────
+
+/// Where the turns of a body should go through.
+#[derive(Debug, Clone, Copy)]
+enum Through {
+    /// Not checked (the body may also slide, so any point would do).
+    Anywhere,
+    /// Every axis through this point.
+    Point(DVec3),
+    /// Every axis through this line (point, direction).
+    Line(DVec3, DVec3),
+}
+
+/// The motions a body should report (P4.2): so many translations, then so
+/// many pure turns, from how its case is built.
+#[derive(Debug, Clone)]
+struct Moves {
+    translations: usize,
+    /// Every translation perpendicular to this.
+    across: Option<DVec3>,
+    /// The one translation along this.
+    along: Option<DVec3>,
+    turns: usize,
+    /// Every axis in the span of these.
+    axes_in: Vec<DVec3>,
+    through: Through,
+}
+
+impl Moves {
+    fn none() -> Self {
+        Self::free(0, 0, Through::Anywhere)
+    }
+    fn free(translations: usize, turns: usize, through: Through) -> Self {
+        Self {
+            translations,
+            across: None,
+            along: None,
+            turns,
+            axes_in: Vec::new(),
+            through,
+        }
+    }
+    fn axes(mut self, axes: &[DVec3]) -> Self {
+        self.axes_in = axes.to_vec();
+        self
+    }
+
+    fn fits(&self, motions: &[Motion3]) -> bool {
+        if motions.len() != self.translations + self.turns {
+            return false;
+        }
+        let (slides, turns) = motions.split_at(self.translations);
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        let in_span = |v: DVec3| {
+            if self.axes_in.is_empty() {
+                return true;
+            }
+            // v less its projection on the span of `axes_in`.
+            let mut basis: Vec<DVec3> = Vec::new();
+            for &a in &self.axes_in {
+                let w = basis.iter().fold(a, |w, &u| w - u * u.dot(w));
+                if w.length() > 1e-9 {
+                    basis.push(w.normalize());
+                }
+            }
+            basis.iter().fold(v, |w, &u| w - u * u.dot(w)).length() < 1e-6
+        };
+        let slides_ok = slides.iter().all(|m| match m {
+            Motion3::Translate { direction } => {
+                near(direction.length(), 1.0)
+                    && self
+                        .across
+                        .is_none_or(|a| near(direction.dot(a.normalize()), 0.0))
+                    && self
+                        .along
+                        .is_none_or(|a| near(direction.dot(a.normalize()).abs(), 1.0))
+            }
+            _ => false,
+        });
+        let turns_ok = turns.iter().all(|m| match m {
+            Motion3::Rotate { axis, point } => {
+                near(axis.length(), 1.0)
+                    && in_span(*axis)
+                    && match self.through {
+                        Through::Anywhere => true,
+                        Through::Point(p) => (*point - p).length() < 1e-6,
+                        Through::Line(p, d) => {
+                            let d = d.normalize();
+                            let off = *point - p;
+                            (off - d * d.dot(off)).length() < 1e-6
+                        }
+                    }
+            }
+            _ => false,
+        });
+        slides_ok && turns_ok
+    }
+}
+
+/// What each body should report as its motions with the rest moving along
+/// (`.0`) and with the rest held (`.1`), at the solved pose.
+fn expected_body_motions(
+    case: &Case,
+    system: &ConstraintSystem,
+    pos: &[DVec3],
+    rot: &[DQuat],
+) -> Vec<(Moves, Moves)> {
+    let n = system.num_components;
+    let mut v: Vec<(Moves, Moves)> = (0..n).map(|_| (Moves::none(), Moves::none())).collect();
+    let id = case.id.as_str();
+    if case.family == "shaft" {
+        // Turns about the hole's axis: along Z through the axis point.
+        let axis_point = system
+            .constraints
+            .iter()
+            .find_map(|c| match c.kind {
+                rcad_gcs::rigid3d::ConstraintKind::Coincident { point1, .. } => Some(point1),
+                _ => None,
+            })
+            .expect("the shaft's coincident mate");
+        let turn = Moves::free(0, 1, Through::Line(axis_point, DVec3::Z)).axes(&[DVec3::Z]);
+        v[1] = (turn.clone(), turn);
+    } else if let Some(i) = id.strip_prefix("under-partial-") {
+        // Two free bodies: together they float in all six. Relative to
+        // the other, each keeps the joint its mate leaves.
+        let i: usize = i.parse().unwrap();
+        for b in 0..2 {
+            let p0 = pos[0];
+            let own = match i {
+                0 => Moves::free(3, 3, Through::Point(pos[b])),
+                // Coincident at body 0's origin: a ball joint there.
+                1 => Moves::free(0, 3, Through::Point(p0)),
+                // Distance between body 0's origin and body 1's (2, 0, 0):
+                // slides across the line between them, turns through it.
+                2 => {
+                    let q1 = pos[1] + rot[1] * DVec3::new(2.0, 0.0, 0.0);
+                    let r = q1 - p0;
+                    let at = if b == 0 { p0 } else { q1 };
+                    Moves {
+                        across: Some(r),
+                        ..Moves::free(2, 3, Through::Line(at, r))
+                    }
+                }
+                // Parallel y axes: slides anywhere, turns about y.
+                3 => Moves::free(3, 1, Through::Anywhere).axes(&[rot[0] * DVec3::Y]),
+                // A fixed angle between body 0's x and body 1's y: turns
+                // about either.
+                4 => Moves::free(3, 2, Through::Anywhere)
+                    .axes(&[rot[0] * DVec3::X, rot[1] * DVec3::Y]),
+                // Concentric z axes: a cylindrical joint.
+                5 => {
+                    let axis = rot[0] * DVec3::Z;
+                    Moves {
+                        along: Some(axis),
+                        ..Moves::free(1, 1, Through::Line(p0, axis)).axes(&[axis])
+                    }
+                }
+                // Coincident and parallel y: a hinge about y at the point.
+                6 => Moves::free(0, 1, Through::Point(p0)).axes(&[rot[0] * DVec3::Y]),
+                _ => panic!("{id}: no label"),
+            };
+            v[b] = (Moves::free(3, 3, Through::Point(pos[b])), own);
+        }
+    } else if id.starts_with("redundant-angle90-") {
+        // Body 0 is held in position only, body 1 free; the angle between
+        // body 0's x and body 1's y is demanded twice.
+        let axes = [rot[0] * DVec3::X, rot[1] * DVec3::Y];
+        v[0] = (
+            Moves::free(0, 3, Through::Point(pos[0])),
+            Moves::free(0, 2, Through::Point(pos[0])).axes(&axes),
+        );
+        v[1] = (
+            Moves::free(3, 3, Through::Point(pos[1])),
+            Moves::free(3, 2, Through::Anywhere).axes(&axes),
+        );
+    }
+    v
+}
+
+#[test]
+fn body_freedoms_match_the_labels() {
+    let solver = tight_solver();
+    let (mut total, mut right, mut checked) = (0usize, 0usize, 0usize);
+    for case in generate_all() {
+        let system = (case.build)();
+        let (mut pos, mut rot) = ConstraintSolver::seed_fixed(&system);
+        if case.expect != Expect::Conflict {
+            let r = solver.solve(&system);
+            assert!(r.success, "{}", case.id);
+            pos = r.positions;
+            rot = r.rotations;
+        }
+        let freedoms = rcad_gcs::rigid3d::assembly_freedoms(&system, &pos, &rot);
+        let status = rcad_gcs::rigid3d::assembly_status(&system, &pos, &rot).entities;
+        let expected = expected_body_motions(&case, &system, &pos, &rot);
+        for (b, got) in freedoms.iter().enumerate() {
+            total += 1;
+            let got = got.as_ref().expect("no body is removed");
+            // The motions agree with the status: an under-defined body
+            // has some, a well-defined one none.
+            let consistent = match status[b] {
+                Some(EntityStatus::UnderDefined) => !got.motions.is_empty(),
+                Some(EntityStatus::WellDefined) => got.motions.is_empty(),
+                _ => true,
+            };
+            // Conflicting cases are read as authored, away from any
+            // solution: only the agreement with the status is checked.
+            let labelled = case.expect == Expect::Conflict || {
+                checked += 1;
+                let (motions, own) = &expected[b];
+                motions.fits(&got.motions) && own.fits(&got.own)
+            };
+            if consistent && labelled {
+                right += 1;
+            } else {
+                println!(
+                    "{} body {b}: motions {:?}, own {:?}, status {:?}; expected {:?}",
+                    case.id, got.motions, got.own, status[b], expected[b]
+                );
+            }
+        }
+    }
+    println!(
+        "body freedoms: {right}/{total} as labelled ({checked} against a label, the rest conflicting)"
+    );
+    assert_eq!(right, total, "body freedoms that differ from the labels");
 }

@@ -162,6 +162,28 @@ for id in status.entities_in(EntityStatus::UnderDefined) {
 }
 ```
 
+`sk.freedoms()` says how each entity can still move: per entity the
+motions left to it while the rest may move along (empty exactly when the
+status is not under-defined) and those left with everything else held,
+each one `Translate { direction }`, `Rotate { center }` (3D:
+`Rotate { axis, point }`, `Screw { .. }`), `Resize { what }` for a length,
+radius or arc sweep, or `Other { velocity }`. `SpaceSketch::freedoms` and
+`rigid3d::assembly_freedoms` do the same; for an assembly body the motions
+with its neighbours held are the joint its mates leave it (a turn about
+an axis, a slide, a ball joint).
+
+```rust
+use rcad_gcs::Motion2;
+
+if let Some(Some(freedom)) = sk.freedoms().get(line) {
+    for motion in &freedom.motions {
+        if let Motion2::Rotate { center } = motion {
+            // draw a turn arrow about `center`
+        }
+    }
+}
+```
+
 `sk.dof()` is that same rank-based number, and `sk.mobility()` tells which
 individual parameters can still move. `sk.structural_dof_estimate()` is the
 cheap count (free parameters − equations); it is exact only when all

@@ -294,6 +294,26 @@ pub(crate) fn movable_entities(
     )
 }
 
+/// Per entity, its motions with the rest moving along and with the rest
+/// held (see [`crate::status::motion_spaces`]), under the gauge of planes
+/// and cylinders.
+pub(crate) fn motion_spaces(
+    eqs: &SpaceEquations<'_>,
+    params: &[f64],
+    fixed: &[bool],
+) -> Vec<crate::status::MotionSpace> {
+    let entities = eqs.entities;
+    crate::status::motion_spaces(
+        eqs,
+        params,
+        fixed,
+        &SpaceGauge { entities },
+        entities.len(),
+        &|e| entities[e].param(0)..entities[e].param(0) + entities[e].param_count(),
+        true,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use crate::numerics::householder_qr_column_pivoting;

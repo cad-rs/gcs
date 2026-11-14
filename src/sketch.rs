@@ -571,6 +571,30 @@ impl Sketch {
         )
     }
 
+    /// How each entity can still move, in geometric terms (see
+    /// [`crate::freedom`]): per entity id the motions left to it while the
+    /// rest may move along — slide along a direction, turn about a point, a
+    /// length, radius or sweep that can change — and those left with every
+    /// other entity held; `None` for a removed entity. Its `motions` are
+    /// empty exactly when [`Sketch::status`] does not call the entity
+    /// under-defined. Like the status, read it after a solve.
+    pub fn freedoms(&self) -> Vec<Option<crate::freedom::EntityFreedom<crate::freedom::Motion2>>> {
+        let spaces = crate::status::motion_spaces(
+            &self.equations(),
+            &self.params,
+            &self.fixed,
+            &NoGauge,
+            self.entities.len(),
+            &|e| self.entity_param_range(e),
+            true,
+        );
+        let frame = |e: usize| {
+            (!self.is_entity_removed(e))
+                .then(|| crate::freedom::frame_2d(self.entities[e].kind, self.entity_params(e)))
+        };
+        crate::freedom::freedoms_of(&spaces, &frame, crate::freedom::to_2d)
+    }
+
     /// Connected components of the constraint graph: groups of constraint
     /// indices that share parameters (see [`crate::graph`]). The solver
     /// runs per component; localized re-solve = solving only the components

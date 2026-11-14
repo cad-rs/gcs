@@ -440,25 +440,65 @@ fn pieces_of<E: Equations + ?Sized>(
     by_root.into_values().collect()
 }
 
+/// The motions the constraints leave one entity, each as an orthonormal
+/// basis over the entity's own columns (its parameters, or a rigid body's
+/// six coordinates), scaled as [`motion_spaces`] says.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MotionSpace {
+    /// The motions of the entity while the rest may move along: the null
+    /// space of the constraint Jacobian restricted to the entity.
+    pub(crate) follow: Vec<Vec<f64>>,
+    /// The motions of the entity with every other column held: the null
+    /// space of the Jacobian's columns of the entity alone. Left empty
+    /// unless asked for.
+    pub(crate) own: Vec<Vec<f64>>,
+}
+
+/// Adds `v` to the orthonormal set `basis` (over `dim` numbers) when it is
+/// not already in its span, by more than `tol`.
+fn extend_basis(basis: &mut Vec<Vec<f64>>, dim: usize, mut v: Vec<f64>, tol: f64) {
+    if basis.len() >= dim {
+        return;
+    }
+    for _ in 0..2 {
+        for u in basis.iter() {
+            let d: f64 = v.iter().zip(u).map(|(a, b)| a * b).sum();
+            for (a, b) in v.iter_mut().zip(u) {
+                *a -= d * b;
+            }
+        }
+    }
+    let norm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm > tol {
+        for x in &mut v {
+            *x /= norm;
+        }
+        basis.push(v);
+    }
+}
+
 /// Per entity (`count` of them, entity `e` stepped by the columns
-/// `params_of(e)`: its parameters, or a rigid body's six coordinates), whether some motion of it that no constraint resists
-/// is physical, not just another way of storing it: a direction of the
-/// null space of the constraint Jacobian — over the effective columns of
-/// `gauge`, which leave out what a representation stores twice (a plane's
-/// normal length) — that, restricted to the entity's parameters and with
-/// the entity's own soft gauge directions taken out (a cylinder's axis
-/// point sliding along the axis), still moves something. A free parameter
-/// that no constraint touches makes its entity movable outright. Without a
-/// gauge this is "some parameter of it is movable" (see
-/// [`crate::mobility`]).
-pub(crate) fn movable_entities<E: Equations + ?Sized, G: system::Gauge>(
+/// `params_of(e)`: its parameters, or a rigid body's six coordinates), the
+/// motions of it that no constraint resists and that are physical, not
+/// just another way of storing it ([`MotionSpace`]). A motion is a
+/// direction of the null space of the constraint Jacobian — over the
+/// effective columns of `gauge`, which leave out what a representation
+/// stores twice (a plane's normal length) — mapped back to the stored
+/// parameters, scaled so that its largest entry is one, restricted to the
+/// entity and with the entity's own soft gauge directions taken out (a
+/// cylinder's axis point sliding along the axis); it counts when something
+/// of it is still above the rank tolerance. A free parameter that no
+/// constraint touches moves on its own. `own` also gives each entity's
+/// motions with all other columns held.
+pub(crate) fn motion_spaces<E: Equations + ?Sized, G: system::Gauge>(
     eqs: &E,
     params: &[f64],
     fixed: &[bool],
     gauge: &G,
     count: usize,
     params_of: &dyn Fn(usize) -> std::ops::Range<usize>,
-) -> Vec<bool> {
+    own: bool,
+) -> Vec<MotionSpace> {
     use std::collections::HashMap;
     let tol = crate::diagnosis::RANK_REL_TOL;
     // Over the columns of the family (a rigid body stores seven numbers
@@ -471,7 +511,27 @@ pub(crate) fn movable_entities<E: Equations + ?Sized, G: system::Gauge>(
         }
     }
     let soft = gauge.soft_directions(params, fixed);
-    let mut movable = vec![false; count];
+    let mut spaces = vec![MotionSpace::default(); count];
+    // The part of `motion` (stored parameter → value, largest entry one)
+    // on entity `e`, its own soft gauge directions (unit vectors with
+    // disjoint supports) taken out; `None` when nothing of it is left.
+    let local = |e: usize, motion: &HashMap<usize, f64>| -> Option<Vec<f64>> {
+        let range = params_of(e);
+        let mut v: Vec<f64> = range
+            .clone()
+            .map(|p| motion.get(&p).copied().unwrap_or(0.0))
+            .collect();
+        for g in soft
+            .iter()
+            .filter(|g| g.iter().all(|&(p, _)| owner[p] == e))
+        {
+            let along: f64 = g.iter().map(|&(p, w)| v[p - range.start] * w).sum();
+            for &(p, w) in g {
+                v[p - range.start] -= along * w;
+            }
+        }
+        v.iter().any(|x| x.abs() > tol).then_some(v)
+    };
     let mut touched_any = vec![false; n_cols];
     for group in system::components(eqs, params) {
         let mut touched = system::touched_params(eqs, &group, params);
@@ -501,63 +561,73 @@ pub(crate) fn movable_entities<E: Equations + ?Sized, G: system::Gauge>(
                     .collect()
             })
             .collect();
-        let basis = if n_eq == 0 {
-            (0..columns.len())
-                .map(|c| {
-                    let mut v = vec![0.0; columns.len()];
-                    v[c] = 1.0;
-                    v
-                })
-                .collect()
-        } else {
-            numerics::null_space_basis(&j, tol)
+        let null_space = |j: &[Vec<f64>], width: usize| -> Vec<Vec<f64>> {
+            if n_eq == 0 {
+                (0..width)
+                    .map(|c| {
+                        let mut v = vec![0.0; width];
+                        v[c] = 1.0;
+                        v
+                    })
+                    .collect()
+            } else {
+                numerics::null_space_basis(j, tol)
+            }
         };
-        for b in basis {
-            // The motion in the stored parameters.
+        // A null vector over the effective columns `cols` as a motion of
+        // the stored parameters, largest entry one.
+        let to_motion = |b: &[f64], cols: &[usize]| -> HashMap<usize, f64> {
             let mut motion: HashMap<usize, f64> = HashMap::new();
-            for (c, &coeff) in b.iter().enumerate() {
+            for (k, &coeff) in b.iter().enumerate() {
                 if coeff != 0.0 {
-                    for &(lc, w) in &columns[c] {
+                    for &(lc, w) in &columns[cols[k]] {
                         *motion.entry(touched[lc]).or_insert(0.0) += coeff * w;
                     }
                 }
             }
             let scale = motion.values().fold(0.0_f64, |m, v| m.max(v.abs()));
-            if scale == 0.0 {
+            if scale > 0.0 {
+                for v in motion.values_mut() {
+                    *v /= scale;
+                }
+            }
+            motion
+        };
+        let mut present: Vec<usize> = touched
+            .iter()
+            .map(|&p| owner[p])
+            .filter(|&e| e != usize::MAX)
+            .collect();
+        present.sort_unstable();
+        present.dedup();
+        let all: Vec<usize> = (0..columns.len()).collect();
+        for b in null_space(&j, columns.len()) {
+            let motion = to_motion(&b, &all);
+            for &e in &present {
+                if let Some(v) = local(e, &motion) {
+                    let dim = params_of(e).len();
+                    extend_basis(&mut spaces[e].follow, dim, v, tol);
+                }
+            }
+        }
+        if !own {
+            continue;
+        }
+        for &e in &present {
+            let mine: Vec<usize> = (0..columns.len())
+                .filter(|&c| columns[c].iter().all(|&(lc, _)| owner[touched[lc]] == e))
+                .collect();
+            if mine.is_empty() {
                 continue;
             }
-            let mut by_entity: HashMap<usize, Vec<(usize, f64)>> = HashMap::new();
-            for (&p, &v) in &motion {
-                if owner[p] != usize::MAX {
-                    by_entity.entry(owner[p]).or_default().push((p, v / scale));
-                }
-            }
-            for (e, mut part) in by_entity {
-                if movable[e] {
-                    continue;
-                }
-                // Take out the entity's own soft gauge directions (unit
-                // vectors with disjoint supports).
-                for g in soft
-                    .iter()
-                    .filter(|g| g.iter().all(|&(p, _)| owner[p] == e))
-                {
-                    let along: f64 = g
-                        .iter()
-                        .map(|&(p, w)| {
-                            part.iter()
-                                .find(|(q, _)| *q == p)
-                                .map_or(0.0, |(_, v)| v * w)
-                        })
-                        .sum();
-                    for &(p, w) in g {
-                        if let Some(entry) = part.iter_mut().find(|(q, _)| *q == p) {
-                            entry.1 -= along * w;
-                        }
-                    }
-                }
-                if part.iter().any(|(_, v)| v.abs() > tol) {
-                    movable[e] = true;
+            let j_mine: Vec<Vec<f64>> = j
+                .iter()
+                .map(|row| mine.iter().map(|&c| row[c]).collect())
+                .collect();
+            let dim = params_of(e).len();
+            for b in null_space(&j_mine, mine.len()) {
+                if let Some(v) = local(e, &to_motion(&b, &mine)) {
+                    extend_basis(&mut spaces[e].own, dim, v, tol);
                 }
             }
         }
@@ -565,10 +635,34 @@ pub(crate) fn movable_entities<E: Equations + ?Sized, G: system::Gauge>(
     // A free parameter no constraint touches can move as it likes.
     for (p, &e) in owner.iter().enumerate() {
         if e != usize::MAX && !fixed[p] && !touched_any[p] {
-            movable[e] = true;
+            let range = params_of(e);
+            let mut v = vec![0.0; range.len()];
+            v[p - range.start] = 1.0;
+            extend_basis(&mut spaces[e].follow, range.len(), v.clone(), tol);
+            if own {
+                extend_basis(&mut spaces[e].own, range.len(), v, tol);
+            }
         }
     }
-    movable
+    spaces
+}
+
+/// Per entity (`count` of them, entity `e` stepped by the columns
+/// `params_of(e)`), whether some motion of it that no constraint resists
+/// is physical (see [`motion_spaces`]). Without a gauge this is "some
+/// parameter of it is movable" (see [`crate::mobility`]).
+pub(crate) fn movable_entities<E: Equations + ?Sized, G: system::Gauge>(
+    eqs: &E,
+    params: &[f64],
+    fixed: &[bool],
+    gauge: &G,
+    count: usize,
+    params_of: &dyn Fn(usize) -> std::ops::Range<usize>,
+) -> Vec<bool> {
+    motion_spaces(eqs, params, fixed, gauge, count, params_of, false)
+        .iter()
+        .map(|m| !m.follow.is_empty())
+        .collect()
 }
 
 /// Per constraint, whether it is not met where the geometry stands: some

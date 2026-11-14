@@ -141,6 +141,35 @@ pub fn status(
     )
 }
 
+/// How each body can still move, in geometric terms (see
+/// [`crate::freedom`]): per body (`None` for a removed one) the motions
+/// left to it while the other bodies may move along — empty exactly when
+/// [`status`] does not call it under-defined — and those left with every
+/// other body held: the joint its mates leave it relative to its
+/// neighbours (a turn about an axis, a slide, a ball joint's three turns
+/// about a point). As with [`diagnose`], read it at a solved pose.
+pub fn freedoms(
+    system: &ConstraintSystem,
+    positions: &[Point3],
+    rots: &[DQuat],
+) -> Vec<Option<crate::freedom::EntityFreedom<crate::freedom::Motion3>>> {
+    let params = pack(positions, rots);
+    let fixed = system.held_columns();
+    let spaces = crate::status::motion_spaces(
+        &RigidEquations::new(system),
+        &params,
+        &fixed,
+        &NoGauge,
+        system.num_components,
+        &|b| b * COLUMNS_PER_BODY..(b + 1) * COLUMNS_PER_BODY,
+        true,
+    );
+    let frame = |b: usize| {
+        (!system.is_component_removed(b)).then(|| crate::freedom::frame_body(positions[b], rots[b]))
+    };
+    crate::freedom::freedoms_of(&spaces, &frame, crate::freedom::to_3d)
+}
+
 /// Which of each body's six coordinates can still move, at the given pose.
 ///
 /// Entry `[body][k]` is `true` when the constraints, linearized at the

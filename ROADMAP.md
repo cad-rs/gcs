@@ -127,10 +127,16 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   redundant / conflicting / partially-redundant constraints,
   `dependency_groups` and per-parameter mobility (2D: `Sketch::mobility`;
   assemblies: `assembly_mobility`, per body coordinate; not yet for
-  `SpaceSketch`). What a UI needs on top: a status per entity (well /
-  under / over-defined), the number of independent motions a body has
-  rather than the coordinates they touch, and a geometric description of
-  the remaining freedom (translate along, rotate about).
+  `SpaceSketch`). A status per entity (`status()`) and a geometric
+  description of the remaining freedom (`freedoms()`: translate along,
+  rotate about, resize, with and without the rest held) are there. Left:
+  both take a dense null space of each component, so a large
+  under-constrained component is slow (a chain of 44 rectangles without
+  sizes, 792 parameters: about 1 s for `status()`, 0.26 s for
+  `freedoms()`); a sparse null space would fix that;
+  the 3D sketch has no labelled corpus of freedoms beyond `tests/freedom.rs`;
+  the conflicting cases of the assembly corpus are only checked against
+  their status, not against labelled motions.
 - **Conflict localization.** Dependency groups name the constraints that
   take part in a dependency; a minimal conflicting set and a "remove this
   one" suggestion are not computed yet.

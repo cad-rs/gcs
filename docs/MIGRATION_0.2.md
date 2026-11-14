@@ -122,6 +122,10 @@ let now = system.measure(index, &next.positions, &next.rotations);
 
 2D 的 `Sketch::status()` 给每个实体一个 `EntityStatus`（`WellDefined` 定义完全 / `UnderDefined` 欠定义 / `OverDefined` 过定义（身上有冗余约束）/ `Unsolved` 未求解（身上有约束没满足，且所在分量不在解上）/ `Conflicting` 冲突，多种同时成立时取最严重的一个；已删除的实体是 `None`），给每个约束一个 `ConstraintStatus`（`Met` / `Redundant` / `PartiallyRedundant` / `Unmet` / `Conflicting` / `Inactive`），连同自由度和依赖组。宿主如果自己拿 `diagnose()` 的 `conflicting` 和 `mobility()` 拼过“哪些几何要标红 / 标蓝”，可以换成它；区别是：同一个依赖组里的约束取同一种状态，所以冲突时组里每个约束都是 `Conflicting`（`diagnose().conflicting` 只列一个代表，选哪个取决于主元顺序）。它内部跑一次诊断和一次可动性分析，请在求解后调用，不要每帧调用。3D 草图有同样的 `SpaceSketch::status()`：平面法向的长度、圆柱轴点沿轴的滑动和轴向量的缩放是存储方式而不是自由度，不会让它们显示成欠定义。装配用 `rigid3d::assembly_status(system, positions, rotations)`：实体是各个刚体，约束按 `system.constraints` 里的槽位编号（不是配合 id，两个约束可能同 id）。约束只有在“单独去掉它，所在分量的秩不降”时才算 `Redundant`——行之间相关还不够：用三对重合点钉住一个零件，9 个方程只有 6 的秩，但哪一对都去不掉，这个零件报“定义完全”而不是“过定义”。顺带修了 `mobility()` 的一个错误（CHANGELOG 的 Fixed）：以前开放的距离链上，被 `Fixed` 约束固定的起点会被报成 y 方向可动。
 
+### 3.8 自由度的几何描述
+
+`status()` 说某个实体欠定义，`freedoms()` 说它还能怎么动：2D 的 `Sketch::freedoms()`、3D 的 `SpaceSketch::freedoms()`、装配的 `rigid3d::assembly_freedoms(system, positions, rotations)`，每个实体（刚体）一个 `Option<EntityFreedom>`（已删除的是 `None`）。`EntityFreedom` 有两组运动：`motions` 是其他几何可以跟着动时它的运动（零空间限制到它身上），**为空当且仅当 `status()` 不说它欠定义**；`own` 是其他几何全按住时它自己的运动——装配里就是它相对相邻零件剩下的关节（绕轴转、滑动、球铰），也是“只在它身上加约束”能去掉的东西。两者会不同：两个只用一个配合连起来的自由零件，`motions` 总是 6 个（整体漂浮），`own` 才是关节形态；2D 里一条弯曲的开放距离链，中间点有 `motions` 而 `own` 为空。每个运动是 `Motion2`（`Translate { direction }`、`Rotate { center }`、`Resize { what }`、`Other { velocity }`）或 `Motion3`（多了 `Rotate { axis, point }`、`Screw { axis, point, pitch }`）；`Measure` 是 `Length`（线长）、`Radius`（半径）、`Sweep`（2D 圆弧张角，终止角 − 起始角；单独的起止角在整体转动时也会变，所以不算形状量）。多维时按固定次序给一组基：先平移（全部可平移时就是世界坐标轴），再转动（共用一个点时都过这个点），再逐个形状量，剩下的给 `Other` 并附每个存储参数上的单位速度。方向没有正负之分。平面法向的长度、圆柱轴点沿轴滑动和轴向量缩放不算运动。和诊断一样是一阶的、在当前参数处算的：请在求解后调用；在奇异构形（恰好相切、拉直的链）上给的是线性化的运动，可能比有限运动多或不同。
+
 ## 4. 这一版没有动的
 
 以下已知问题仍在，迁移时不要指望它们已经解决（都在 [CATCHUP_PLAN.md](CATCHUP_PLAN.md) 里排了阶段）：

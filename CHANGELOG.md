@@ -327,6 +327,33 @@ through them from a host's side.
   and tests the others on the pieces that leave, so a hub with forty parts
   is forty small tests; the assembly gate went from 177 s to 2.7 s
   (optimised) with it.
+- `Sketch::freedoms()`, `SpaceSketch::freedoms()`,
+  `rigid3d::assembly_freedoms()` and the module `freedom`: how each entity
+  can still move, in geometric terms (`EntityFreedom`, `None` for a removed
+  entity). `motions` are the motions of the entity while the rest of the
+  system may move along (the null space of the constraint Jacobian
+  restricted to it; empty exactly when `status()` does not call it
+  under-defined); `own` are those left with everything else held — for an
+  assembly body, the joint its mates leave it relative to its neighbours.
+  Each is a list of `Motion2` / `Motion3`: `Translate { direction }`,
+  `Rotate { center }` (2D) or `Rotate { axis, point }` and
+  `Screw { axis, point, pitch }` (3D), `Resize { what }` for one `Measure`
+  of the shape (`Length`, `Radius`, `Sweep`), and `Other { velocity }`
+  (raw, per stored parameter) for what is none of these. A space of
+  several motions is given in a fixed basis: translations first (the world
+  axes where they are all free), then turns (about one point when they
+  share one), then one measure each, then the rest. Representation
+  freedoms (a plane's normal length, a cylinder's axis slide and rescale)
+  are not motions. Every entity of the 2D corpus (13 075) and every body of
+  the assembly corpus (4 749; the 40 of conflicting cases only checked
+  against their status) reports the motions its case's construction says
+  (`entity_freedoms_match_the_labels`, `body_freedoms_match_the_labels`):
+  for example the shaft turning about its hole's axis, and two free bodies
+  joined by a coincidence, a concentric mate, or a coincidence and a
+  parallel keeping a ball joint, a cylindrical joint, or a hinge relative
+  to each other. First order, like the diagnosis: at a singular
+  configuration (an exact tangency) the motions are those of the
+  linearisation.
 - Feature `rayon` (off by default): the connected components of a solve
   run on several threads. Consecutive components are grouped into one
   task per 96 equations, at most one per thread, each holding about the
