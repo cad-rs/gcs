@@ -174,6 +174,26 @@ so the solutions of a sketch do not change with it.
 corner, a four-bar linkage, a chain of tangent circles, 200 entities in one
 component).
 
+## Soft constraints
+
+A constraint can be a wish rather than a requirement:
+
+```rust
+sk.set_constraint_priority(equal_length, 1);   // 0 (the default) must hold
+let result = sk.solve();
+result.satisfied_level;                        // 1 if the wish fitted, else 0
+```
+
+Level 0 has to be satisfied; a higher level gives way to every level below
+it. A solve takes the levels in turn — level 0 on its own, then each level
+added to the ones below, each warm-started from the solution of the last —
+and stops at the first level it cannot meet, leaving the geometry where the
+level below put it. So a sketch can ask for something that may not be
+possible without its solve failing, and `satisfied_level` says how far it
+got. Levels need not be consecutive; a sketch with none solves exactly as
+before and reports level 0. A drag does not read levels: while one runs,
+every active constraint is kept.
+
 ## Degrees of freedom and diagnosis
 
 `sk.diagnose()` runs a rank-revealing QR per connected component and

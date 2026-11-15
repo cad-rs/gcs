@@ -46,6 +46,19 @@ pub struct SolveResult {
     /// [`SolveStatus::ConvergedToPrecision`] exactly when `converged` is
     /// `true`.
     pub status: SolveStatus,
+    /// The highest priority level whose constraints the solve left
+    /// satisfied, where level 0 is the constraints that have to be
+    /// (see `Sketch::set_constraint_priority`).
+    ///
+    /// Zero for a solve with nothing but level 0 — which is every solve
+    /// until a priority is set, and every solve of the 3D-geometric
+    /// family, which has no priorities — and then `converged` is what
+    /// says whether that level was met. A sketch with soft constraints
+    /// takes the levels in turn and stops at the first one it cannot
+    /// meet: the level below is what the geometry is left at, and this is
+    /// its number.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub satisfied_level: u16,
 }
 
 /// Why a solve ended.
@@ -756,6 +769,7 @@ where
             residual: 0.0,
             iterations: 0,
             status: SolveStatus::Converged,
+            satisfied_level: 0,
         };
     }
 
@@ -804,6 +818,7 @@ where
             residual,
             iterations: 0,
             status,
+            satisfied_level: 0,
         };
     }
 
@@ -1109,6 +1124,7 @@ where
         residual,
         iterations: iters,
         status,
+        satisfied_level: 0,
     }
 }
 

@@ -751,6 +751,7 @@ where
         residual: numerics::rms(&f),
         iterations,
         status,
+        satisfied_level: 0,
     }
 }
 
@@ -1218,6 +1219,7 @@ fn solve_blocks<E: Equations + ?Sized>(
         residual: numerics::rms(&eval_residuals(eqs, group, params)),
         iterations,
         status,
+        satisfied_level: 0,
     }
 }
 
@@ -1342,6 +1344,7 @@ fn solve_small_block<E: Equations + ?Sized>(
         residual,
         iterations,
         status: SolveStatus::Converged,
+        satisfied_level: 0,
     })
 }
 

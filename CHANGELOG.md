@@ -15,6 +15,13 @@ through them from a host's side.
 
 ### Changed
 
+- **`SolveResult` carries a new field, `satisfied_level`** (the 2D and
+  3D-geometric families): the highest constraint priority level the solve
+  left satisfied. It is 0 for every solve of a sketch without priorities,
+  which is every sketch until one is set, and for the whole 3D-geometric
+  family, which has none; `converged` is then what says whether level 0
+  itself was met. Code that constructs a `SolveResult` by hand, or matches
+  one exhaustively, has to name the field.
 - **A solve that does not converge now puts back the parameters it started
   from** (2D and 3D-geometric families), per connected component: a
   component that converged keeps its solution, a failed one is left
@@ -290,6 +297,23 @@ through them from a host's side.
   split (their equations outnumber their freedoms structurally), and
   neither is a braced 3D truss.
 
+- **Constraint priorities, so a sketch can carry a wish** —
+  `Sketch::set_constraint_priority(index, level)` and
+  `constraint_priority(index)`. Level 0, the default, is a constraint that
+  has to be satisfied; a higher level gives way to every level below it. A
+  solve takes the levels in turn — level 0 on its own, then each level
+  added to the ones below, each starting from the solution of the last —
+  and stops at the first level it cannot meet, leaving that level and
+  everything above it out and the geometry where the level below put it.
+  `SolveResult::satisfied_level` is the highest level that was met, so a
+  sketch can ask for something that may not be possible without its solve
+  failing. Levels need not be consecutive; a suppressed or removed
+  constraint keeps its level and takes no part; and a level that cannot be
+  met puts back the level below whatever `FailurePolicy` says, since not
+  meeting a wish is not a failed solve. A drag does not read levels: while
+  one runs, every active constraint is kept.
+### Added
+
 - **Weights for dragging** — `Sketch::set_entity_weight(id, weight)` and
   `entity_weight(id)`. A drag moves the geometry so that
   `Σ (weight · distance)²` over the entities is as small as it can be
@@ -305,7 +329,6 @@ through them from a host's side.
   translate it and both base points travel the one unit the apex did,
   while at four times the weight one base point gives 0.50 and the other
   1.81.
-### Added
 
 - **Drag sessions** — `Sketch::begin_drag(handles)`, `drag_to(&drag,
   cursors)` (and `drag_to_with`), `end_drag(drag)` (and `end_drag_with`),

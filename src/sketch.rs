@@ -67,6 +67,11 @@ pub struct Sketch {
     /// one.
     #[cfg_attr(feature = "serde", serde(default))]
     weights: Vec<f64>,
+    /// Per constraint slot: its priority level (see
+    /// [`Sketch::set_constraint_priority`]). A missing entry is level 0,
+    /// a constraint that has to be satisfied.
+    #[cfg_attr(feature = "serde", serde(default))]
+    priorities: Vec<u16>,
     /// The drag running on this sketch, if one is (see
     /// [`Sketch::begin_drag`]). Not part of what a sketch is worth
     /// storing: a drag is over by the time one is written out.
@@ -121,6 +126,7 @@ impl Sketch {
             revision: 0,
             plans: PlanCache::default(),
             weights: Vec::new(),
+            priorities: Vec::new(),
             drag: None,
             drags: 0,
         }
@@ -536,8 +542,75 @@ impl Sketch {
 
     /// [`Sketch::solve`] with explicit [`SolveOptions`] (tolerance,
     /// iteration limit, what a failed solve leaves behind).
+    ///
+    /// With priorities set ([`Sketch::set_constraint_priority`]) the
+    /// levels are taken in turn, each from the solution of the one below,
+    /// and the first level that cannot be met is left out:
+    /// [`SolveResult::satisfied_level`] is the last one that was.
     pub fn solve_with(&mut self, options: &SolveOptions) -> SolveResult {
-        self.solve_selected_with(None, options)
+        let levels = self.soft_levels();
+        if levels.is_empty() {
+            return self.solve_selected_with(None, options);
+        }
+        // The constraints that have to hold, first and on their own.
+        let mut result = self.solve_up_to(0, options);
+        if !result.converged {
+            return result;
+        }
+        let mut satisfied = 0;
+        for level in levels {
+            let before = self.params.clone();
+            let attempt = self.solve_up_to(level, options);
+            if !attempt.converged {
+                // This level and every level above it are out; the
+                // geometry stays where the level below left it.
+                self.params = before;
+                break;
+            }
+            satisfied = level;
+            result = attempt;
+        }
+        result.satisfied_level = satisfied;
+        result
+    }
+
+    /// The priority levels above zero that some active constraint has,
+    /// ascending; empty when the sketch has none, which is the ordinary
+    /// case and keeps the ordinary solve.
+    fn soft_levels(&self) -> Vec<u16> {
+        let mut levels: Vec<u16> = (0..self.constraints.len())
+            .filter(|&i| self.constraint_state(i) == ConstraintState::Active)
+            .map(|i| self.constraint_priority(i))
+            .filter(|&level| level > 0)
+            .collect();
+        levels.sort_unstable();
+        levels.dedup();
+        levels
+    }
+
+    /// Solve with every active constraint of priority `level` or below,
+    /// from the geometry as it stands. The plans of the whole sketch do
+    /// not describe this system, so this one is laid out afresh.
+    fn solve_up_to(&mut self, level: u16, options: &SolveOptions) -> SolveResult {
+        let states: Vec<ConstraintState> = (0..self.constraints.len())
+            .map(|i| match self.constraint_state(i) {
+                ConstraintState::Active if self.constraint_priority(i) > level => {
+                    ConstraintState::Suppressed
+                }
+                state => state,
+            })
+            .collect();
+        let eqs = SketchEquations::with_states(&self.entities, &self.constraints, &states);
+        let plans = system::Plans::new(&eqs, &self.params);
+        system::solve_planned(
+            &eqs,
+            &mut self.params,
+            &self.fixed,
+            &plans,
+            None,
+            &CoreOptions::from(options),
+            |_, _| {},
+        )
     }
 
     /// Rank-revealing diagnosis of the constraint system at the current
@@ -822,6 +895,42 @@ impl Sketch {
     /// it was set.
     pub fn entity_weight(&self, id: EntityId) -> f64 {
         self.weights.get(id).copied().unwrap_or(1.0)
+    }
+
+    /// How hard constraint `index` has to be satisfied: level 0, the
+    /// default, is a constraint that does, and a higher level is one that
+    /// gives way to every lower level — a soft constraint.
+    ///
+    /// [`Sketch::solve`] takes the levels in turn: level 0 on its own
+    /// first, then each level added to the ones below it, each solve
+    /// starting from the solution of the last. The first level that cannot
+    /// be met is left out, along with every level above it, and the
+    /// geometry stays where the level below left it;
+    /// [`SolveResult::satisfied_level`] is the highest level that was met.
+    /// So a sketch can carry a wish — "these two lines are equal if that
+    /// can be arranged" — without its solve failing when it cannot.
+    ///
+    /// Levels need not be consecutive; only their order matters. A
+    /// suppressed or removed constraint keeps its level and takes no part
+    /// either way. A drag does not read levels: while one runs, every
+    /// active constraint is kept (see the [`crate::drag`] module).
+    ///
+    /// `false`, changing nothing, for an index that is not a slot.
+    pub fn set_constraint_priority(&mut self, index: usize, level: u16) -> bool {
+        if index >= self.constraints.len() {
+            return false;
+        }
+        if self.priorities.len() < self.constraints.len() {
+            self.priorities.resize(self.constraints.len(), 0);
+        }
+        self.priorities[index] = level;
+        true
+    }
+
+    /// The priority level of constraint `index` (see
+    /// [`Sketch::set_constraint_priority`]); 0 unless it was set.
+    pub fn constraint_priority(&self, index: usize) -> u16 {
+        self.priorities.get(index).copied().unwrap_or(0)
     }
 
     /// The weight of each parameter: the weight of the entity that owns

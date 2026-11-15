@@ -335,6 +335,7 @@ pub(crate) fn residual_report(
         } else {
             SolveStatus::MaxIterations
         },
+        satisfied_level: 0,
     }
 }
 

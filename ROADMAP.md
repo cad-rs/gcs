@@ -210,8 +210,10 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   status); an unreachable cursor stops where a substep stops gaining
   rather than at the furthest point of the feasible set; a frame solves at
   the full tolerance throughout, with no coarse pass while the cursor
-  moves; the constraints carry no priorities, so a soft constraint cannot
-  be expressed (entities do carry weights); and the
+  moves; a soft constraint (a priority level) is not read by a drag at
+  all — every active constraint is kept while one runs, so a wish that
+  cannot be met fails every frame instead of being pulled toward like the
+  cursor is, which is where the two belong together; and the
   3D-geometric and rigid-pose families have no entry points (the step
   itself is family-generic, `system::tangent_step`, but takes no gauge, so
   3D needs its effective columns before it can use it).
