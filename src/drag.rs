@@ -187,7 +187,8 @@ fn components_of<E: Equations + ?Sized>(
 ///
 /// `distance` turns the per-parameter errors into the one tracking error
 /// the frame reports — for a family whose points have two coordinates, the
-/// largest of the planar distances.
+/// largest of the planar distances. `weight_of` says how reluctant each
+/// parameter is to move (see [`system::tangent_step`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn frame<E: Equations + ?Sized>(
     eqs: &E,
@@ -198,6 +199,7 @@ pub(crate) fn frame<E: Equations + ?Sized>(
     revision: u64,
     cursors: &[f64],
     distance: &dyn Fn(&[f64]) -> f64,
+    weight_of: &dyn Fn(usize) -> f64,
     options: &CoreOptions,
 ) -> DragFrame {
     session.refresh(revision, eqs, params, plans);
@@ -244,7 +246,7 @@ pub(crate) fn frame<E: Equations + ?Sized>(
                 error: error * aim,
             })
             .collect();
-        let Some(step) = system::tangent_step(eqs, &group, params, fixed, &pulls) else {
+        let Some(step) = system::tangent_step(eqs, &group, params, fixed, &pulls, weight_of) else {
             break;
         };
         let saved: Vec<f64> = params.to_vec();

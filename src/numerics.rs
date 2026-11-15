@@ -702,14 +702,14 @@ fn column_scales(j: &SparseJacobian, weights: &[f64], n: usize) -> Vec<f64> {
 
 /// Multiply each column of the Jacobian by its scale: the Jacobian with
 /// respect to the scaled coordinates `y`, where the step is `h = scale·y`.
-fn scale_columns(j: &mut SparseJacobian, scales: &[f64]) {
+pub(crate) fn scale_columns(j: &mut SparseJacobian, scales: &[f64]) {
     for (v, &col) in j.vals.iter_mut().zip(&j.cols) {
         *v *= scales[col];
     }
 }
 
 /// The step in the parameters for a step `y` in scaled coordinates.
-fn unscaled(y: &[f64], scales: &[f64]) -> Vec<f64> {
+pub(crate) fn unscaled(y: &[f64], scales: &[f64]) -> Vec<f64> {
     y.iter().zip(scales).map(|(y, scale)| y * scale).collect()
 }
 

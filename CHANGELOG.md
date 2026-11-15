@@ -290,6 +290,21 @@ through them from a host's side.
   split (their equations outnumber their freedoms structurally), and
   neither is a braced 3D truss.
 
+- **Weights for dragging** — `Sketch::set_entity_weight(id, weight)` and
+  `entity_weight(id)`. A drag moves the geometry so that
+  `Σ (weight · distance)²` over the entities is as small as it can be
+  while the cursor is followed and the constraints hold, so an entity of
+  twice the weight moves a quarter as far for the same gain: this is what
+  a host marks an external reference with (heavy: everything else gives
+  first) or geometry just drawn (light: it absorbs the motion). Default
+  one; a weight that is not positive and finite is refused. It is neither
+  a hold nor a constraint — only `fix_param` stops a parameter moving —
+  and `solve()` does not read it, so the solutions of a sketch are
+  unchanged by it. Measured on a rigid triangle dragged by its apex, where
+  what stays free is the rotation about the apex: uniform weights
+  translate it and both base points travel the one unit the apex did,
+  while at four times the weight one base point gives 0.50 and the other
+  1.81.
 ### Added
 
 - **Drag sessions** — `Sketch::begin_drag(handles)`, `drag_to(&drag,

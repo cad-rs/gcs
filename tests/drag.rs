@@ -841,3 +841,118 @@ fn report_drag_frames() {
         }
     }
 }
+
+/// A rigid triangle dragged by its apex: the apex follows the cursor
+/// whatever happens, and what stays free is the rotation about it, which
+/// trades one base point's motion against the other's. That is the choice
+/// the weights make. Uniform weights translate the triangle, so both base
+/// points move by exactly what the apex did; a heavier point gives less
+/// and the other gives more.
+#[test]
+fn a_heavier_entity_gives_less() {
+    let triangle = || {
+        let mut sk = Sketch::new();
+        let a = sk.add_point(0.0, 0.0);
+        let b = sk.add_point(3.8, 0.0);
+        let apex = sk.add_point(1.9, 0.6245);
+        for (p, q, d) in [(a, apex, 2.0), (apex, b, 2.0), (a, b, 3.8)] {
+            sk.add_constraint(Constraint::point_distance(
+                PointRef::Point(p),
+                PointRef::Point(q),
+                d,
+            ));
+        }
+        assert!(sk.solve().converged, "the triangle fixture");
+        (sk, a, b, apex)
+    };
+    // How far each base point travels when the apex is lifted one unit.
+    let lift = |weight_a: f64, weight_b: f64| {
+        let (mut sk, a, b, apex) = triangle();
+        assert!(sk.set_entity_weight(a, weight_a));
+        assert!(sk.set_entity_weight(b, weight_b));
+        assert_eq!(sk.entity_weight(a), weight_a);
+        let before = sk.params_snapshot();
+        let at = sk.point_coords(sk.point(apex));
+        let drag = sk.begin_drag(&[sk.point(apex)]);
+        let frame = sk.drag_to(&drag, &[(at.x, at.y + 1.0)]);
+        assert!(frame.reached, "the apex can be lifted");
+        assert!(frame.residual <= 1e-8, "residual {:.3e}", frame.residual);
+        sk.end_drag(drag);
+        let after = sk.params_snapshot();
+        let moved = |id| {
+            let r = sk.entity_param_range(id);
+            (after[r.start] - before[r.start]).hypot(after[r.start + 1] - before[r.start + 1])
+        };
+        (moved(a), moved(b))
+    };
+
+    let (a_even, b_even) = lift(1.0, 1.0);
+    assert!(
+        (a_even - 1.0).abs() < 1e-6 && (b_even - 1.0).abs() < 1e-6,
+        "uniform weights should translate the triangle: {a_even:.4} and {b_even:.4}"
+    );
+    let (a_heavy, b_heavy) = lift(4.0, 1.0);
+    assert!(
+        a_heavy < 0.6 && b_heavy > 1.7,
+        "a four times heavier A should give less: {a_heavy:.4} and {b_heavy:.4}"
+    );
+    let (a_light, b_light) = lift(1.0, 4.0);
+    assert!(
+        (a_light - b_heavy).abs() < 1e-6 && (b_light - a_heavy).abs() < 1e-6,
+        "the mirrored weights should give the mirrored motion: {a_light:.4} and {b_light:.4}"
+    );
+}
+
+/// A weight is neither a hold nor a constraint, and `solve()` does not
+/// read it: a very heavy entity still moves where the constraints say it
+/// must, and the solution of a sketch is what it was.
+#[test]
+fn a_weight_is_not_a_hold() {
+    let mut sk = Sketch::new();
+    let a = sk.add_point(0.0, 0.0);
+    let b = sk.add_point(1.0, 0.0);
+    sk.add_constraint(Constraint::fix_point(PointRef::Point(a), 0.0, 0.0));
+    let span = sk.add_constraint(Constraint::point_distance(
+        PointRef::Point(a),
+        PointRef::Point(b),
+        1.0,
+    ));
+    assert!(sk.solve().converged, "the fixture");
+    let mut heavy = sk.clone();
+    assert!(heavy.set_entity_weight(b, 1.0e6));
+    // The same dimension change, with and without the weight.
+    for sketch in [&mut sk, &mut heavy] {
+        assert!(sketch.set_constraint_value(span, 4.0));
+        assert!(sketch.solve().converged);
+    }
+    assert_eq!(
+        sk.params_snapshot(),
+        heavy.params_snapshot(),
+        "the weight changed what solve() does"
+    );
+    assert!((sk.point_coords(sk.point(b)).x - 4.0).abs() < 1e-9);
+    // Dragging it is still possible, since nothing holds it.
+    let drag = heavy.begin_drag(&[heavy.point(b)]);
+    let frame = heavy.drag_to(&drag, &[(0.0, 4.0)]);
+    heavy.end_drag(drag);
+    assert!(frame.reached, "a heavy point is not a held one");
+}
+
+/// A weight has to be a positive, finite number; anything else is refused
+/// and changes nothing.
+#[test]
+fn a_weight_has_to_be_positive_and_finite() {
+    let mut sk = Sketch::new();
+    let p = sk.add_point(0.0, 0.0);
+    assert_eq!(sk.entity_weight(p), 1.0, "the default weight");
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(!sk.set_entity_weight(p, bad), "{bad} was accepted");
+        assert_eq!(sk.entity_weight(p), 1.0, "{bad} changed the weight");
+    }
+    assert!(
+        !sk.set_entity_weight(p + 1, 2.0),
+        "an entity that is not there"
+    );
+    assert!(sk.set_entity_weight(p, 2.5));
+    assert_eq!(sk.entity_weight(p), 2.5);
+}

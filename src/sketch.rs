@@ -62,6 +62,11 @@ pub struct Sketch {
     /// What the last solve kept of the structure (see [`PlanCache`]).
     #[cfg_attr(feature = "serde", serde(skip))]
     plans: PlanCache,
+    /// Per entity: how reluctant it is to move in a drag (see
+    /// [`Sketch::set_entity_weight`]). A missing entry is the default of
+    /// one.
+    #[cfg_attr(feature = "serde", serde(default))]
+    weights: Vec<f64>,
     /// The drag running on this sketch, if one is (see
     /// [`Sketch::begin_drag`]). Not part of what a sketch is worth
     /// storing: a drag is over by the time one is written out.
@@ -115,6 +120,7 @@ impl Sketch {
             removed: Vec::new(),
             revision: 0,
             plans: PlanCache::default(),
+            weights: Vec::new(),
             drag: None,
             drags: 0,
         }
@@ -784,6 +790,56 @@ impl Sketch {
 
     // ── Dragging ──────────────────────────────────────────────────────────────
 
+    /// How reluctant `id` is to move when something else is dragged: a
+    /// drag moves the geometry so that `Σ (weight · distance)²` over the
+    /// entities is as small as it can be while the cursor is followed and
+    /// the constraints hold, so an entity of twice the weight moves a
+    /// quarter as far for the same gain, and a very heavy one hardly
+    /// moves at all. The default is one.
+    ///
+    /// This is what a host marks an external reference with (a heavy
+    /// weight: everything else gives first) or geometry just drawn (a
+    /// light one: it absorbs the motion). It is not a constraint and not a
+    /// hold: a weight cannot keep a constraint from being satisfied, and
+    /// the only way to stop a parameter moving at all is
+    /// [`Sketch::fix_param`]. Only drags consult it; `solve()` does not,
+    /// so the solutions of a sketch are unchanged by it.
+    ///
+    /// Rejects a weight that is not a positive, finite number and changes
+    /// nothing (`false`); `true` when it was set.
+    pub fn set_entity_weight(&mut self, id: EntityId, weight: f64) -> bool {
+        if !weight.is_finite() || weight <= 0.0 || id >= self.entities.len() {
+            return false;
+        }
+        if self.weights.len() < self.entities.len() {
+            self.weights.resize(self.entities.len(), 1.0);
+        }
+        self.weights[id] = weight;
+        true
+    }
+
+    /// The weight of `id` (see [`Sketch::set_entity_weight`]); one unless
+    /// it was set.
+    pub fn entity_weight(&self, id: EntityId) -> f64 {
+        self.weights.get(id).copied().unwrap_or(1.0)
+    }
+
+    /// The weight of each parameter: the weight of the entity that owns
+    /// it, for the drag's scaled coordinates.
+    fn param_weights(&self) -> Vec<f64> {
+        let mut weights = vec![1.0_f64; self.params.len()];
+        for (id, entity) in self.entities.iter().enumerate() {
+            let weight = self.entity_weight(id);
+            if weight != 1.0 {
+                let count = entity.kind.param_count();
+                for w in &mut weights[entity.param_start..entity.param_start + count] {
+                    *w = weight;
+                }
+            }
+        }
+        weights
+    }
+
     /// Begin dragging `handles`, the points the cursor is to carry.
     ///
     /// The returned token is what [`Sketch::drag_to`] and
@@ -890,6 +946,7 @@ impl Sketch {
             };
         }
         let flat: Vec<f64> = cursors.iter().flat_map(|&(x, y)| [x, y]).collect();
+        let weights = self.param_weights();
         let key = self.plan_key();
         let eqs = SketchEquations::with_states(&self.entities, &self.constraints, &self.states);
         let params = &self.params;
@@ -910,6 +967,7 @@ impl Sketch {
                     .map(|e| e[0].hypot(e[1]))
                     .fold(0.0_f64, f64::max)
             },
+            &|param| weights[param],
             &CoreOptions::from(options),
         )
     }

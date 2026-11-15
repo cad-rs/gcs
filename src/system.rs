@@ -2302,6 +2302,12 @@ const DRAG_MOBILE_MIN: f64 = 1.0e-4;
 /// minimum-norm least-squares solution over the null space of the
 /// Jacobian.
 ///
+/// "As little as possible" is measured with `weight_of`: the motion
+/// minimises `Σ wᵢ² Δpᵢ²` over the parameters, so a parameter of twice the
+/// weight moves a quarter as far for the same gain and a very heavy one
+/// hardly moves at all. The step is taken in the scaled coordinates
+/// `u = W Δp`, where the weights are column scales of the Jacobian.
+///
 /// Returned as `(parameter, delta)` pairs for the parameters that move.
 /// `None` when nothing may move, when the constraints hold every pull, or
 /// when the regularised normal equations are singular even so.
@@ -2311,6 +2317,7 @@ pub(crate) fn tangent_step<E: Equations + ?Sized>(
     params: &[f64],
     fixed: &[bool],
     pulls: &[Pull<'_>],
+    weight_of: &dyn Fn(usize) -> f64,
 ) -> Option<Vec<(usize, f64)>> {
     if pulls.is_empty() {
         return None;
@@ -2323,6 +2330,26 @@ pub(crate) fn tangent_step<E: Equations + ?Sized>(
         return None;
     }
     assembly.assemble(eqs, group, params, &mut j, &mut scratch);
+
+    // The scaled coordinates: column `k` of the Jacobian is divided by the
+    // weight of its parameter, and the step is multiplied back at the end.
+    // A weight that is not a positive, finite number counts as one.
+    let scales: Vec<f64> = assembly
+        .free
+        .iter()
+        .map(|&p| {
+            let w = weight_of(p);
+            if w.is_finite() && w > 0.0 {
+                1.0 / w
+            } else {
+                1.0
+            }
+        })
+        .collect();
+    let weighted = scales.iter().any(|&s| s != 1.0);
+    if weighted {
+        numerics::scale_columns(&mut j, &scales);
+    }
 
     // Every equation scaled to a largest entry of one, so that λ is
     // relative to the geometry rather than to the units of the equations.
@@ -2377,14 +2404,21 @@ pub(crate) fn tangent_step<E: Equations + ?Sized>(
     // Each pull's row of `A = R P`, dropped when the constraints hold it.
     let mut rows: Vec<Vec<f64>> = Vec::new();
     let mut errors: Vec<f64> = Vec::new();
+    // What a pull asks of the scaled coordinates: its gradient entry over
+    // the weight of the parameter, since `Δpᵢ = uᵢ / wᵢ`.
+    let scaled = |p: usize, w: f64| match col_of[p] {
+        usize::MAX => 0.0,
+        k => w * scales[k],
+    };
     for pull in pulls {
         let mut a = vec![0.0_f64; n];
         let mut norm2 = 0.0_f64;
         for &(p, w) in pull.row {
-            norm2 += w * w;
+            let c = scaled(p, w);
+            norm2 += c * c;
             if let Some(column) = projected.get(&p) {
                 for (entry, v) in a.iter_mut().zip(column) {
-                    *entry += w * v;
+                    *entry += c * v;
                 }
             }
         }
@@ -2393,7 +2427,7 @@ pub(crate) fn tangent_step<E: Equations + ?Sized>(
             .iter()
             .map(|&(p, w)| match col_of[p] {
                 usize::MAX => 0.0,
-                k => w * a[k],
+                k => scaled(p, w) * a[k],
             })
             .sum();
         if norm2 <= 0.0 || free <= DRAG_MOBILE_MIN * norm2 {
@@ -2414,7 +2448,13 @@ pub(crate) fn tangent_step<E: Equations + ?Sized>(
     // space of `A = R P`, which is the null space of the Jacobian as `λ`
     // draws it.
     let a = SparseJacobian::from_dense(&rows, n);
-    let step = numerics::min_norm_step_within(&a, &errors, DRAG_MOBILE_MIN)?;
+    let scaled_step = numerics::min_norm_step_within(&a, &errors, DRAG_MOBILE_MIN)?;
+    // Back from `u` to the parameters.
+    let step = if weighted {
+        numerics::unscaled(&scaled_step, &scales)
+    } else {
+        scaled_step
+    };
     let moved: Vec<(usize, f64)> = assembly
         .free
         .iter()

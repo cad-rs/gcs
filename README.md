@@ -163,6 +163,13 @@ the frame found rather than deformed toward it. The session's state lives
 in the sketch and the token borrows nothing, so a drag can be diagnosed
 while it runs; beginning a drag ends any drag already running.
 
+How much each entity would rather not move is `set_entity_weight(id, w)`
+(one by default): a frame minimises `Σ (weight · distance)²` over the
+entities, so one of twice the weight moves a quarter as far for the same
+gain — heavy for an external reference, light for geometry just drawn. A
+weight is not a hold (only `fix_param` is) and `solve()` does not read it,
+so the solutions of a sketch do not change with it.
+
 `tests/drag.rs` holds the scripted drags this is measured on (a rectangle
 corner, a four-bar linkage, a chain of tangent circles, 200 entities in one
 component).
