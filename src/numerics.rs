@@ -372,7 +372,6 @@ impl SparseJacobian {
     }
 
     /// The non-zero entries of a dense matrix.
-    #[cfg(test)]
     pub(crate) fn from_dense(j: &[Vec<f64>], n_cols: usize) -> Self {
         let rows: Vec<Vec<usize>> = j
             .iter()
@@ -1194,6 +1193,15 @@ fn householder(x: &[f64]) -> Option<(Vec<f64>, f64, f64)> {
 /// `None` when `J` has no column above the threshold. A `J` or `f` that is
 /// not finite gives a step of NaN, for the caller to report.
 pub(crate) fn min_norm_step(j: &SparseJacobian, f: &[f64]) -> Option<Vec<f64>> {
+    min_norm_step_within(j, f, STEP_RCOND)
+}
+
+/// [`min_norm_step`] with the rank threshold given: a caller that knows
+/// what a direction of its own matrix is worth (a drag asks for the
+/// motions the constraints leave free, which are the ones its projector
+/// damps least) sets where the rank ends instead of taking the numerical
+/// one.
+pub(crate) fn min_norm_step_within(j: &SparseJacobian, f: &[f64], rcond: f64) -> Option<Vec<f64>> {
     let (m, n) = (f.len(), j.n_cols);
     if f.iter().any(|v| !v.is_finite()) || j.vals.iter().any(|v| !v.is_finite()) {
         return Some(vec![f64::NAN; n]);
@@ -1227,7 +1235,7 @@ pub(crate) fn min_norm_step(j: &SparseJacobian, f: &[f64]) -> Option<Vec<f64>> {
         let Some((v, v_norm2, alpha)) = householder(&cols[k][k..]) else {
             break;
         };
-        if !gt(alpha.abs(), STEP_RCOND * largest) {
+        if !gt(alpha.abs(), rcond * largest) {
             break;
         }
         for col in cols[k + 1..].iter_mut() {

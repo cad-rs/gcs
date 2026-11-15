@@ -2247,6 +2247,184 @@ pub(crate) fn unpinned_gauge_dims(
     local.len() - rank
 }
 
+// ── Drag: the step the constraints leave free ────────────────────────────
+
+/// What a drag pulls on: the gradient of a quantity over the stored
+/// parameters (`row`) and how far the cursor wants it to move (`error`,
+/// the change the quantity must make).
+pub(crate) struct Pull<'a> {
+    pub(crate) row: &'a SparseRow,
+    pub(crate) error: f64,
+}
+
+/// The Tikhonov term of a drag's projector, relative to the largest
+/// squared column norm of the equilibrated Jacobian (about `σ_max²`).
+///
+/// The projector onto the motions the constraints leave free is
+/// `P = I − J⁺J`, and `λ(JᵀJ + λI)⁻¹` is that projector softened: along a
+/// motion of singular value `σ` its eigenvalue is `λ/(σ² + λ)` — one along
+/// a free motion, `λ/σ²` along a constrained one. Written that way it
+/// costs nothing new: the normal equations of the Newton step, factored
+/// once, give every column of the projector by back-substitution, instead
+/// of a decomposition of the whole Jacobian for a null-space basis.
+///
+/// `λ` sets the sharpness and the conditioning together: the factored
+/// matrix has a condition number of about `σ_max²/λ`, so this value spends
+/// about half the digits of a double and damps every motion the geometry
+/// determines to better than `1e-4` of the scale of the drawing. At a
+/// near-singular configuration that damping is what a drag wants: the
+/// motion is taken along what is firmly free and shortened along what is
+/// not.
+const DRAG_LAMBDA: f64 = 1.0e-8;
+
+/// How free a pulled quantity has to be before it is pulled at all: its
+/// own entry of the projector over its gradient's squared norm — one where
+/// the cursor moves it alone, as small as [`DRAG_LAMBDA`] where the
+/// constraints hold it. In between is a quantity the geometry nearly
+/// determines, where a step would fight the constraints and the corrector
+/// would take it straight back.
+///
+/// The same number is the rank threshold of the least-squares step. The
+/// projector leaves a constrained direction a size of about
+/// [`DRAG_LAMBDA`] rather than zero, which is far above the numerical rank
+/// threshold of [`numerics::STEP_RCOND`]: taken as rank, such a direction
+/// buys the fraction of the cursor it points at by dividing by that size —
+/// a step a hundred million times what was asked for, along a direction
+/// the constraints hold. Measured on a four-bar linkage (one degree of
+/// freedom, so a cursor off its curve asks for exactly that): the frame
+/// moved the coupler point further from the cursor than it began, 15.2
+/// away to 20.3, where the truncated step walks the curve instead.
+const DRAG_MOBILE_MIN: f64 = 1.0e-4;
+
+/// The motion of the free parameters of the component `group` that moves
+/// every pull of `pulls` by its error, as nearly as the constraints at
+/// `params` allow and moving everything else as little as possible: the
+/// minimum-norm least-squares solution over the null space of the
+/// Jacobian.
+///
+/// Returned as `(parameter, delta)` pairs for the parameters that move.
+/// `None` when nothing may move, when the constraints hold every pull, or
+/// when the regularised normal equations are singular even so.
+pub(crate) fn tangent_step<E: Equations + ?Sized>(
+    eqs: &E,
+    group: &[usize],
+    params: &[f64],
+    fixed: &[bool],
+    pulls: &[Pull<'_>],
+) -> Option<Vec<(usize, f64)>> {
+    if pulls.is_empty() {
+        return None;
+    }
+    let mut scratch: Vec<SparseRow> = Vec::new();
+    let listing = Listing::new(eqs, group, params, &mut scratch);
+    let (assembly, mut j) = Assembly::lay_out(listing, fixed, Shape::default());
+    let (n, n_rows) = (assembly.free.len(), j.n_rows());
+    if n == 0 || n_rows == 0 {
+        return None;
+    }
+    assembly.assemble(eqs, group, params, &mut j, &mut scratch);
+
+    // Every equation scaled to a largest entry of one, so that λ is
+    // relative to the geometry rather than to the units of the equations.
+    let mut offset = 0;
+    for r in 0..n_rows {
+        let len = j.row_values(r).len();
+        let scale = j.row_values(r).iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        if scale > 0.0 {
+            for v in &mut j.values_mut()[offset..offset + len] {
+                *v /= scale;
+            }
+        }
+        offset += len;
+    }
+
+    // The Jacobian column of each free parameter, and the diagonal of JᵀJ.
+    let mut col_of: Vec<usize> = vec![usize::MAX; params.len()];
+    for (k, &p) in assembly.free.iter().enumerate() {
+        col_of[p] = k;
+    }
+    let mut diagonal = vec![0.0_f64; n];
+    for r in 0..n_rows {
+        for (&c, v) in j.row_cols(r).iter().zip(j.row_values(r)) {
+            diagonal[c] += v * v;
+        }
+    }
+    let largest = diagonal.iter().fold(0.0_f64, |m, &v| m.max(v));
+    if largest <= 0.0 {
+        return None;
+    }
+    let zeros = vec![0.0_f64; n_rows];
+    let (mut normal, _) = j.normal_equations(&zeros);
+    let lambda = DRAG_LAMBDA * largest;
+    normal.add_diagonal(lambda);
+    let factors = numerics::LuFactors::factor(normal)?;
+
+    // One column of the projector for each parameter a pull names.
+    let mut named: Vec<usize> = pulls
+        .iter()
+        .flat_map(|pull| pull.row.iter().map(|&(p, _)| p))
+        .filter(|&p| col_of[p] != usize::MAX)
+        .collect();
+    named.sort_unstable();
+    named.dedup();
+    let mut projected: HashMap<usize, Vec<f64>> = HashMap::new();
+    for &p in &named {
+        let mut rhs = vec![0.0_f64; n];
+        rhs[col_of[p]] = lambda;
+        projected.insert(p, factors.solve(&mut rhs));
+    }
+
+    // Each pull's row of `A = R P`, dropped when the constraints hold it.
+    let mut rows: Vec<Vec<f64>> = Vec::new();
+    let mut errors: Vec<f64> = Vec::new();
+    for pull in pulls {
+        let mut a = vec![0.0_f64; n];
+        let mut norm2 = 0.0_f64;
+        for &(p, w) in pull.row {
+            norm2 += w * w;
+            if let Some(column) = projected.get(&p) {
+                for (entry, v) in a.iter_mut().zip(column) {
+                    *entry += w * v;
+                }
+            }
+        }
+        let free: f64 = pull
+            .row
+            .iter()
+            .map(|&(p, w)| match col_of[p] {
+                usize::MAX => 0.0,
+                k => w * a[k],
+            })
+            .sum();
+        if norm2 <= 0.0 || free <= DRAG_MOBILE_MIN * norm2 {
+            continue;
+        }
+        rows.push(a);
+        // `min_norm_step` solves `A x = −f`.
+        errors.push(-pull.error);
+    }
+    if rows.is_empty() {
+        return None;
+    }
+
+    // The shortest motion that moves the pulls as asked, as far as they
+    // can be moved: the rank truncation at [`DRAG_MOBILE_MIN`] drops the
+    // directions the constraints hold — among them what two cursors ask of
+    // one motion in two directions — and the solution lies in the row
+    // space of `A = R P`, which is the null space of the Jacobian as `λ`
+    // draws it.
+    let a = SparseJacobian::from_dense(&rows, n);
+    let step = numerics::min_norm_step_within(&a, &errors, DRAG_MOBILE_MIN)?;
+    let moved: Vec<(usize, f64)> = assembly
+        .free
+        .iter()
+        .zip(&step)
+        .filter(|(_, &d)| d != 0.0 && d.is_finite())
+        .map(|(&p, &d)| (p, d))
+        .collect();
+    (!moved.is_empty()).then_some(moved)
+}
+
 #[cfg(all(test, feature = "rayon"))]
 pub(crate) mod parallel_tests {
     use super::*;

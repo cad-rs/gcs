@@ -130,6 +130,43 @@ An assembly (`rigid3d::ConstraintSystem`) is edited the same way, with
 `measure` takes them, and a re-solve continues from the last result through
 `ConstraintSolver::solve_from`.
 
+## Dragging
+
+An under-constrained sketch is dragged in a session: the cursor is a soft
+target, the constraints stay hard.
+
+```rust
+let drag = sk.begin_drag(&[sk.line_end(right)]);
+let frame = sk.drag_to(&drag, &[(6.0, 4.0)]);   // once per frame
+assert!(frame.reached);                          // the cursor was within reach
+let result = sk.end_drag(drag);                  // a precise solve on release
+```
+
+Every frame takes the shortest motion among those the constraints leave
+free — the null space of the Jacobian where the geometry stands — that
+brings the dragged points as near their cursors as those motions allow, and
+then re-solves the components the drag touches, so the constraints are met
+exactly and nothing else moves further than that asked. Pinning the point
+at the cursor instead would add two equations, which a sketch with fewer
+free motions cannot take (a one-degree-of-freedom linkage cannot be dragged
+at all that way); writing the cursor into the point's parameters and
+re-solving keeps the constraints but does not follow the cursor, and a
+closed drag loop then ends in another configuration.
+
+Several points may be dragged at once. A point no constraint touches
+follows its cursor exactly; one the constraints hold does not move and
+costs no solve. `DragFrame` reports the status, residual and iterations of
+the frame's solves, how far the handles ended up from their cursors
+(`tracking_error`) and whether they arrived (`reached`): a cursor the
+constraints cannot reach leaves the geometry at the nearest configuration
+the frame found rather than deformed toward it. The session's state lives
+in the sketch and the token borrows nothing, so a drag can be diagnosed
+while it runs; beginning a drag ends any drag already running.
+
+`tests/drag.rs` holds the scripted drags this is measured on (a rectangle
+corner, a four-bar linkage, a chain of tangent circles, 200 entities in one
+component).
+
 ## Degrees of freedom and diagnosis
 
 `sk.diagnose()` runs a rank-revealing QR per connected component and

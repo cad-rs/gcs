@@ -569,6 +569,28 @@ Wall time of the metric gates in `tests/`, same machine.
   (it does at 200, in 35). It is a conditioning problem for a future
   trust-region step to win, and a good corpus case for it.
 
+## Drag frames (P5.1, 2026-11-15, release)
+
+Not criterion: `report_drag_frames` in `tests/drag.rs` times whole frames
+of the scripted drags (`cargo test --release --all-features --test drag --
+--ignored --nocapture`). Median / 99th percentile per frame, with what the
+same drag cost before the API existed:
+
+| drag | drag API | cursor into the parameters | temporary `Fixed` |
+|---|---|---|---|
+| rectangle corner, 5 entities | 0.017 / 0.043 ms | 0.004 / 0.005 | 0.009 / 0.010 |
+| four-bar linkage, 4 points | 0.013 / 0.025 ms | 0.012 / 0.014 | 0.059 / 0.098 |
+| tangent circle chain, 5 circles | 0.038 / 0.042 ms | 0.011 / 0.012 | 0.016 / 0.025 |
+| 40 free rectangles, 200 entities | 19.8 / 23.8 ms | 0.083 / 0.099 | 0.206 / 0.277 |
+
+The first three are inside the 1 ms frame budget P5.6 aims at and the last
+one is two orders of magnitude outside it. The frame's corrector is the
+ordinary solve, with the alias classes and the blocks of the structural
+plan; its predictor factors the normal equations of the whole component
+densely (about 600 columns there), once per substep. Reusing that
+factorisation between substeps and frames, and restricting it to the blocks
+the drag reaches, is P5.6.
+
 ## Not covered yet
 
 - No automatic regression gate: nothing fails when these numbers get worse.

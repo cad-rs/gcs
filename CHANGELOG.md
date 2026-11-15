@@ -292,6 +292,37 @@ through them from a host's side.
 
 ### Added
 
+- **Drag sessions** — `Sketch::begin_drag(handles)`, `drag_to(&drag,
+  cursors)` (and `drag_to_with`), `end_drag(drag)` (and `end_drag_with`),
+  with `Drag`, `DragFrame` and the module `drag`. The cursor is a soft
+  target, not a constraint: a frame takes the shortest motion among those
+  the constraints leave free (the null space of the Jacobian at the
+  current configuration) that brings the dragged points as near their
+  cursors as those motions allow, and then re-solves the components the
+  drag touches so the hard constraints are met exactly. A frame walks that
+  predictor–corrector pair until the cursors are reached or the walk stops
+  gaining; a substep whose solve does not converge never happened. Several
+  handles may be dragged at once, a point no constraint touches follows
+  its cursor exactly, a point the constraints hold does not move and costs
+  no solve, and the state of the session lives in the sketch, so the token
+  borrows nothing and a drag may be diagnosed while it runs.
+  `DragFrame::reached` tells a cursor that was reached from one the
+  constraints cannot reach — the geometry is then at the nearest
+  configuration the frame found, with the constraints still met, rather
+  than deformed toward the cursor.
+
+  What this is instead of: pinning the dragged point at the cursor with a
+  temporary `Fixed` adds two equations, so a sketch with fewer free
+  motions than that cannot be dragged at all (a one-degree-of-freedom
+  four-bar linkage: 95 of 97 frames did not converge); writing the cursor
+  into the point's parameters and re-solving converges but does not track
+  the cursor (the handle stayed 0.42 away on a rectangle, 1.8 to 3.5 on
+  the linkage) and leaves a closed drag loop in another configuration
+  (0.40 on the rectangle, 2.81 when dragged out of reach, and 47
+  chirality flips). With the API, the same scripted drags track to 3e-10,
+  come back to their configuration (2.8e-10 where the handle determines
+  it), and flip only where the cursor asks for the mirror image.
+  `tests/drag.rs` holds the drags and `report_drag_frames` the comparison.
 - `Sketch::status()`, `SpaceSketch::status()`, `rigid3d::assembly_status()`
   and the module `status`: one state per entity
   (`EntityStatus`: well-defined, under-defined, over-defined, unsolved,

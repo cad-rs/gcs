@@ -5,6 +5,7 @@ use std::sync::Arc;
 use glam::DVec2;
 
 use crate::constraint::Constraint;
+use crate::drag::{self, Drag, DragFrame};
 use crate::edit::{ConstraintState, SketchError};
 use crate::entity::{Entity, EntityId, EntityKind, PointRef};
 use crate::numerics::CoreOptions;
@@ -61,6 +62,14 @@ pub struct Sketch {
     /// What the last solve kept of the structure (see [`PlanCache`]).
     #[cfg_attr(feature = "serde", serde(skip))]
     plans: PlanCache,
+    /// The drag running on this sketch, if one is (see
+    /// [`Sketch::begin_drag`]). Not part of what a sketch is worth
+    /// storing: a drag is over by the time one is written out.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    drag: Option<crate::drag::Session>,
+    /// How many drags have been begun: the session a [`Drag`] token names.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    drags: u64,
 }
 
 /// The components of a sketch and what each one's solve needs that depends
@@ -106,6 +115,8 @@ impl Sketch {
             removed: Vec::new(),
             revision: 0,
             plans: PlanCache::default(),
+            drag: None,
+            drags: 0,
         }
     }
 
@@ -769,6 +780,160 @@ impl Sketch {
             &CoreOptions::from(options),
             |_, _| {},
         )
+    }
+
+    // ── Dragging ──────────────────────────────────────────────────────────────
+
+    /// Begin dragging `handles`, the points the cursor is to carry.
+    ///
+    /// The returned token is what [`Sketch::drag_to`] and
+    /// [`Sketch::end_drag`] take; it borrows nothing, so the sketch may be
+    /// diagnosed ([`Sketch::status`], [`Sketch::freedoms`]) while the drag
+    /// runs. Beginning a drag ends any drag already running on this
+    /// sketch.
+    ///
+    /// Nothing moves and nothing is solved here: a drag session is a frame
+    /// of reference for the frames that follow (which components the drag
+    /// reaches, which configuration to fall back to), not an edit. Dragging
+    /// a point that no constraint touches, or that is held by
+    /// [`Sketch::fix_param`], is allowed: the first follows its cursor
+    /// exactly, the second does not move at all.
+    ///
+    /// An arc's endpoint is derived from its centre, radius and angles
+    /// rather than stored, and is not a handle: in a debug build this
+    /// asserts, and in a release build such a handle drags the arc's
+    /// centre (what [`PointRef::param_indices`] gives for it).
+    pub fn begin_drag(&mut self, handles: &[PointRef]) -> Drag {
+        let mut pulled: Vec<usize> = Vec::with_capacity(handles.len() * 2);
+        for handle in handles {
+            debug_assert!(
+                !matches!(handle, PointRef::ArcStart(_) | PointRef::ArcEnd(_)),
+                "an arc endpoint is derived, not stored: drag the arc's centre"
+            );
+            let (x, y) = handle.param_indices(&self.entities);
+            pulled.push(x);
+            pulled.push(y);
+        }
+        let id = self.drags + 1;
+        self.drags = id;
+        let key = self.plan_key();
+        let eqs = SketchEquations::with_states(&self.entities, &self.constraints, &self.states);
+        let params = &self.params;
+        let plans = self.plans.get(key, || system::Plans::new(&eqs, params));
+        self.drag = Some(drag::Session::new(
+            id,
+            pulled,
+            self.revision,
+            &eqs,
+            &self.params,
+            &plans,
+        ));
+        Drag {
+            id,
+            handles: handles.to_vec(),
+        }
+    }
+
+    /// One frame of a drag: `cursors[i]` is where `drag.handles()[i]`
+    /// should be.
+    ///
+    /// The constraints are kept satisfied and the handles are taken as
+    /// near their cursors as the constraints allow, moving the rest of the
+    /// sketch as little as possible; see the [`crate::drag`] module for
+    /// how. Only the components the dragged points belong to are solved.
+    ///
+    /// A token from a drag that is over moves nothing and reports
+    /// [`crate::SolveStatus::Stalled`].
+    pub fn drag_to(&mut self, drag: &Drag, cursors: &[(f64, f64)]) -> DragFrame {
+        self.drag_to_with(drag, cursors, &SolveOptions::default())
+    }
+
+    /// [`Sketch::drag_to`] with explicit [`SolveOptions`] for the frame's
+    /// solves.
+    pub fn drag_to_with(
+        &mut self,
+        drag: &Drag,
+        cursors: &[(f64, f64)],
+        options: &SolveOptions,
+    ) -> DragFrame {
+        debug_assert_eq!(
+            cursors.len(),
+            drag.handles().len(),
+            "one cursor per dragged handle"
+        );
+        if !self
+            .drag
+            .as_ref()
+            .is_some_and(|session| session.id == drag.id)
+        {
+            let tracking_error = drag
+                .handles()
+                .iter()
+                .zip(cursors)
+                .map(|(&handle, &(x, y))| {
+                    let at = self.point_coords(handle);
+                    (at.x - x).hypot(at.y - y)
+                })
+                .fold(0.0_f64, f64::max);
+            let eqs = SketchEquations::with_states(&self.entities, &self.constraints, &self.states);
+            let residual = crate::numerics::rms(&system::eval_residuals(
+                &eqs,
+                &system::all_indices(&eqs),
+                &self.params,
+            ));
+            return DragFrame {
+                status: crate::numerics::SolveStatus::Stalled,
+                residual,
+                iterations: 0,
+                tracking_error,
+                reached: false,
+            };
+        }
+        let flat: Vec<f64> = cursors.iter().flat_map(|&(x, y)| [x, y]).collect();
+        let key = self.plan_key();
+        let eqs = SketchEquations::with_states(&self.entities, &self.constraints, &self.states);
+        let params = &self.params;
+        let plans = self.plans.get(key, || system::Plans::new(&eqs, params));
+        let revision = self.revision;
+        let session = self.drag.as_mut().expect("the session was just checked");
+        drag::frame(
+            &eqs,
+            &mut self.params,
+            &self.fixed,
+            &plans,
+            session,
+            revision,
+            &flat,
+            &|errors| {
+                errors
+                    .chunks(2)
+                    .map(|e| e[0].hypot(e[1]))
+                    .fold(0.0_f64, f64::max)
+            },
+            &CoreOptions::from(options),
+        )
+    }
+
+    /// End the drag and solve the whole sketch once more, from where the
+    /// drag left it.
+    ///
+    /// A token from a drag that is over ends nothing; the solve happens
+    /// either way.
+    pub fn end_drag(&mut self, drag: Drag) -> SolveResult {
+        self.end_drag_with(drag, &SolveOptions::default())
+    }
+
+    /// [`Sketch::end_drag`] with explicit [`SolveOptions`] for the final
+    /// solve.
+    pub fn end_drag_with(&mut self, drag: Drag, options: &SolveOptions) -> SolveResult {
+        if self
+            .drag
+            .as_ref()
+            .is_some_and(|session| session.id == drag.id)
+        {
+            self.drag = None;
+        }
+        self.solve_with(options)
     }
 
     // ── Convenience point-ref helpers ─────────────────────────────────────────

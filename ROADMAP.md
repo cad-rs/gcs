@@ -201,6 +201,20 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   and validate, with stable indices. Removed slots are never reclaimed: a
   `compact()` that returns the index remapping is missing, so a long
   editing session only grows.
+- **What a drag session still owes.** `begin_drag` / `drag_to` /
+  `end_drag` (2D) keep the constraints hard and track the cursor over the
+  motions they leave free, but: a frame flips where the cursor itself asks
+  for the mirrored configuration, or where a drag out of reach walks into
+  the configuration where a linkage is straight and crosses it (no
+  chirality signature and no shortened step yet, and no `BranchFlip`
+  status); an unreachable cursor stops where a substep stops gaining
+  rather than at the furthest point of the feasible set; a frame solves at
+  the full tolerance throughout, with no coarse pass while the cursor
+  moves; the dragged points carry no weights and the constraints no
+  priorities, so "move as little as possible" is one uniform norm; and the
+  3D-geometric and rigid-pose families have no entry points (the step
+  itself is family-generic, `system::tangent_step`, but takes no gauge, so
+  3D needs its effective columns before it can use it).
 - **Dimensions as objects.** A dimension's value lives inside its
   constraint. Sharing one value between several constraints, or binding it
   to a variable or an expression, needs a dimension table on top.

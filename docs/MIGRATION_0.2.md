@@ -142,6 +142,23 @@ let now = system.measure(index, &next.positions, &next.rotations);
 
 从动（参考）尺寸就是只量、不驱动的尺寸。宿主可以把它作为被抑制的约束放在草图里用 `measure(index)` 量，或者不加进草图、用新的 `sk.measure_constraint(&c)` 量。`sk.sensitivities(&driven)` 给出它随驱动尺寸怎么变：对它依赖的每个激活的尺寸类约束给出 `(编号, ∂m/∂v)`，即只改这一个驱动尺寸的值时从动值的变化率；从动尺寸不被约束一阶确定（不改任何驱动尺寸它也能变）时返回 `None`，这和 `what_if().would_add(&从动尺寸)` 说 `Independent` 完全对应。冗余的驱动尺寸不能单独改，导数按最小范数分给它们（例如同一个宽度给了两次，各得一半）。每次调用对涉及的分量做一次分解，请在求解后调用。3D 草图 `SpaceSketch::sensitivities`、装配 `rigid3d::assembly_sensitivities(system, positions, rotations, &driven)`（从动是 `Distance` / `Angle` 配合，驱动尺寸按槽位）相同。
 
+### 3.13 拖拽
+
+欠约束草图的拖拽不要再用“把光标写进被拖点的参数再求解”或“临时加一条 `Fixed` 到光标”：第一种手柄跟不住光标，拖一圈回不到原构形；第二种在手柄处自由度少于光标两维时直接过约束（1 自由度的四连杆 97 帧里 95 帧不收敛）。新的会话接口是
+
+```rust
+let drag = sk.begin_drag(&[sk.line_end(right)]);   // 轻量句柄，不借用草图
+loop {
+    let frame = sk.drag_to(&drag, &[(x, y)]);       // 每帧，热启动
+    // frame.reached / tracking_error / residual / status / iterations
+}
+let result = sk.end_drag(drag);                     // 松手后再精解一次
+```
+
+每帧分两层：先在约束留下的自由运动里（当前构形处雅可比的零空间）取让各手柄最贴近其光标的最短运动，再对拖拽涉及的分量热启动重解，把硬约束拉回零。硬约束永远满足；其余参数只动这一步所需的量；不收敛的子步当作没有发生。一次可以拖多个点（`cursors[i]` 对 `handles[i]`）；没有任何约束的点精确跟随光标；被约束按住的点不动，也不花一次求解。光标在约束能达到的范围之外时 `frame.reached` 是 `false`，几何停在这一帧找到的最近构形上（不会被拉变形）。会话状态存在草图里，句柄不借用，所以拖拽过程中照样可以 `diagnose()` / `status()` / `freedoms()`；再 `begin_drag` 会结束上一个会话，旧句柄变成过期句柄（拖不动任何东西，报 `Stalled`）。`drag_to_with` / `end_drag_with` 可以给这些求解指定 `SolveOptions`。
+
+圆弧的端点是由圆心、半径和角度算出来的，不是存储的点，不能作手柄（debug 构建里会断言；release 里会当成拖它的圆心）。还没有的：翻面守卫（P5.3，现在光标自己要求镜像构形时就会翻过去）、真正走到最远可行处（P5.5，现在是子步不再改善就停）、拖拽中的粗容差与帧预算（P5.6，200 实体一个分量现在每帧约 20 ms）、3D 草图与装配的入口（现在只有 2D）。
+
 ## 4. 这一版没有动的
 
 以下已知问题仍在，迁移时不要指望它们已经解决（都在 [CATCHUP_PLAN.md](CATCHUP_PLAN.md) 里排了阶段）：
