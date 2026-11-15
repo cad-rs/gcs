@@ -295,6 +295,41 @@ impl SpaceEntity {
     }
 }
 
+/// How small a length counts as collapsed, next to the drawing `params`
+/// describe: a millionth of its span, and never zero.
+pub(crate) fn collapse_tolerance(params: &[f64]) -> f64 {
+    let (lo, hi) = params
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+            (lo.min(v), hi.max(v))
+        });
+    1.0e-6 * if hi > lo { hi - lo } else { 1.0 }
+}
+
+/// Whether an entity has collapsed: a line of no length, a plane normal or
+/// cylinder axis of no length, a sphere, cylinder, circle or arc of no
+/// radius. `p` is the entity's own parameters and `tiny` what counts as
+/// zero (see [`collapse_tolerance`]).
+///
+/// Such a configuration satisfies equations that the geometry it stands
+/// for cannot: every relation between two directions is stated as a cross
+/// product, which the zero vector meets whatever it is crossed with, so
+/// two plane normals that contradict each other are "met" by a plane with
+/// no normal at all. A solve that ends there has solved nothing, and a
+/// conflict search does not count it as a solution either.
+pub(crate) fn has_collapsed(kind: SpaceEntityKind, p: &[f64], tiny: f64) -> bool {
+    let norm = |a: &[f64]| a.iter().map(|v| v * v).sum::<f64>().sqrt();
+    match kind {
+        SpaceEntityKind::SpaceLine => norm(&[p[3] - p[0], p[4] - p[1], p[5] - p[2]]) < tiny,
+        SpaceEntityKind::Plane => norm(&p[0..3]) < tiny,
+        SpaceEntityKind::Sphere | SpaceEntityKind::SpaceCircle | SpaceEntityKind::SpaceArc => {
+            p[3].abs() < tiny
+        }
+        SpaceEntityKind::Cylinder => norm(&p[3..6]) < tiny || p[6].abs() < tiny,
+        SpaceEntityKind::SpacePoint | SpaceEntityKind::SpaceSpline => false,
+    }
+}
 /// A reference to a specific 3D point within an entity.
 ///
 /// Used by constraints that operate on points.

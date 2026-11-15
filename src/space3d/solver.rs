@@ -16,7 +16,7 @@
 use glam::DVec3;
 
 use crate::edit::ConstraintState;
-use crate::numerics::{self, CoreOptions, SolveOptions, SolveResult, SolveStatus};
+use crate::numerics::{self, CoreOptions, FailurePolicy, SolveOptions, SolveResult, SolveStatus};
 use crate::space3d::constraint::SpaceConstraint;
 use crate::space3d::entity::{SpaceEntity, SpaceEntityId, SpaceEntityKind};
 use crate::system::{self, Equations, SparseRow};
@@ -314,7 +314,7 @@ fn normalize_plane_at(params: &mut [f64], idx: [usize; 4]) {
 ///
 /// Uses the default [`SolveOptions`]: a component that does not converge
 /// gets its starting parameters back (see
-/// [`FailurePolicy`][crate::numerics::FailurePolicy]). Planes are still
+/// [`FailurePolicy`]). Planes are still
 /// left in their normalized `(unit normal, offset)` representation, which
 /// describes the same plane.
 pub fn solve_space(
@@ -413,6 +413,7 @@ pub(crate) fn solve_equations(
 ) -> SolveResult {
     let entities = eqs.entities;
     let signature = crate::branch::signature(eqs, &system::all_indices(eqs), params);
+    let before: Vec<f64> = params.to_vec();
     // Plane representation is pinned only for the planes the solved
     // components touched (bitwise guarantee for untouched components).
     let mut result = system::solve_components(
@@ -424,6 +425,9 @@ pub(crate) fn solve_equations(
         &CoreOptions::from(options),
         |params, touched| normalize_planes_touched(params, entities, fixed, touched),
     );
+    // A component that only met its equations by collapsing geometry has
+    // not solved them: that component is a failed solve.
+    reject_collapsed(eqs, params, &before, components, only, &mut result, options);
     // On another branch than it started on: a tangency to the other side
     // of its plane, an axis turned end for end (see [`crate::branch`]).
     // The solution found is kept; it is a drag that puts such a thing
@@ -435,6 +439,68 @@ pub(crate) fn solve_equations(
         result.status = result.status.max(SolveStatus::BranchFlip);
     }
     result
+}
+
+/// Undo and fail the components whose solve collapsed a piece of
+/// geometry: an entity that had a length, a normal, an axis or a radius
+/// and now has none.
+///
+/// Every relation between two directions is stated as a cross product,
+/// which the zero vector meets whatever it is crossed with, so a solve of
+/// two contradictory plane normals used to "converge" in one iteration at
+/// a residual of zero, on a plane with no normal at all. Such a
+/// configuration is not a solution of anything the geometry stands for.
+/// The component is put back where it started, as a failed solve is
+/// (unless the options ask for [`FailurePolicy::KeepLast`]), and the
+/// result says [`SolveStatus::Stalled`] — the system cannot be solved from
+/// here. A piece that was already collapsed before the solve is left
+/// alone: nothing was broken by this solve, and a host that authored it
+/// that way keeps what it had.
+fn reject_collapsed(
+    eqs: &SpaceEquations<'_>,
+    params: &mut [f64],
+    before: &[f64],
+    components: &[Vec<usize>],
+    only: Option<&[usize]>,
+    result: &mut SolveResult,
+    options: &SolveOptions,
+) {
+    let entities = eqs.entities;
+    let tiny = crate::space3d::entity::collapse_tolerance(params);
+    let was_tiny = crate::space3d::entity::collapse_tolerance(before);
+    let mut collapsed = false;
+    for (ordinal, group) in components.iter().enumerate() {
+        if only.is_some_and(|selected| !selected.contains(&ordinal)) {
+            continue;
+        }
+        let touched = system::touched_params(eqs, group, params);
+        if touched.is_empty() {
+            continue;
+        }
+        let broke = entities.iter().any(|entity| {
+            let start = entity.param(0);
+            let range = start..start + entity.param_count();
+            if !range.clone().any(|p| touched.binary_search(&p).is_ok()) {
+                return false;
+            }
+            crate::space3d::entity::has_collapsed(entity.kind, &params[range.clone()], tiny)
+                && !crate::space3d::entity::has_collapsed(entity.kind, &before[range], was_tiny)
+        });
+        if broke {
+            collapsed = true;
+            if options.on_failure == FailurePolicy::Restore {
+                for &p in &touched {
+                    params[p] = before[p];
+                }
+            }
+        }
+    }
+    if collapsed {
+        result.converged = false;
+        result.status = result.status.max(SolveStatus::Stalled);
+        let f = system::eval_residuals(eqs, &system::all_indices(eqs), params);
+        result.residual = numerics::rms(&f);
+    }
 }
 
 /// Residual report for the current parameters without iterating — the

@@ -935,19 +935,11 @@ impl SpaceSketch {
             .any(|e| {
                 let entity = &self.entities[e];
                 let start = entity.param(0);
-                let p = &self.params[start..start + entity.param_count()];
-                let norm = |a: &[f64]| a.iter().map(|v| v * v).sum::<f64>().sqrt();
-                match entity.kind {
-                    SpaceEntityKind::SpaceLine => {
-                        norm(&[p[3] - p[0], p[4] - p[1], p[5] - p[2]]) < tiny
-                    }
-                    SpaceEntityKind::Plane => norm(&p[0..3]) < tiny,
-                    SpaceEntityKind::Sphere
-                    | SpaceEntityKind::SpaceCircle
-                    | SpaceEntityKind::SpaceArc => p[3].abs() < tiny,
-                    SpaceEntityKind::Cylinder => norm(&p[3..6]) < tiny || p[6].abs() < tiny,
-                    SpaceEntityKind::SpacePoint | SpaceEntityKind::SpaceSpline => false,
-                }
+                crate::space3d::entity::has_collapsed(
+                    entity.kind,
+                    &self.params[start..start + entity.param_count()],
+                    tiny,
+                )
             })
     }
 

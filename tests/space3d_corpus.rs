@@ -11,7 +11,7 @@ use std::time::Instant;
 use rcad_gcs::space3d::constraint::SpaceConstraint;
 use rcad_gcs::space3d::entity::SpacePointRef;
 use rcad_gcs::space3d::SpaceSketch;
-use rcad_gcs::EntityStatus;
+use rcad_gcs::{EntityStatus, SolveStatus};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -1024,4 +1024,61 @@ fn space3d_system_bench() {
     let _ = sk.solve_incremental(&[]);
     let incremental_us = t2.elapsed().as_secs_f64() * 1e6;
     println!("empty incremental selection: {incremental_us:.0} us");
+}
+
+/// Two plane normals that cannot both hold are not "met" by a plane with
+/// no normal at all: every relation between directions is a cross
+/// product, which the zero vector satisfies, and a solve used to end
+/// there in one iteration at a residual of zero. Now the component is put
+/// back and the solve says it is stalled.
+#[test]
+fn a_solve_does_not_collapse_a_plane_normal() {
+    let mut sk = SpaceSketch::new();
+    let plane = sk.add_plane(0.3, -0.4, 0.5, 1.2);
+    for (nx, ny, nz) in [(0.0, 0.0, 1.0), (1.0, 0.0, 0.0)] {
+        sk.add_constraint(SpaceConstraint::PlaneNormal { plane, nx, ny, nz });
+    }
+    let authored = plane_normal(&sk, plane);
+    let result = sk.solve();
+    assert!(
+        !result.converged,
+        "contradictory normals cannot be solved: {:?} {:.3e}",
+        result.status, result.residual
+    );
+    assert_eq!(result.status, SolveStatus::Stalled);
+    assert!(
+        result.residual > 1e-3,
+        "the reported residual is the one left behind: {:.3e}",
+        result.residual
+    );
+    let now = plane_normal(&sk, plane);
+    assert_eq!(
+        now, authored,
+        "a failed solve puts the plane back where it was"
+    );
+    // And the conflict is still found, as it was.
+    assert!(!sk.diagnose().conflicting.is_empty());
+}
+
+/// A plane that was authored with no normal at all is left as it is: this
+/// solve did not break it, and a host that built it that way keeps what it
+/// had.
+#[test]
+fn a_plane_authored_without_a_normal_is_left_alone() {
+    let mut sk = SpaceSketch::new();
+    let plane = sk.add_plane(0.0, 0.0, 0.0, 0.0);
+    let point = sk.add_point(1.0, 2.0, 3.0);
+    sk.add_constraint(SpaceConstraint::Fixed {
+        point: SpacePointRef::Point(point),
+        x: 1.0,
+        y: 2.0,
+        z: 3.0,
+    });
+    let result = sk.solve();
+    assert!(
+        result.converged,
+        "the point's own constraint is satisfiable: {:?}",
+        result.status
+    );
+    assert_eq!(plane_normal(&sk, plane), (0.0, 0.0, 0.0));
 }

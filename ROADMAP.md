@@ -164,11 +164,6 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   solve stalls); a retry from a perturbed start would tell the two apart.
   The cost is a solve per member of each set, not measured on large
   sketches; QuickXplain would need fewer solves for large components.
-- **The 3D solve accepts collapsed geometry.** Two plane-normal
-  constraints that disagree are "solved" in one iteration by shrinking the
-  normal to zero (both cross products vanish), and the solve reports
-  `Converged`. `SpaceSketch::conflicts` does not count such a solve, but
-  `solve()` itself still accepts it.
 - **Diagnosis away from the current point.** The analysis linearizes at the
   current parameters, so a configuration that is singular only where it
   stands (exact tangency) reads as redundant. The 2D `status()` tells the

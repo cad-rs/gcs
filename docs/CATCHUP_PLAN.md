@@ -880,7 +880,7 @@ P1 期间在计划之外查出并修掉的原有缺陷有三处，都是靠“�
 | 步骤 | 状态 | 说明 |
 |---|---|---|
 | P5.3 手性守卫 / `BranchFlip` | 完成（三族） | 见下 |
-| 旁支①：3D 拒绝退化收敛 | 未做 | 还在 ROADMAP；会改变求解结果，要单独提交并过语料 |
+| 旁支①：3D 拒绝退化收敛 | 完成（见 §13.6） | 单独提交，见下 |
 
 **用户定（2026-11-15）**：① 签名**每次从几何算**、会话开始时取基线（不进 `Constraint`、不动序列化）；② 新增 `SolveStatus::BranchFlip`；③ 缩步也避不开时**回滚到最后一个同签名的构形**；④ **三族都做**。
 
@@ -898,3 +898,11 @@ P1 期间在计划之外查出并修掉的原有缺陷有三处，都是靠“�
 - `SolveStatus::BranchFlip` 排在 `ConvergedToPrecision` 与 `MaxIterations` 之间；它是**唯一一个 `converged` 为 `true` 却不在那两个"已收敛"状态里的**，`converged` 的文档和 CHANGELOG 的 Changed 都写明了。
 
 **验证**：`tests/branch.rs` 4 个（2D 把宽度驱动到零的另一边 → 报 `BranchFlip` 且保留镜像解；同一个草图把宽度改成 6 / 40 / 0.5 → 一直 `Converged`；3D 两球内切、把大球半径驱动到比小球小 → 报；装配里两个重合配合把物体从 150° 转回来、`Parallel` 的侧翻过去 → 报。**整半圈 180° 的起点求解 `Stalled`**，所以夹具取 150°，已在测试里注明）。`tests/drag.rs` 新增 2 个（矩形角拖过零宽度 → 报 `BranchFlip`、宽度不变负、光标回来后照样跟；圆与固定轨线相切、把圆心拖到轨线另一侧 → 报，圆不会穿过去），并且把原先"断言会翻"的 `rect-corner-through-zero` 改成断言"被拒绝过"（`reachable` 也从 `true` 改成 `false`：光标要的是镜像构形，现在到不了了）。四连杆被拉出可达范围那一例**仍然断言会翻**（肘没有见证，等 P5.5）。**变异检查**：`turned_over` 恒假 → 拖拽 3 个 + branch 3 个失败；去掉 `Horizontal` 的量 → 拖拽 3 个 + branch 1 个失败；去掉装配的比对 → branch 1 个失败。
+
+### 13.6 旁支①：3D 不再把塌掉的几何当解（完成，2026-11-15）
+
+**先量**：两条矛盾的 `PlaneNormal` → `Converged`、`converged = true`、残差 0、1 次迭代、法向 (0,0,0)。对照着量了另外两种：一个球给两个半径 → `Stalled`（对）；一条线给两个长度 → `Stalled`（对）。所以塌掉只发生在"方向类"的关系上：它们都写成叉积，零向量和谁的叉积都是零。
+
+**做法**：判据抽成 `space3d::entity::has_collapsed(kind, p, tiny)` + `collapse_tolerance(params)`（参数跨度的百万分之一），`SpaceSketch::has_degenerate_geometry`（P4.4 的冲突搜索用的那个）改成调用它，求解器也用它。`space3d::solver::solve_equations` 解完后逐分量检查：这次求解让某个实体从"有"变成"没有"（长度 / 法向 / 轴 / 半径），就把这个分量的参数放回求解前（`FailurePolicy::Restore` 时），`converged = false`、`status.max(Stalled)`、`residual` 重算。**求解之前就塌着的不算**——这次求解没弄坏它。
+
+**验证**：`tests/space3d_corpus.rs` 新增 2 个（矛盾法向：不收敛、`Stalled`、残差 > 1e-3、平面放回原处、冲突照样能找到；本来就没有法向的平面：另一个分量照样解、法向留着不动）。**变异检查**：去掉这次拒绝 → 1 个失败。两份语料和其余 32 个测试二进制全过，指标不变（3D 语料里没有别的例子会被这条改动碰到）。

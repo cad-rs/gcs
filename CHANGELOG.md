@@ -661,6 +661,19 @@ through them from a host's side.
 
 ### Fixed
 
+- **A 3D solve no longer accepts collapsed geometry.** Every relation
+  between two directions is stated as a cross product, which the zero
+  vector satisfies whatever it is crossed with, so two plane-normal
+  constraints that disagree were "solved" in one iteration at a residual
+  of zero — on a plane with no normal at all. A component whose solve
+  leaves an entity collapsed (a line of no length, a plane normal or
+  cylinder axis of no length, a sphere, cylinder, circle or arc of no
+  radius) is now a failed solve: the component is put back where it
+  started, as a failed solve is, and the status is `Stalled`. Geometry
+  that was already collapsed before the solve is left alone — this solve
+  did not break it. `SpaceSketch::conflicts` already did not count such a
+  solve as a solution and is unchanged; it now shares the test with the
+  solver.
 - **`mobility()` could report a held parameter as movable** (2D, 3D and
   assemblies). Its elimination chose each pivot column over all the rows
   left but then eliminated with whatever row stood at the pivot position,
