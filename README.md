@@ -174,6 +174,17 @@ so the solutions of a sketch do not change with it.
 corner, a four-bar linkage, a chain of tangent circles, 200 entities in one
 component).
 
+A drag will not turn the geometry inside out. Every constraint that has a
+side to be on — which side of its line a circle is tangent, which way an
+angle opens, which way round a horizontal line runs — contributes a sign,
+and a drag holds the configuration to the signs it started with: a step
+that would cross over is shortened, and when even the shortest step would,
+the frame puts back the last configuration on this side and reports
+`SolveStatus::BranchFlip`. The constraints are satisfied either way, so
+such a frame still counts as converged. A solve reports the same status
+when a dimension change comes out mirrored, and keeps the solution it
+found.
+
 ## Soft constraints
 
 A constraint can be a wish rather than a requirement:

@@ -281,6 +281,40 @@ impl Equations for RigidEquations<'_> {
         self.with_evaluation(index, params, |rj, _| out.copy_from_slice(&rj.r));
     }
 
+    fn branch_witnesses(&self, index: usize, params: &[f64], out: &mut Vec<f64>) {
+        if self.definition[index] || !self.system.is_active(index) {
+            return;
+        }
+        // A mate that holds "either way round" has two branches a body can
+        // be assembled on, half a turn apart: the cosine between the two
+        // mated directions says which, and is scale-free already.
+        let aligned = |body1: usize, dir1: DVec3, body2: usize, dir2: DVec3| {
+            let a = (rotation(params, body1) * dir1).normalize_or_zero();
+            let b = (rotation(params, body2) * dir2).normalize_or_zero();
+            a.dot(b)
+        };
+        match self.system.constraints[index].kind {
+            ConstraintKind::Parallel {
+                body1,
+                dir1,
+                body2,
+                dir2,
+            } => out.push(aligned(body1, dir1, body2, dir2)),
+            ConstraintKind::Concentric {
+                body1,
+                dir1,
+                body2,
+                dir2,
+                ..
+            } => out.push(aligned(body1, dir1, body2, dir2)),
+            // The rest hold on one connected set of poses: a fixed body, a
+            // coincidence, a distance, a point on a plane; and an angle
+            // between two directions in space has no sense to turn over,
+            // there being no third direction to measure it against.
+            _ => {}
+        }
+    }
+
     fn jacobian(&self, index: usize, params: &[f64], out: &mut [SparseRow]) {
         if self.definition[index] || !self.system.is_active(index) {
             return;

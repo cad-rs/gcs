@@ -552,6 +552,7 @@ impl Sketch {
         if levels.is_empty() {
             return self.solve_selected_with(None, options);
         }
+        let signature = self.branch_signature();
         // The constraints that have to hold, first and on their own.
         let mut result = self.solve_up_to(0, options);
         if !result.converged {
@@ -571,7 +572,17 @@ impl Sketch {
             result = attempt;
         }
         result.satisfied_level = satisfied;
+        if crate::branch::turned_over(&signature, &self.branch_signature()) {
+            result.status = result.status.max(crate::numerics::SolveStatus::BranchFlip);
+        }
         result
+    }
+
+    /// Which branch the geometry is on (see [`crate::branch`]): the side
+    /// of every quantity the active constraints watch.
+    fn branch_signature(&self) -> Vec<i8> {
+        let eqs = self.equations();
+        crate::branch::signature(&eqs, &system::all_indices(&eqs), &self.params)
     }
 
     /// The priority levels above zero that some active constraint has,
@@ -841,16 +852,23 @@ impl Sketch {
     }
 
     /// [`Sketch::solve_selected`] with explicit [`SolveOptions`].
+    ///
+    /// Reports [`SolveStatus::BranchFlip`](crate::SolveStatus::BranchFlip)
+    /// when the solution is on another branch than the geometry was —
+    /// a dimension changed by so much that the sketch came out mirrored —
+    /// and keeps that solution; it is a drag that puts such a thing back
+    /// (see [`crate::drag`]).
     pub fn solve_selected_with(
         &mut self,
         only: Option<&[usize]>,
         options: &SolveOptions,
     ) -> SolveResult {
+        let signature = self.branch_signature();
         let key = self.plan_key();
         let eqs = SketchEquations::with_states(&self.entities, &self.constraints, &self.states);
         let params = &self.params;
         let plans = self.plans.get(key, || system::Plans::new(&eqs, params));
-        system::solve_planned(
+        let mut result = system::solve_planned(
             &eqs,
             &mut self.params,
             &self.fixed,
@@ -858,7 +876,11 @@ impl Sketch {
             only,
             &CoreOptions::from(options),
             |_, _| {},
-        )
+        );
+        if crate::branch::turned_over(&signature, &self.branch_signature()) {
+            result.status = result.status.max(crate::numerics::SolveStatus::BranchFlip);
+        }
+        result
     }
 
     // ── Dragging ──────────────────────────────────────────────────────────────

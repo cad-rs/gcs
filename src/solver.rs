@@ -8,7 +8,9 @@
 
 use crate::constraint::Constraint;
 use crate::edit::ConstraintState;
-use crate::entity::{Entity, EntityKind};
+use glam::DVec2;
+
+use crate::entity::{Entity, EntityId, EntityKind, PointRef};
 use crate::numerics::CoreOptions;
 use crate::system::{self, Equations, SparseRow};
 
@@ -74,6 +76,99 @@ impl Equations for SketchEquations<'_> {
     fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]) {
         if self.is_active(index) {
             self.constraints[index].residuals(params, self.entities, out);
+        }
+    }
+
+    fn branch_witnesses(&self, index: usize, params: &[f64], out: &mut Vec<f64>) {
+        if !self.is_active(index) {
+            return;
+        }
+        // Every quantity below is a ratio of two lengths of the same
+        // geometry, so it reads the same at any scale; a degenerate piece
+        // (a line of no length, a circle of no radius) gives zero, which
+        // is "no side" and holds nothing.
+        let direction = |line: EntityId| {
+            let e = &self.entities[line];
+            let d = DVec2::new(
+                params[e.param(2)] - params[e.param(0)],
+                params[e.param(3)] - params[e.param(1)],
+            );
+            d.normalize_or_zero()
+        };
+        let start_of = |line: EntityId| {
+            let e = &self.entities[line];
+            DVec2::new(params[e.param(0)], params[e.param(1)])
+        };
+        let at = |point: PointRef| {
+            let (x, y) = point.point_coords(params, self.entities);
+            DVec2::new(x, y)
+        };
+        let radius = |circle: EntityId| params[self.entities[circle].param(2)];
+        let centre = |circle: EntityId| {
+            let e = &self.entities[circle];
+            DVec2::new(params[e.param(0)], params[e.param(1)])
+        };
+        let over = |value: f64, scale: f64| {
+            if scale > 0.0 {
+                value / scale
+            } else {
+                0.0
+            }
+        };
+
+        match self.constraints[index] {
+            // Which side of the line the circle sits on: the signed
+            // distance from its centre to the line over its radius, which
+            // a satisfied tangency makes ±1.
+            Constraint::Tangent { circle, line } => out.push(over(
+                direction(line).perp_dot(centre(circle) - start_of(line)),
+                radius(circle),
+            )),
+            // An internal tangency has the smaller circle inside the
+            // larger one; which is which can turn over, and the residual
+            // `|r1 − r2|` holds either way. An external one has no sides.
+            Constraint::CircleCircleTangent {
+                c1,
+                c2,
+                external: false,
+            }
+            | Constraint::ArcArcTangent {
+                a1: c1,
+                a2: c2,
+                external: false,
+            } => out.push(over(
+                radius(c1) - radius(c2),
+                radius(c1).abs() + radius(c2).abs(),
+            )),
+            // Which way the angle opens: the residual `sin(angle − θ)`
+            // holds at `θ` and at `θ + π` alike.
+            Constraint::Angle { l1, l2, .. } => out.push(direction(l1).perp_dot(direction(l2))),
+            // Parallel: the same way round or opposite. Perpendicular:
+            // which of the two quarter turns.
+            Constraint::Parallel(a, b) => out.push(direction(a).dot(direction(b))),
+            Constraint::Perpendicular(a, b) => out.push(direction(a).perp_dot(direction(b))),
+            // Which way round the line runs: a horizontal line is
+            // horizontal pointing either way, and a rectangle held by
+            // horizontal and vertical sides has a mirrored twin on the
+            // far side of zero width.
+            Constraint::Horizontal(line) => out.push(direction(line).x),
+            Constraint::Vertical(line) => out.push(direction(line).y),
+            // Which side of the mirror the first point is on.
+            Constraint::Symmetric { p1, p2, line } => {
+                let (p1, p2) = (at(p1), at(p2));
+                out.push(over(
+                    direction(line).perp_dot(p1 - start_of(line)),
+                    0.5 * (p1 - p2).length(),
+                ));
+            }
+            // The rest hold on one connected set of configurations:
+            // distances, lengths, radii, coincidences, points on lines
+            // and circles, equal lengths and radii, midpoints, concentric
+            // centres, a point symmetric about another, external
+            // tangencies. (An arc's sweep direction is a property of the
+            // entity rather than of a constraint, and no 2D constraint
+            // holds it; it is not watched.)
+            _ => {}
         }
     }
 

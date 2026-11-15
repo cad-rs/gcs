@@ -203,11 +203,11 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   editing session only grows.
 - **What a drag session still owes.** `begin_drag` / `drag_to` /
   `end_drag` (2D) keep the constraints hard and track the cursor over the
-  motions they leave free, but: a frame flips where the cursor itself asks
-  for the mirrored configuration, or where a drag out of reach walks into
-  the configuration where a linkage is straight and crosses it (no
-  chirality signature and no shortened step yet, and no `BranchFlip`
-  status); an unreachable cursor stops where a substep stops gaining
+  motions they leave free and hold the configuration to the branch it
+  started on, but: a drag out of reach can still walk into the
+  configuration where a linkage is straight and cross it, since an elbow
+  is a mirror image with no constraint of its own for the chirality
+  signature to witness; an unreachable cursor stops where a substep stops gaining
   rather than at the furthest point of the feasible set; a frame solves at
   the full tolerance throughout, with no coarse pass while the cursor
   moves; a soft constraint (a priority level) is not read by a drag at

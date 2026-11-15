@@ -35,6 +35,9 @@ pub struct SolveResult {
     /// numbers it is computed from allow
     /// ([`SolveStatus::ConvergedToPrecision`]). A component with no free
     /// parameter is judged on the residual it has.
+    ///
+    /// [`SolveStatus::BranchFlip`] also leaves this `true`: the geometry
+    /// is a solution, it is just not the one that was asked for.
     pub converged: bool,
     /// RMS residual of the parameters the solve left behind. After a failed
     /// solve under [`FailurePolicy::Restore`] this is the residual of the
@@ -79,6 +82,22 @@ pub enum SolveStatus {
     /// solve counts as converged. To see this status less often, keep
     /// coordinates near the origin or pass a tolerance that fits the model.
     ConvergedToPrecision,
+    /// The constraints are satisfied, but the configuration is not the one
+    /// that was asked for: it is on another branch of the solution set, or
+    /// it stopped at the edge of the one it started on.
+    ///
+    /// A drag refuses to turn the geometry inside out — a rectangle
+    /// through zero width, a tangency to the other side of its line — so
+    /// a frame whose cursor asks for that shortens its step and, when
+    /// even the shortest step would cross, puts back the last
+    /// configuration on this side of it and says so here. The geometry is
+    /// then a solution of the constraints and `converged` is `true`; what
+    /// this status says is that the cursor was not followed all the way.
+    /// A solve reports it when a dimension change came out on another
+    /// branch, and keeps the solution it found (see
+    /// `Sketch::set_constraint_priority` for how levels are reported, and
+    /// the `drag` module for the frame-by-frame guard).
+    BranchFlip,
     /// The iteration limit was reached while the residual was still above
     /// the tolerance and still falling.
     MaxIterations,

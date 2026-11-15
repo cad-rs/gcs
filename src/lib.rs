@@ -49,6 +49,7 @@
 
 mod alias;
 mod autodim;
+mod branch;
 pub mod conflict;
 pub mod constraint;
 pub mod diagnosis;

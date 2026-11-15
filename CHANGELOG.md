@@ -15,6 +15,13 @@ through them from a host's side.
 
 ### Changed
 
+- **`SolveStatus` has a new variant, `BranchFlip`**, ordered between
+  `ConvergedToPrecision` and `MaxIterations`: the constraints are satisfied
+  but the configuration is not the one that was asked for. It is the one
+  status that leaves `SolveResult::converged` `true` without being one of
+  the two converged ones, so code that reads `status` rather than
+  `converged` to decide whether a solve worked should take it as a success.
+  Matching `SolveStatus` exhaustively now has one more arm.
 - **`SolveResult` carries a new field, `satisfied_level`** (the 2D and
   3D-geometric families): the highest constraint priority level the solve
   left satisfied. It is 0 for every solve of a sketch without priorities,
@@ -312,6 +319,31 @@ through them from a host's side.
   met puts back the level below whatever `FailurePolicy` says, since not
   meeting a wish is not a failed solve. A drag does not read levels: while
   one runs, every active constraint is kept.
+- **A drag will not turn the geometry inside out** — the chirality guard,
+  over all three families. Each constraint that has a side to be on
+  contributes a signed, scale-free quantity — which side of its line a
+  circle is tangent on, which way an angle opens, which way round a line a
+  horizontal constraint holds, which of two internally tangent circles is
+  inside, which way a mated axis points — and the signs of those are the
+  signature of the configuration. A drag takes the signature of the
+  configuration it starts from and holds every frame to it: a step that
+  would turn one over is halved, up to six times, and when even the
+  shortest step crosses, the frame puts back the last configuration on this
+  side and reports `SolveStatus::BranchFlip`. The constraints are satisfied
+  throughout, so such a frame is still `converged`; what it says is that
+  the cursor was not followed all the way. A solve (2D, 3D-geometric and
+  the rigid-pose family) compares the signature before and after and
+  reports the same status when a dimension change came out on another
+  branch, keeping the solution it found: a dimension driven to the other
+  side of zero mirrors the sketch and now says so.
+
+  What a signature does not cover, and why: two solutions with no
+  constraint of their own to tell them apart — a four-bar linkage's elbow,
+  which turns over as the linkage straightens. Measured on the scripted
+  drags, crossing it is a perfectly continuous motion (the geometry moves
+  0.38 times the cursor's own travel in that frame, against a median of
+  2.0), so no continuity test separates it either; what will keep a drag
+  off it is not walking into the straight configuration in the first place.
 ### Added
 
 - **Weights for dragging** — `Sketch::set_entity_weight(id, weight)` and

@@ -133,6 +133,18 @@ pub(crate) trait Equations: SharedAcrossThreads {
     fn debug_check_jacobian(&self) -> bool {
         true
     }
+
+    /// The signed quantities of constraint `index` whose sign a continuous
+    /// motion of the geometry is not meant to change — which side of its
+    /// line a circle is tangent on, which way an angle opens, which way
+    /// round a line a horizontal constraint holds — pushed onto `out`.
+    ///
+    /// Nothing by default, and nothing for a constraint whose solutions
+    /// are one connected set (a distance, a radius, a coincidence): there
+    /// is no other side for those to come out on. Each quantity must be
+    /// scale-free, so that a sign is read from it the same way whatever
+    /// the size of the drawing (see [`crate::branch`]).
+    fn branch_witnesses(&self, _index: usize, _params: &[f64], _out: &mut Vec<f64>) {}
 }
 
 /// The indices of every constraint, in order.

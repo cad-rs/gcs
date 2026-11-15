@@ -13,10 +13,12 @@
 //! iterates only the components an edit landed in — untouched components
 //! keep their parameters bitwise.
 
+use glam::DVec3;
+
 use crate::edit::ConstraintState;
 use crate::numerics::{self, CoreOptions, SolveOptions, SolveResult, SolveStatus};
 use crate::space3d::constraint::SpaceConstraint;
-use crate::space3d::entity::{SpaceEntity, SpaceEntityKind};
+use crate::space3d::entity::{SpaceEntity, SpaceEntityId, SpaceEntityKind};
 use crate::system::{self, Equations, SparseRow};
 
 pub use crate::numerics::{FD_H, LAMBDA, MAX_ITER, PIVOT_TOL, RESIDUAL_TOL, SOLVER_NORM_TOL};
@@ -78,6 +80,116 @@ impl Equations for SpaceEquations<'_> {
     fn residuals(&self, index: usize, params: &[f64], out: &mut [f64]) {
         if self.is_active(index) {
             self.constraints[index].residuals(params, self.entities, out);
+        }
+    }
+
+    fn branch_witnesses(&self, index: usize, params: &[f64], out: &mut Vec<f64>) {
+        if !self.is_active(index) {
+            return;
+        }
+        // Scale-free quantities, as in the 2D family: a ratio of lengths
+        // of the same geometry, or the cosine of an angle between unit
+        // directions. Degenerate geometry gives zero, which is no side.
+        let line_direction = |line: SpaceEntityId| {
+            let e = &self.entities[line];
+            DVec3::new(
+                params[e.param(3)] - params[e.param(0)],
+                params[e.param(4)] - params[e.param(1)],
+                params[e.param(5)] - params[e.param(2)],
+            )
+            .normalize_or_zero()
+        };
+        let plane_normal = |plane: SpaceEntityId| {
+            let e = &self.entities[plane];
+            DVec3::new(params[e.param(0)], params[e.param(1)], params[e.param(2)])
+                .normalize_or_zero()
+        };
+        // Only a cylinder has an axis; a sphere, which the same
+        // constraints accept, has none and nothing to turn over.
+        let axis_direction = |id: SpaceEntityId| {
+            let e = &self.entities[id];
+            if e.kind != SpaceEntityKind::Cylinder {
+                return DVec3::ZERO;
+            }
+            DVec3::new(params[e.param(3)], params[e.param(4)], params[e.param(5)])
+                .normalize_or_zero()
+        };
+        let radius_of = |id: SpaceEntityId, offset: usize| params[self.entities[id].param(offset)];
+        let over = |value: f64, scale: f64| {
+            if scale > 0.0 {
+                value / scale
+            } else {
+                0.0
+            }
+        };
+
+        match self.constraints[index] {
+            // Which of the two spheres (or cylinders) is inside the other:
+            // an internal tangency holds either way round. An external one
+            // has no sides.
+            SpaceConstraint::SphereTangent {
+                s1,
+                s2,
+                external: false,
+            } if self.entities[s1].kind == SpaceEntityKind::Sphere
+                && self.entities[s2].kind == SpaceEntityKind::Sphere =>
+            {
+                let (r1, r2) = (radius_of(s1, 3), radius_of(s2, 3));
+                out.push(over(r1 - r2, r1.abs() + r2.abs()));
+            }
+            SpaceConstraint::CylinderTangent {
+                c1,
+                c2,
+                external: false,
+            } if self.entities[c1].kind == SpaceEntityKind::Cylinder
+                && self.entities[c2].kind == SpaceEntityKind::Cylinder =>
+            {
+                let (r1, r2) = (radius_of(c1, 6), radius_of(c2, 6));
+                out.push(over(r1 - r2, r1.abs() + r2.abs()));
+            }
+            // Which side of the plane the sphere sits on: the signed
+            // distance from its centre to the plane over its radius, which
+            // a satisfied tangency makes ±1.
+            SpaceConstraint::PlaneTangentToSphere { plane, sphere } => {
+                let e = &self.entities[sphere];
+                let centre = DVec3::new(params[e.param(0)], params[e.param(1)], params[e.param(2)]);
+                let p = &self.entities[plane];
+                let offset = params[p.param(3)];
+                out.push(over(
+                    plane_normal(plane).dot(centre) - offset,
+                    radius_of(sphere, 3),
+                ));
+            }
+            // Parallel either way round: a line, a plane's normal or a
+            // cylinder's axis that turns end for end satisfies the same
+            // equation and is not the same configuration.
+            SpaceConstraint::LineParallelLine(a, b) => {
+                out.push(line_direction(a).dot(line_direction(b)))
+            }
+            SpaceConstraint::PlaneParallel(a, b) => out.push(plane_normal(a).dot(plane_normal(b))),
+            SpaceConstraint::LineParallelToDir { line, dx, dy, dz } => {
+                out.push(line_direction(line).dot(DVec3::new(dx, dy, dz).normalize_or_zero()))
+            }
+            SpaceConstraint::LinePerpendicularPlane { line, plane } => {
+                out.push(line_direction(line).dot(plane_normal(plane)))
+            }
+            SpaceConstraint::PlaneNormal {
+                plane, nx, ny, nz, ..
+            } => out.push(plane_normal(plane).dot(DVec3::new(nx, ny, nz).normalize_or_zero())),
+            SpaceConstraint::Concentric3D(a, b) => {
+                let (da, db) = (axis_direction(a), axis_direction(b));
+                if da != DVec3::ZERO && db != DVec3::ZERO {
+                    out.push(da.dot(db));
+                }
+            }
+            // The rest hold on one connected set: distances, lengths,
+            // radii, coincidences, points on lines, planes, spheres,
+            // cylinders and circles, equal lengths and radii, external
+            // tangencies, lines in or parallel to a plane, and the three
+            // angles — an angle between two directions in space has no
+            // sense to turn over, since there is no third direction to
+            // measure it against.
+            _ => {}
         }
     }
 
@@ -300,9 +412,10 @@ pub(crate) fn solve_equations(
     options: &SolveOptions,
 ) -> SolveResult {
     let entities = eqs.entities;
+    let signature = crate::branch::signature(eqs, &system::all_indices(eqs), params);
     // Plane representation is pinned only for the planes the solved
     // components touched (bitwise guarantee for untouched components).
-    system::solve_components(
+    let mut result = system::solve_components(
         eqs,
         params,
         fixed,
@@ -310,7 +423,18 @@ pub(crate) fn solve_equations(
         only,
         &CoreOptions::from(options),
         |params, touched| normalize_planes_touched(params, entities, fixed, touched),
-    )
+    );
+    // On another branch than it started on: a tangency to the other side
+    // of its plane, an axis turned end for end (see [`crate::branch`]).
+    // The solution found is kept; it is a drag that puts such a thing
+    // back.
+    if crate::branch::turned_over(
+        &signature,
+        &crate::branch::signature(eqs, &system::all_indices(eqs), params),
+    ) {
+        result.status = result.status.max(SolveStatus::BranchFlip);
+    }
+    result
 }
 
 /// Residual report for the current parameters without iterating — the

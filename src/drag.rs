@@ -29,6 +29,7 @@
 //! configuration the walk found, with [`DragFrame::reached`] false, rather
 //! than deforming the sketch toward it.
 
+use crate::branch;
 use crate::entity::PointRef;
 use crate::numerics::{CoreOptions, SolveStatus};
 use crate::system::{self, Equations, Plans, Pull, SparseRow};
@@ -51,6 +52,12 @@ const ADVANCE: f64 = 0.25;
 /// about the conditioning of the regularised projector, so asking for
 /// more would spend substeps without moving anything.
 const TRACK_TOL: f64 = 1.0e-9;
+
+/// How many times a substep may be halved to keep the geometry on its
+/// branch before the frame gives up and says so. Six halvings is a
+/// sixty-fourth of the step the cursor asked for, which on a drawing of
+/// any size is less than the geometry can be told apart to.
+const SHRINKS: usize = 6;
 
 /// A substep has to cut the tracking error by this fraction of what was
 /// left, or the walk stops: either the cursor is out of reach, or the
@@ -122,6 +129,10 @@ pub(crate) struct Session {
     components: Vec<usize>,
     /// The topology revision `components` was worked out at.
     revision: u64,
+    /// Which branch the drag started on (see [`crate::branch`]): the side
+    /// of every watched quantity, which no frame of this drag may turn
+    /// over.
+    signature: Vec<i8>,
 }
 
 impl Session {
@@ -136,17 +147,21 @@ impl Session {
     ) -> Self {
         let rows = pulled.iter().map(|&p| vec![(p, 1.0)]).collect();
         let components = components_of(eqs, params, plans, &pulled);
+        let signature = branch::signature(eqs, &merged(plans, &components), params);
         Self {
             id,
             pulled,
             rows,
             components,
             revision,
+            signature,
         }
     }
 
     /// Take the components afresh if the structure has changed under the
-    /// drag (a host may add or remove a constraint between frames).
+    /// drag (a host may add or remove a constraint between frames), and
+    /// the branch with them: the constraints the drag watches are the ones
+    /// it can move.
     fn refresh<E: Equations + ?Sized>(
         &mut self,
         revision: u64,
@@ -157,8 +172,18 @@ impl Session {
         if self.revision != revision {
             self.components = components_of(eqs, params, plans, &self.pulled);
             self.revision = revision;
+            self.signature = branch::signature(eqs, &merged(plans, &self.components), params);
         }
     }
+}
+
+/// The constraints of the components `ordinals`, in one list.
+fn merged(plans: &Plans, ordinals: &[usize]) -> Vec<usize> {
+    let mut group: Vec<usize> = Vec::new();
+    for &ordinal in ordinals {
+        group.extend(plans.components()[ordinal].iter().copied());
+    }
+    group
 }
 
 /// The components of `plans` that any of `pulled` belongs to, as ordinals,
@@ -230,52 +255,78 @@ pub(crate) fn frame<E: Equations + ?Sized>(
     let mut status = SolveStatus::Converged;
     let mut iterations = 0usize;
     let mut remaining = distance(&errors_at(params));
-    for _ in 0..MAX_SUBSTEPS {
+    'walk: for _ in 0..MAX_SUBSTEPS {
         if group.is_empty() || remaining <= track_tol {
             break;
         }
-        // Aim no further ahead than the linearisation carries.
-        let errors = errors_at(params);
-        let aim = (cap / remaining).min(1.0);
-        let pulls: Vec<Pull<'_>> = session
-            .rows
-            .iter()
-            .zip(&errors)
-            .map(|(row, &error)| Pull {
-                row,
-                error: error * aim,
-            })
-            .collect();
-        let Some(step) = system::tangent_step(eqs, &group, params, fixed, &pulls, weight_of) else {
-            break;
-        };
-        let saved: Vec<f64> = params.to_vec();
-        for (p, delta) in step {
-            params[p] += delta;
-        }
-        let solved = system::solve_planned(
-            eqs,
-            params,
-            fixed,
-            plans,
-            Some(&session.components),
-            options,
-            |_, _| {},
-        );
-        iterations += solved.iterations;
-        status = solved.status;
-        if !solved.converged {
-            // The hard constraints are what the sketch owes the host: this
-            // substep did not keep them, so it never happened.
-            params.copy_from_slice(&saved);
-            break;
-        }
-        let now = distance(&errors_at(params));
-        if now > remaining * (1.0 - GAIN_MIN) {
-            // Out of reach, or the linearisation has stopped paying. Keep
-            // whichever of the two configurations tracks better.
-            if now > remaining {
+        // Aim no further ahead than the linearisation carries, and no
+        // further than keeps the geometry on the branch it started on:
+        // a step that would turn a watched quantity over is halved and
+        // tried again, which is how a drag arrives at the edge of its
+        // branch instead of crossing it.
+        let mut shrink = 1.0_f64;
+        let mut now = remaining;
+        for attempt in 0..=SHRINKS {
+            let errors = errors_at(params);
+            let aim = (cap / remaining).min(1.0) * shrink;
+            let pulls: Vec<Pull<'_>> = session
+                .rows
+                .iter()
+                .zip(&errors)
+                .map(|(row, &error)| Pull {
+                    row,
+                    error: error * aim,
+                })
+                .collect();
+            let Some(step) = system::tangent_step(eqs, &group, params, fixed, &pulls, weight_of)
+            else {
+                break 'walk;
+            };
+            let saved: Vec<f64> = params.to_vec();
+            for (p, delta) in step {
+                params[p] += delta;
+            }
+            let solved = system::solve_planned(
+                eqs,
+                params,
+                fixed,
+                plans,
+                Some(&session.components),
+                options,
+                |_, _| {},
+            );
+            iterations += solved.iterations;
+            status = status.max(solved.status);
+            if !solved.converged {
+                // The hard constraints are what the sketch owes the host:
+                // this substep did not keep them, so it never happened.
                 params.copy_from_slice(&saved);
+                break 'walk;
+            }
+            let signs = branch::signature(eqs, &group, params);
+            if branch::turned_over(&session.signature, &signs) {
+                params.copy_from_slice(&saved);
+                if attempt == SHRINKS {
+                    // Even the shortest step crosses over: the cursor is
+                    // on the other side of the edge of this branch, and
+                    // the geometry stays on this one.
+                    status = status.max(SolveStatus::BranchFlip);
+                    break 'walk;
+                }
+                shrink *= 0.5;
+                continue;
+            }
+            // A quantity that was flat and now has a side takes that
+            // side: the drag holds what it can tell apart.
+            branch::carry_forward(&mut session.signature, &signs);
+            now = distance(&errors_at(params));
+            if now > remaining * (1.0 - GAIN_MIN) {
+                // Out of reach, or the linearisation has stopped paying.
+                // Keep whichever of the two configurations tracks better.
+                if now > remaining {
+                    params.copy_from_slice(&saved);
+                }
+                break 'walk;
             }
             break;
         }

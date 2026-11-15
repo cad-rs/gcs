@@ -245,7 +245,10 @@ fn drag_cases() -> Vec<DragCase> {
         handle: PointRef::LineEnd(lines[1]),
         triples: corner_triples,
         path: sweep_path((4.0, 3.0), (-3.0, 3.0), 48),
-        reachable: true,
+        // Not reachable any more: the cursor asks for the rectangle
+        // inside out, and the chirality guard stops the drag at zero
+        // width and says `BranchFlip` instead of crossing.
+        reachable: false,
         determines_the_rest: true,
     });
 
@@ -337,6 +340,9 @@ struct Run {
     unconverged: usize,
     /// Frames that reported the cursor as reached.
     reached: usize,
+    /// Frames the chirality guard refused: the cursor was over the edge
+    /// of the branch the drag started on (`SolveStatus::BranchFlip`).
+    refused: usize,
     /// Genuine +1 ↔ −1 turn-overs of a watched triple (a pass through
     /// collinear is not one unless it comes out the other side).
     flips: usize,
@@ -361,6 +367,7 @@ fn run_drag(case: &DragCase) -> Run {
         frames: 0,
         unconverged: 0,
         reached: 0,
+        refused: 0,
         flips: 0,
         worst_residual: 0.0,
         worst_tracking: 0.0,
@@ -375,7 +382,9 @@ fn run_drag(case: &DragCase) -> Run {
         let frame = sk.drag_to(&drag, &[cursor]);
         run.times_ms.push(t0.elapsed().as_secs_f64() * 1e3);
         run.frames += 1;
-        if frame.status > SolveStatus::ConvergedToPrecision {
+        if frame.status == SolveStatus::BranchFlip {
+            run.refused += 1;
+        } else if frame.status > SolveStatus::ConvergedToPrecision {
             run.unconverged += 1;
             println!("{}: {:?} at {cursor:?}", case.id, frame.status);
         }
@@ -421,7 +430,10 @@ fn percentile(sorted: &[f64], q: f64) -> f64 {
 }
 
 /// The hard constraints hold on every frame of every scripted drag, and a
-/// reachable cursor is reached.
+/// reachable cursor is reached. A frame the chirality guard refused
+/// (`BranchFlip`) keeps the constraints too — it put back the last
+/// configuration on this side of the edge — and does not count as a
+/// failure.
 #[test]
 fn every_frame_keeps_the_constraints() {
     for case in &drag_cases() {
@@ -431,6 +443,12 @@ fn every_frame_keeps_the_constraints() {
             "{}: {} frames of {} did not converge",
             case.id, run.unconverged, run.frames
         );
+        if case.id == "rect-corner-through-zero" {
+            assert!(
+                run.refused > 0,
+                "the cursor asked for the rectangle inside out and nothing was refused"
+            );
+        }
         assert!(
             run.worst_residual <= 1e-9,
             "{}: worst frame residual {:.3e}",
@@ -456,21 +474,22 @@ fn every_frame_keeps_the_constraints() {
 /// A closed drag comes back to the configuration it started from, and the
 /// fixture's chirality with it.
 ///
-/// Two of the drags still flip, and are asserted to: the rectangle dragged
-/// through zero width, where the cursor asks for the mirrored
-/// configuration itself, and the four-bar pulled right out of its reach,
-/// where the walk arrives at the configuration where the linkage is
-/// straight and crosses it. Guarding both is P5.3's job (a chirality
-/// signature, a shortened step, `BranchFlip`); this test is the record of
-/// where it has to arrive, so it will fail — here — when the guard lands.
+/// One drag still flips, and is asserted to: the four-bar pulled right out
+/// of its reach, whose walk arrives at the configuration where the linkage
+/// is straight and crosses it. The elbow of a linkage is a mirror image
+/// with no constraint of its own to witness it, so no signature separates
+/// the two; what will keep the drag off it is not walking into the
+/// straight configuration in the first place (P5.5, the furthest feasible
+/// point). This test is the record of where that has to arrive, so it will
+/// fail — here — when it does.
 #[test]
 fn a_closed_drag_comes_back() {
     for case in &drag_cases() {
         let run = run_drag(case);
-        if matches!(case.id, "rect-corner-through-zero" | "four-bar-unreachable") {
+        if case.id == "four-bar-unreachable" {
             assert!(
                 run.flips > 0,
-                "{}: used to flip without a chirality guard",
+                "{}: the elbow used to turn over out of reach",
                 case.id
             );
             continue;
@@ -747,6 +766,7 @@ fn run_without_the_api(case: &DragCase, temp_fixed: bool) -> Run {
         frames: 0,
         unconverged: 0,
         reached: 0,
+        refused: 0,
         flips: 0,
         worst_residual: 0.0,
         worst_tracking: 0.0,
@@ -955,4 +975,148 @@ fn a_weight_has_to_be_positive_and_finite() {
     );
     assert!(sk.set_entity_weight(p, 2.5));
     assert_eq!(sk.entity_weight(p), 2.5);
+}
+
+// TEMPORARY P5.3 measurement — delete once the numbers are in the plan.
+// For every frame of every scripted drag: how far the geometry moved
+// against how far the cursor moved, and whether the chirality flipped on
+// that frame. If the flipping frames stand apart, a frame can refuse a
+// step that moves the geometry out of proportion to the cursor.
+#[test]
+#[ignore = "P5.3 measurement, not an assertion"]
+fn report_frame_jumps() {
+    for case in &drag_cases() {
+        let mut sk = case.sketch.clone();
+        let mut signature = chirality(&sk, &case.triples);
+        let drag = sk.begin_drag(&[case.handle]);
+        let mut at = sk.point_coords(case.handle);
+        let mut before = sk.params_snapshot();
+        let (mut worst_plain, mut worst_flip) = (0.0_f64, 0.0_f64);
+        let (mut flips, mut plain) = (0usize, 0usize);
+        let mut ratios: Vec<f64> = Vec::new();
+        for &(cx, cy) in &case.path {
+            let asked = (cx - at.x).hypot(cy - at.y);
+            let frame = sk.drag_to(&drag, &[(cx, cy)]);
+            let after = sk.params_snapshot();
+            let moved = before
+                .iter()
+                .zip(&after)
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum::<f64>()
+                .sqrt();
+            let ratio = if asked > 1e-12 { moved / asked } else { 0.0 };
+            let now = chirality(&sk, &case.triples);
+            let flipped = signature
+                .iter()
+                .zip(&now)
+                .any(|(was, is)| *was != 0 && *is != 0 && was != is);
+            for (slot, s) in signature.iter_mut().zip(&now) {
+                if *s != 0 {
+                    *slot = *s;
+                }
+            }
+            if flipped {
+                flips += 1;
+                worst_flip = worst_flip.max(ratio);
+            } else if asked > 1e-12 {
+                plain += 1;
+                worst_plain = worst_plain.max(ratio);
+                ratios.push(ratio);
+            }
+            let _ = frame;
+            before = after;
+            at = sk.point_coords(case.handle);
+        }
+        sk.end_drag(drag);
+        ratios.sort_by(f64::total_cmp);
+        let median = if ratios.is_empty() {
+            0.0
+        } else {
+            ratios[ratios.len() / 2]
+        };
+        println!(
+            "{:<24} frames {:3} ({plain} plain, {flips} flipping)  moved/asked: median {median:7.3} \
+             worst plain {worst_plain:9.3}  worst flipping {worst_flip:9.3}",
+            case.id,
+            case.path.len()
+        );
+    }
+}
+
+/// A drag stops at the edge of the branch it started on instead of
+/// turning the geometry inside out: the rectangle's corner is dragged
+/// past zero width, the frame says `BranchFlip` and puts back the last
+/// configuration on this side, and when the cursor comes back the drag
+/// follows it again.
+#[test]
+fn a_drag_stops_at_the_edge_of_its_branch() {
+    let (mut sk, origin, lines) = free_rectangle(4.0, 3.0);
+    assert!(sk.solve().converged, "the fixture");
+    let corner = PointRef::LineEnd(lines[1]);
+    let width = |sk: &Sketch| sk.point_coords(PointRef::LineEnd(lines[0])).x;
+    let drag = sk.begin_drag(&[corner]);
+    // In to zero width and out the other side.
+    let mut refused = 0;
+    for i in 0..=40 {
+        let x = 4.0 - 6.0 * i as f64 / 40.0;
+        let frame = sk.drag_to(&drag, &[(x, 3.0)]);
+        assert!(
+            frame.residual <= 1e-9,
+            "residual {:.3e} at x = {x}",
+            frame.residual
+        );
+        if frame.status == SolveStatus::BranchFlip {
+            refused += 1;
+            assert!(!frame.reached, "a refused frame did not reach its cursor");
+        }
+        assert!(
+            width(&sk) > -1e-6,
+            "the rectangle turned inside out at x = {x}: width {}",
+            width(&sk)
+        );
+    }
+    assert!(refused > 0, "nothing was refused");
+    // Back out: the drag follows again, and the shape is the one it was.
+    let frame = sk.drag_to(&drag, &[(4.0, 3.0)]);
+    assert_eq!(frame.status, SolveStatus::Converged);
+    assert!(frame.reached, "the cursor came back and was reachable");
+    assert!((width(&sk) - 4.0).abs() < 1e-7, "width {}", width(&sk));
+    let result = sk.end_drag(drag);
+    assert!(result.converged);
+    assert!(
+        (sk.point_coords(PointRef::Point(origin)).x).abs() < 1e-12,
+        "the origin stayed put"
+    );
+}
+
+/// A tangency keeps the side of its line it was made on, even when the
+/// geometry could get to the other side continuously (the circle would
+/// shrink through nothing and come out below).
+#[test]
+fn a_tangency_keeps_its_side() {
+    let mut sk = Sketch::new();
+    let rail = sk.add_line(0.0, 0.0, 10.0, 0.0);
+    let circle = sk.add_circle(5.0, 2.0, 2.0);
+    sk.add_constraint(Constraint::fix_point(PointRef::LineStart(rail), 0.0, 0.0));
+    sk.add_constraint(Constraint::fix_point(PointRef::LineEnd(rail), 10.0, 0.0));
+    sk.add_constraint(Tangent { circle, line: rail });
+    assert!(sk.solve().converged, "the fixture");
+    let centre = sk.center(circle);
+    let drag = sk.begin_drag(&[centre]);
+    let mut refused = 0;
+    for i in 1..=20 {
+        let y = 2.0 - 4.0 * i as f64 / 20.0;
+        let frame = sk.drag_to(&drag, &[(5.0, y)]);
+        assert!(frame.residual <= 1e-9, "residual {:.3e}", frame.residual);
+        if frame.status == SolveStatus::BranchFlip {
+            refused += 1;
+        }
+        assert!(
+            sk.point_coords(centre).y > -1e-6,
+            "the circle came out below its rail at y = {y}: {:?}",
+            sk.point_coords(centre)
+        );
+    }
+    assert!(refused > 0, "the drag crossed the rail without a word");
+    sk.end_drag(drag);
 }
