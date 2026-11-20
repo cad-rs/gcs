@@ -55,6 +55,11 @@ fn driven_rectangle(width: f64) -> (Sketch, usize, usize) {
 
 /// A dimension changed to the other side of zero mirrors the sketch, and
 /// the solve says so while keeping what it found.
+///
+/// A localized solve is the one that goes straight there: a full
+/// [`Sketch::solve`] walks a jump it cannot make in one go, and this one
+/// it can walk — through zero width, where a rectangle has no side to be
+/// on (see `tests/jump.rs`).
 #[test]
 fn a_dimension_change_that_mirrors_says_so() {
     let (mut sk, bottom, dimension) = driven_rectangle(4.0);
@@ -63,7 +68,7 @@ fn a_dimension_change_that_mirrors_says_so() {
     assert!(sk.point_coords(PointRef::LineEnd(bottom)).x > 0.0);
 
     assert!(sk.set_constraint_value(dimension, -4.0));
-    let result = sk.solve();
+    let result = sk.solve_selected(None);
     assert!(
         result.converged,
         "the mirrored rectangle is a solution: {:?} {:.3e}",

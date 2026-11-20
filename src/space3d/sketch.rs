@@ -68,11 +68,41 @@ pub struct SpaceSketch {
     /// See [`SpaceSketch::topology_revision`].
     #[cfg_attr(feature = "serde", serde(default))]
     revision: u64,
+    /// Per dimension slot a host has changed since the last solve that
+    /// arrived: the value that solve met (see [`crate::jump`]). What a
+    /// solve that cannot reach the new value walks from. Not part of what
+    /// a sketch is worth storing — the values themselves are stored, and
+    /// a sketch read back has no jump in progress.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pending: Vec<(usize, f64)>,
 }
 
 impl Default for SpaceSketch {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl crate::jump::Jumping for SpaceSketch {
+    fn jump_params(&mut self) -> &mut Vec<f64> {
+        &mut self.params
+    }
+
+    fn jump_set_value(&mut self, slot: usize, value: f64) {
+        self.constraints[slot].set_value(value);
+    }
+
+    fn jump_solve(&mut self, options: &SolveOptions) -> SolveResult {
+        self.solve_all(options)
+    }
+
+    fn jump_residual(&self) -> f64 {
+        let eqs = SpaceEquations::with_states(&self.entities, &self.constraints, &self.states);
+        crate::numerics::rms(&system::eval_residuals(
+            &eqs,
+            &system::all_indices(&eqs),
+            &self.params,
+        ))
     }
 }
 
@@ -87,6 +117,7 @@ impl SpaceSketch {
             states: Vec::new(),
             removed: Vec::new(),
             revision: 0,
+            pending: Vec::new(),
         }
     }
 
@@ -400,8 +431,23 @@ impl SpaceSketch {
     ///
     /// This does not change which parameters any constraint touches, so
     /// [`SpaceSketch::topology_revision`] stays the same.
+    ///
+    /// The value the last solve met is remembered until a solve meets the
+    /// new one: a jump too big to solve in one go is walked there instead
+    /// (see [`SpaceSketch::solve_with`]). A value written straight into
+    /// the public [`SpaceSketch::constraints`] list is not remembered, and
+    /// such a jump is not walked.
     pub fn set_constraint_value(&mut self, index: usize, value: f64) -> bool {
-        self.constraints[index].set_value(value)
+        let Some(was) = self.constraints[index].value() else {
+            return false;
+        };
+        if !self.constraints[index].set_value(value) {
+            return false;
+        }
+        if was != value && !self.pending.iter().any(|&(slot, _)| slot == index) {
+            self.pending.push((index, was));
+        }
+        true
     }
 
     /// What dimensional constraint `index` measures in the current
@@ -1009,11 +1055,65 @@ impl SpaceSketch {
 
     /// [`SpaceSketch::solve`] with explicit [`SolveOptions`] (tolerance,
     /// iteration limit, what a failed solve leaves behind).
+    ///
+    /// A solve that does not arrive — it stalls, runs out of iterations,
+    /// or lands on another branch
+    /// ([`SolveStatus::BranchFlip`](crate::SolveStatus::BranchFlip)) —
+    /// and has a dimension changed by
+    /// [`SpaceSketch::set_constraint_value`] since the last solve that
+    /// did arrive walks that change there a step at a time instead: from
+    /// the value the last solve met to the value asked for, halving a
+    /// step that fails, down to a thirty-second of the whole change. A
+    /// solve that arrives in one go is untouched by this, down to the
+    /// last bit and the iteration count.
+    ///
+    /// When even the walk cannot get there, the values stay the ones the
+    /// host asked for and the status is the one the direct solve ended
+    /// with. What the geometry is depends on what that solve had in hand:
+    /// a solve that converged on another branch found a solution of the
+    /// constraints, and that solution is given back, flip and all; a
+    /// solve that did not converge had nothing, so the geometry stays at
+    /// the furthest configuration the walk reached and `converged` is
+    /// `false` — what the host sees is how far their value got.
     pub fn solve_with(&mut self, options: &SolveOptions) -> SolveResult {
+        let before = self.params.clone();
+        let direct = self.solve_all(options);
+        if crate::jump::arrived(&direct) {
+            self.pending.clear();
+            return direct;
+        }
+        let jump = self.pending_jump();
+        if jump.is_empty() {
+            return direct;
+        }
+        let result = crate::jump::walk(self, &jump, &before, direct, options);
+        if crate::jump::arrived(&result) {
+            self.pending.clear();
+        }
+        result
+    }
+
+    /// One solve of the whole sketch from the geometry as it stands, with
+    /// no walking of a jump.
+    fn solve_all(&mut self, options: &SolveOptions) -> SolveResult {
         // Gauge fix before iterating: the solver's variable space is the
         // (unit normal, offset) representation.
         self.normalize_planes();
-        self.solve_selected_with(None, options)
+        self.solve_selected_inner(None, options)
+    }
+
+    /// The jump a solve has to walk: per dimension slot the host has
+    /// changed, the value the last solve that arrived met and the value
+    /// the host asked for (see [`crate::jump`]). A slot put back where it
+    /// was is no jump at all.
+    fn pending_jump(&self) -> Vec<(usize, f64, f64)> {
+        self.pending
+            .iter()
+            .filter_map(|&(slot, was)| {
+                let asked = self.constraints[slot].value()?;
+                (asked != was).then_some((slot, was, asked))
+            })
+            .collect()
     }
 
     /// Localized solve: run Newton only on the selected components
@@ -1025,7 +1125,26 @@ impl SpaceSketch {
     }
 
     /// [`SpaceSketch::solve_selected`] with explicit [`SolveOptions`].
+    ///
+    /// A localized solve does not walk a dimension jump the way
+    /// [`SpaceSketch::solve_with`] does: it solves what is selected,
+    /// once.
     pub fn solve_selected_with(
+        &mut self,
+        only: Option<&[usize]>,
+        options: &SolveOptions,
+    ) -> SolveResult {
+        let result = self.solve_selected_inner(only, options);
+        if crate::jump::arrived(&result) {
+            // Whatever a host changed has been met: nothing to walk.
+            self.pending.clear();
+        }
+        result
+    }
+
+    /// [`SpaceSketch::solve_selected_with`] without the bookkeeping a
+    /// jump needs: the solve itself.
+    fn solve_selected_inner(
         &mut self,
         only: Option<&[usize]>,
         options: &SolveOptions,
@@ -1069,14 +1188,19 @@ impl SpaceSketch {
         if selected.is_empty() {
             return crate::space3d::solver::residual_report(&eqs, &self.params, options.tolerance);
         }
-        crate::space3d::solver::solve_equations(
+        let result = crate::space3d::solver::solve_equations(
             &eqs,
             &mut self.params,
             &self.fixed,
             &components,
             Some(&selected),
             options,
-        )
+        );
+        if crate::jump::arrived(&result) {
+            // Whatever a host changed has been met: nothing to walk.
+            self.pending.clear();
+        }
+        result
     }
 
     /// True degrees of freedom: effective free parameters − rank of the

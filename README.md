@@ -125,6 +125,16 @@ one's solve while the revision holds, so re-solving the same sketch (or a
 clone of a solved one) after a dimension edit or a drag skips that work;
 the result is the same, bit for bit.
 
+A dimension changed by more than a solve can follow is walked there
+instead of being jumped to: when the solve that follows
+`set_constraint_value` stalls or comes out on another branch, the value is
+taken from where the last solve met it to where it was put a step at a
+time, halving a step that fails. A solve that arrives in one go is
+untouched by this. What a host sees is that driving a width through zero
+now ends where it asked rather than mirrored, and that a value out of
+reach leaves the geometry at the furthest it got with the value it asked
+for still in place (2D and 3D sketches; see `Sketch::solve`).
+
 An assembly (`rigid3d::ConstraintSystem`) is edited the same way, with
 `remove_component` in place of `remove_entity`. It holds no poses, so
 `measure` takes them, and a re-solve continues from the last result through

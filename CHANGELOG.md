@@ -15,6 +15,34 @@ through them from a host's side.
 
 ### Changed
 
+- **A dimension a solve cannot reach in one go is walked there**
+  (`Sketch::solve`, `SpaceSketch::solve` and their `_with` forms). A solve
+  that stalls, runs out of iterations or lands on another branch, and has
+  a dimension changed by `set_constraint_value` since the last solve that
+  arrived, now walks that change from the value the last solve met to the
+  value asked for — halving a step that fails, down to a thirty-second of
+  the whole change — instead of reporting the one failed attempt. A solve
+  that arrives in one go is untouched, down to the last bit and the
+  iteration count, so nothing that solved before solves differently.
+  Three things follow for a solve that did not arrive:
+  - A change that passes through a configuration with no side to it — a
+    rectangle driven through zero width, a linkage through straight — is
+    walked through it and reported as `Converged`, where it used to come
+    out mirrored and be reported as `BranchFlip`. The geometry is the one
+    the direct solve produced before (measured, to within 1e-6, on 102 such
+    cases in the 2D corpus); it is the status that changes.
+  - A change nothing can reach leaves the values the host asked for, the
+    geometry at the furthest configuration the walk reached, and the
+    status the direct solve ended with, with `converged` `false`.
+  - A change that only a branch flip satisfies — two spheres tangent on
+    the inside whose radii are driven past each other, which can only
+    happen through the configuration where their centres coincide — is
+    given back as it was found, flip and all: `BranchFlip` with
+    `converged` `true`.
+
+  A localized solve (`solve_selected`, `solve_selected_with`, and 3D's
+  `solve_incremental`) does not walk a change; it solves what is selected,
+  once, and still reports `BranchFlip` as before.
 - **`SolveStatus` has a new variant, `BranchFlip`**, ordered between
   `ConvergedToPrecision` and `MaxIterations`: the constraints are satisfied
   but the configuration is not the one that was asked for. It is the one

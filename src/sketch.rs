@@ -72,6 +72,13 @@ pub struct Sketch {
     /// a constraint that has to be satisfied.
     #[cfg_attr(feature = "serde", serde(default))]
     priorities: Vec<u16>,
+    /// Per dimension slot a host has changed since the last solve that
+    /// arrived: the value that solve met (see [`crate::jump`]). What a
+    /// solve that cannot reach the new value walks from. Not part of what
+    /// a sketch is worth storing — the values themselves are stored, and
+    /// a sketch read back has no jump in progress.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pending: Vec<(usize, f64)>,
     /// The drag running on this sketch, if one is (see
     /// [`Sketch::begin_drag`]). Not part of what a sketch is worth
     /// storing: a drag is over by the time one is written out.
@@ -127,6 +134,7 @@ impl Sketch {
             plans: PlanCache::default(),
             weights: Vec::new(),
             priorities: Vec::new(),
+            pending: Vec::new(),
             drag: None,
             drags: 0,
         }
@@ -348,8 +356,21 @@ impl Sketch {
     ///
     /// This does not change which parameters any constraint touches, so
     /// [`Sketch::topology_revision`] stays the same.
+    ///
+    /// The value the last solve met is remembered until a solve meets the
+    /// new one: a jump too big to solve in one go is walked there instead
+    /// (see [`Sketch::solve_with`]).
     pub fn set_constraint_value(&mut self, index: usize, value: f64) -> bool {
-        self.constraints[index].set_value(value)
+        let Some(was) = self.constraints[index].value() else {
+            return false;
+        };
+        if !self.constraints[index].set_value(value) {
+            return false;
+        }
+        if was != value && !self.pending.iter().any(|&(slot, _)| slot == index) {
+            self.pending.push((index, was));
+        }
+        true
     }
 
     /// What dimensional constraint `index` measures in the current
@@ -547,10 +568,50 @@ impl Sketch {
     /// levels are taken in turn, each from the solution of the one below,
     /// and the first level that cannot be met is left out:
     /// [`SolveResult::satisfied_level`] is the last one that was.
+    ///
+    /// A solve that does not arrive — it stalls, runs out of iterations,
+    /// or lands on another branch
+    /// ([`SolveStatus::BranchFlip`](crate::SolveStatus::BranchFlip)) —
+    /// and has a dimension changed by
+    /// [`Sketch::set_constraint_value`] since the last solve that did
+    /// arrive walks that change there a step at a time instead: from the
+    /// value the last solve met to the value asked for, halving a step
+    /// that fails, down to a thirty-second of the whole change. A solve
+    /// that arrives in one go is untouched by this, down to the last bit
+    /// and the iteration count.
+    ///
+    /// When even the walk cannot get there, the values stay the ones the
+    /// host asked for and the status is the one the direct solve ended
+    /// with. What the geometry is depends on what that solve had in hand:
+    /// a solve that converged on another branch found a solution of the
+    /// constraints, and that solution is given back, flip and all; a
+    /// solve that did not converge had nothing, so the geometry stays at
+    /// the furthest configuration the walk reached and `converged` is
+    /// `false` — what the host sees is how far their value got.
     pub fn solve_with(&mut self, options: &SolveOptions) -> SolveResult {
+        let before = self.params.clone();
+        let direct = self.solve_levels(options);
+        if crate::jump::arrived(&direct) {
+            self.pending.clear();
+            return direct;
+        }
+        let jump = self.pending_jump();
+        if jump.is_empty() {
+            return direct;
+        }
+        let result = crate::jump::walk(self, &jump, &before, direct, options);
+        if crate::jump::arrived(&result) {
+            self.pending.clear();
+        }
+        result
+    }
+
+    /// One solve of the whole sketch from the geometry as it stands —
+    /// every priority level in turn — with no walking of a jump.
+    fn solve_levels(&mut self, options: &SolveOptions) -> SolveResult {
         let levels = self.soft_levels();
         if levels.is_empty() {
-            return self.solve_selected_with(None, options);
+            return self.solve_selected_inner(None, options);
         }
         let signature = self.branch_signature();
         // The constraints that have to hold, first and on their own.
@@ -579,6 +640,20 @@ impl Sketch {
             &mut result.status,
         );
         result
+    }
+
+    /// The jump a solve has to walk: per dimension slot the host has
+    /// changed, the value the last solve that arrived met and the value
+    /// the host asked for (see [`crate::jump`]). A slot put back where it
+    /// was is no jump at all.
+    fn pending_jump(&self) -> Vec<(usize, f64, f64)> {
+        self.pending
+            .iter()
+            .filter_map(|&(slot, was)| {
+                let asked = self.constraints[slot].value()?;
+                (asked != was).then_some((slot, was, asked))
+            })
+            .collect()
     }
 
     /// Which branch the geometry is on (see [`crate::branch`]): the side
@@ -860,7 +935,25 @@ impl Sketch {
     /// a dimension changed by so much that the sketch came out mirrored —
     /// and keeps that solution; it is a drag that puts such a thing back
     /// (see [`crate::drag`]).
+    ///
+    /// A localized solve does not walk a dimension jump the way
+    /// [`Sketch::solve_with`] does: it solves what is selected, once.
     pub fn solve_selected_with(
+        &mut self,
+        only: Option<&[usize]>,
+        options: &SolveOptions,
+    ) -> SolveResult {
+        let result = self.solve_selected_inner(only, options);
+        if crate::jump::arrived(&result) {
+            // Whatever a host changed has been met: nothing to walk.
+            self.pending.clear();
+        }
+        result
+    }
+
+    /// [`Sketch::solve_selected_with`] without the bookkeeping a jump
+    /// needs: the solve itself.
+    fn solve_selected_inner(
         &mut self,
         only: Option<&[usize]>,
         options: &SolveOptions,
@@ -1388,6 +1481,29 @@ impl Sketch {
 impl Default for Sketch {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl crate::jump::Jumping for Sketch {
+    fn jump_params(&mut self) -> &mut Vec<f64> {
+        &mut self.params
+    }
+
+    fn jump_set_value(&mut self, slot: usize, value: f64) {
+        self.constraints[slot].set_value(value);
+    }
+
+    fn jump_solve(&mut self, options: &SolveOptions) -> SolveResult {
+        self.solve_levels(options)
+    }
+
+    fn jump_residual(&self) -> f64 {
+        let eqs = self.equations();
+        crate::numerics::rms(&system::eval_residuals(
+            &eqs,
+            &system::all_indices(&eqs),
+            &self.params,
+        ))
     }
 }
 

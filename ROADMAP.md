@@ -212,6 +212,19 @@ change, [docs/MIGRATION_0.2.md](docs/MIGRATION_0.2.md) (in Chinese).
   3D-geometric and rigid-pose families have no entry points (the step
   itself is family-generic, `system::tangent_step`, but takes no gauge, so
   3D needs its effective columns before it can use it).
+- **What walking a dimension jump still owes.** A solve that cannot reach
+  a new dimension value in one go walks there a step at a time (2D and
+  3D-geometric), but: the rigid-pose family has nothing of the kind,
+  because its solve is stateless — `ConstraintSolver::solve(&system)`
+  seeds the poses from the fixed bodies rather than from where the
+  assembly stands, so there is no configuration in the library to walk
+  from (a host that warm-starts through `solve_from` could have it, which
+  is where this would go); a localized solve does not walk, so a host that
+  re-solves by selection gets the single attempt; the walk is driven by
+  value changes alone, so adding or replacing a constraint is not walked
+  to even where it would help; and no measurement of how much 3D-geometric
+  jumps gain exists, since that family's corpus is hand-written and cannot
+  be swept dimension by dimension the way the 2D one is.
 - **Dimensions as objects.** A dimension's value lives inside its
   constraint. Sharing one value between several constraints, or binding it
   to a variable or an expression, needs a dimension table on top.

@@ -58,6 +58,7 @@ pub mod edit;
 pub mod entity;
 pub mod freedom;
 pub mod graph;
+mod jump;
 pub mod mobility;
 pub mod numerics;
 pub mod rigid3d;
