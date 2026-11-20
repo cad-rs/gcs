@@ -412,7 +412,7 @@ pub(crate) fn solve_equations(
     options: &SolveOptions,
 ) -> SolveResult {
     let entities = eqs.entities;
-    let signature = crate::branch::signature(eqs, &system::all_indices(eqs), params);
+    let signature = crate::branch::of_system(eqs, params);
     let before: Vec<f64> = params.to_vec();
     // Plane representation is pinned only for the planes the solved
     // components touched (bitwise guarantee for untouched components).
@@ -432,12 +432,7 @@ pub(crate) fn solve_equations(
     // of its plane, an axis turned end for end (see [`crate::branch`]).
     // The solution found is kept; it is a drag that puts such a thing
     // back.
-    if crate::branch::turned_over(
-        &signature,
-        &crate::branch::signature(eqs, &system::all_indices(eqs), params),
-    ) {
-        result.status = result.status.max(SolveStatus::BranchFlip);
-    }
+    crate::branch::flag_turn_over(eqs, params, &signature, &mut result.status);
     result
 }
 

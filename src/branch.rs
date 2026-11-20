@@ -28,6 +28,7 @@
 //! configuration where the linkage is straight in the first place — the
 //! business of walking only as far as the feasible set reaches.
 
+use crate::numerics::SolveStatus;
 use crate::system::Equations;
 
 /// How small a witness counts as zero: the quantities are scale-free, so
@@ -60,6 +61,27 @@ pub(crate) fn signature<E: Equations + ?Sized>(
         }));
     }
     signs
+}
+
+/// The signature of the whole system: what a solve takes before and after
+/// itself.
+pub(crate) fn of_system<E: Equations + ?Sized>(eqs: &E, params: &[f64]) -> Vec<i8> {
+    signature(eqs, &crate::system::all_indices(eqs), params)
+}
+
+/// Raise `status` to [`SolveStatus::BranchFlip`] when the system has
+/// turned over since `before` was taken: what every solve does with the
+/// signature it kept (the solution it found is the one it keeps; putting
+/// it back is a drag's business).
+pub(crate) fn flag_turn_over<E: Equations + ?Sized>(
+    eqs: &E,
+    params: &[f64],
+    before: &[i8],
+    status: &mut SolveStatus,
+) {
+    if turned_over(before, &of_system(eqs, params)) {
+        *status = (*status).max(SolveStatus::BranchFlip);
+    }
 }
 
 /// Whether `now` has turned any of `was` over: a sign that was one thing

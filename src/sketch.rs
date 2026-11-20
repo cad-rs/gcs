@@ -572,17 +572,19 @@ impl Sketch {
             result = attempt;
         }
         result.satisfied_level = satisfied;
-        if crate::branch::turned_over(&signature, &self.branch_signature()) {
-            result.status = result.status.max(crate::numerics::SolveStatus::BranchFlip);
-        }
+        crate::branch::flag_turn_over(
+            &self.equations(),
+            &self.params,
+            &signature,
+            &mut result.status,
+        );
         result
     }
 
     /// Which branch the geometry is on (see [`crate::branch`]): the side
     /// of every quantity the active constraints watch.
     fn branch_signature(&self) -> Vec<i8> {
-        let eqs = self.equations();
-        crate::branch::signature(&eqs, &system::all_indices(&eqs), &self.params)
+        crate::branch::of_system(&self.equations(), &self.params)
     }
 
     /// The priority levels above zero that some active constraint has,
@@ -877,9 +879,7 @@ impl Sketch {
             &CoreOptions::from(options),
             |_, _| {},
         );
-        if crate::branch::turned_over(&signature, &self.branch_signature()) {
-            result.status = result.status.max(crate::numerics::SolveStatus::BranchFlip);
-        }
+        crate::branch::flag_turn_over(&eqs, &self.params, &signature, &mut result.status);
         result
     }
 

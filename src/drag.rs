@@ -120,10 +120,7 @@ pub(crate) struct Session {
     pub(crate) id: u64,
     /// The parameters the cursors pull, as many per handle as a point has
     /// coordinates, in the order of the handles.
-    pub(crate) pulled: Vec<usize>,
-    /// A gradient row per pulled parameter (the parameter itself), kept so
-    /// that every substep hands the same rows to the predictor.
-    rows: Vec<SparseRow>,
+    pulled: Vec<usize>,
     /// The components the pulled parameters belong to, as ordinals into
     /// the plans' components, ascending.
     components: Vec<usize>,
@@ -145,13 +142,11 @@ impl Session {
         params: &[f64],
         plans: &Plans,
     ) -> Self {
-        let rows = pulled.iter().map(|&p| vec![(p, 1.0)]).collect();
         let components = components_of(eqs, params, plans, &pulled);
         let signature = branch::signature(eqs, &merged(plans, &components), params);
         Self {
             id,
             pulled,
-            rows,
             components,
             revision,
             signature,
@@ -230,10 +225,7 @@ pub(crate) fn frame<E: Equations + ?Sized>(
     session.refresh(revision, eqs, params, plans);
     // A pulled parameter no constraint touches is free to go where the
     // cursor is, and no solve is needed for it.
-    let mut group: Vec<usize> = Vec::new();
-    for &ordinal in &session.components {
-        group.extend(plans.components()[ordinal].iter().copied());
-    }
+    let group = merged(plans, &session.components);
     let touched = system::touched_params(eqs, &group, params);
     for (&p, &cursor) in session.pulled.iter().zip(cursors) {
         if !fixed[p] && !touched.contains(&p) {
@@ -241,6 +233,8 @@ pub(crate) fn frame<E: Equations + ?Sized>(
         }
     }
 
+    // One gradient row per pulled parameter: the parameter itself.
+    let rows: Vec<SparseRow> = session.pulled.iter().map(|&p| vec![(p, 1.0)]).collect();
     let errors_at = |params: &[f64]| -> Vec<f64> {
         session
             .pulled
@@ -265,12 +259,10 @@ pub(crate) fn frame<E: Equations + ?Sized>(
         // tried again, which is how a drag arrives at the edge of its
         // branch instead of crossing it.
         let mut shrink = 1.0_f64;
-        let mut now = remaining;
         for attempt in 0..=SHRINKS {
             let errors = errors_at(params);
             let aim = (cap / remaining).min(1.0) * shrink;
-            let pulls: Vec<Pull<'_>> = session
-                .rows
+            let pulls: Vec<Pull<'_>> = rows
                 .iter()
                 .zip(&errors)
                 .map(|(row, &error)| Pull {
@@ -319,18 +311,18 @@ pub(crate) fn frame<E: Equations + ?Sized>(
             // A quantity that was flat and now has a side takes that
             // side: the drag holds what it can tell apart.
             branch::carry_forward(&mut session.signature, &signs);
-            now = distance(&errors_at(params));
-            if now > remaining * (1.0 - GAIN_MIN) {
+            let moved = distance(&errors_at(params));
+            if moved > remaining * (1.0 - GAIN_MIN) {
                 // Out of reach, or the linearisation has stopped paying.
                 // Keep whichever of the two configurations tracks better.
-                if now > remaining {
+                if moved > remaining {
                     params.copy_from_slice(&saved);
                 }
                 break 'walk;
             }
+            remaining = moved;
             break;
         }
-        remaining = now;
     }
 
     let tracking_error = distance(&errors_at(params));

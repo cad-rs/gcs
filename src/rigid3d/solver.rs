@@ -249,7 +249,7 @@ impl ConstraintSolver {
         }
 
         let fixed = system.held_columns();
-        let signature = crate::branch::signature(&eqs, &system::all_indices(&eqs), &params);
+        let signature = crate::branch::of_system(&eqs, &params);
         let mut result = system::solve_components(
             &eqs,
             &mut params,
@@ -263,12 +263,7 @@ impl ConstraintSolver {
         // round — parallel directions, an axis in a bore — came out half a
         // turn from the side it was on (see [`crate::branch`]). The poses
         // found are kept; the status is how a host hears of it.
-        if crate::branch::turned_over(
-            &signature,
-            &crate::branch::signature(&eqs, &system::all_indices(&eqs), &params),
-        ) {
-            result.status = result.status.max(SolveStatus::BranchFlip);
-        }
+        crate::branch::flag_turn_over(&eqs, &params, &signature, &mut result.status);
 
         // The reported error counts every constraint as an equation again,
         // the grounding ones included.
