@@ -1082,3 +1082,65 @@ fn a_plane_authored_without_a_normal_is_left_alone() {
     );
     assert_eq!(plane_normal(&sk, plane), (0.0, 0.0, 0.0));
 }
+
+/// Two spheres tangent on the inside have `|r1 − r2|` against the
+/// distance between their centres for a residual, which has a corner
+/// where the radii are equal: an implementation differentiates one side
+/// of it, which is a derivative it is entitled to take, while a central
+/// difference across the corner resolves to neither side. The debug-build
+/// cross-check of the analytic Jacobian used to call that a wrong entry
+/// and panic.
+///
+/// The configuration is doubly degenerate — equal radii force the centres
+/// together, and the distance between coincident points has a corner of
+/// its own — so Newton has nowhere to step and the solve says so. Failing
+/// is the honest answer here; panicking in a debug build was not.
+#[test]
+fn a_solve_on_the_corner_of_an_internal_tangency_fails_instead_of_panicking() {
+    let mut sk = SpaceSketch::new();
+    let big = sk.add_sphere(0.0, 0.0, 0.0, 2.0);
+    let small = sk.add_sphere(0.0, 0.0, 0.0, 2.0);
+    sk.add_constraint(SpaceConstraint::Fixed {
+        point: SpacePointRef::SphereCenter(big),
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    });
+    for (dy, dz) in [(1.0, 0.0), (0.0, 1.0)] {
+        sk.add_constraint(SpaceConstraint::PointDistanceAlongDir {
+            p1: SpacePointRef::SphereCenter(big),
+            p2: SpacePointRef::SphereCenter(small),
+            dx: 0.0,
+            dy,
+            dz,
+            distance: 0.0,
+        });
+    }
+    sk.add_constraint(SpaceConstraint::SphereTangent {
+        s1: big,
+        s2: small,
+        external: false,
+    });
+    // One radius asked to leave the corner, the other held where it is.
+    let radius = sk.add_constraint(SpaceConstraint::SphereRadius {
+        sphere: big,
+        radius: 1.0,
+    });
+    sk.add_constraint(SpaceConstraint::SphereRadius {
+        sphere: small,
+        radius: 2.0,
+    });
+
+    let result = sk.solve();
+    assert!(
+        !result.converged,
+        "there is no step away from the corner: {:?}",
+        result.status
+    );
+    assert_eq!(result.status, SolveStatus::Stalled);
+    assert_eq!(
+        sk.constraint_value(radius),
+        Some(1.0),
+        "the value the host asked for is still the value"
+    );
+}

@@ -1704,6 +1704,25 @@ pub(crate) fn equation_unit(length_scale: Option<f64>) -> f64 {
 /// that is right. Otherwise, if the two differences agree closely with each
 /// other, they are resolving the derivative and the analytic entry is what
 /// is wrong: this panics. If they do not, the entry is left unjudged.
+///
+/// A residual can also have no derivative here to be checked against. The
+/// internal tangency of two spheres is `|r1 − r2|` against the distance
+/// between their centres: at equal radii that has a corner, where an
+/// implementation legitimately differentiates one side of it while a
+/// central difference averages the two sides into something that is
+/// neither. Such a row is recognised by its two one-sided differences
+/// disagreeing — for a smooth residual they agree to within the step —
+/// and is left unjudged too.
+#[cfg(debug_assertions)]
+struct HalfStep {
+    /// The central difference of each row at half the step.
+    central: Vec<f64>,
+    /// The difference of each row over the half step above the point.
+    above: Vec<f64>,
+    /// The difference of each row over the half step below it.
+    below: Vec<f64>,
+}
+
 #[cfg(debug_assertions)]
 fn debug_check_jacobian<E: Equations + ?Sized>(
     eqs: &E,
@@ -1740,7 +1759,7 @@ fn debug_check_jacobian<E: Equations + ?Sized>(
         // A second opinion at half the step, for plain parameters. (The
         // rigid-pose family, whose columns are not parameters, does not run
         // this check.)
-        let second: Option<Vec<f64>> = additive.then(|| {
+        let second: Option<HalfStep> = additive.then(|| {
             let gi = free[ci];
             let orig = params[gi];
             let h = 0.5 * numerics::fd_step(orig);
@@ -1751,20 +1770,38 @@ fn debug_check_jacobian<E: Equations + ?Sized>(
             let below = params[gi];
             let f_minus = eval_residuals(eqs, group, params);
             params[gi] = orig;
-            f_plus
-                .iter()
-                .zip(&f_minus)
-                .map(|(a, b)| (a - b) / (above - below))
-                .collect()
+            let f_here = eval_residuals(eqs, group, params);
+            HalfStep {
+                central: f_plus
+                    .iter()
+                    .zip(&f_minus)
+                    .map(|(a, b)| (a - b) / (above - below))
+                    .collect(),
+                // The two sides on their own: a corner in the residual
+                // shows up as these two disagreeing.
+                above: f_plus
+                    .iter()
+                    .zip(&f_here)
+                    .map(|(a, b)| (a - b) / (above - orig))
+                    .collect(),
+                below: f_here
+                    .iter()
+                    .zip(&f_minus)
+                    .map(|(a, b)| (a - b) / (orig - below))
+                    .collect(),
+            }
         });
         for ri in off {
             let (va, vf) = (j_analytic[ri][ci], j_fd[ri][ci]);
             let wrong = match &second {
                 None => true,
                 Some(half) => {
-                    let extrapolated = (4.0 * half[ri] - vf) / 3.0;
                     let limit = allowed(ri, vf);
-                    (va - extrapolated).abs() > limit && (half[ri] - vf).abs() <= 0.25 * limit
+                    let corner = (half.above[ri] - half.below[ri]).abs() > 4.0 * limit;
+                    let extrapolated = (4.0 * half.central[ri] - vf) / 3.0;
+                    !corner
+                        && (va - extrapolated).abs() > limit
+                        && (half.central[ri] - vf).abs() <= 0.25 * limit
                 }
             };
             assert!(

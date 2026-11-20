@@ -661,6 +661,17 @@ through them from a host's side.
 
 ### Fixed
 
+- **A debug build no longer panics on a solve that starts on a corner of
+  its residuals.** The internal tangency of two spheres is `|r1 − r2|`
+  against the distance between their centres, which has no derivative
+  where the radii are equal: an implementation differentiates one side of
+  the corner, which it is entitled to do, while a central difference
+  across the corner resolves to neither side. The debug-build cross-check
+  of the analytic Jacobian took the two differences agreeing with each
+  other as proof that the analytic entry was wrong and asserted. It now
+  recognises a corner — the two one-sided differences disagree, which for
+  a smooth residual they do not — and leaves such a row unjudged. Release
+  builds never ran the check and are unaffected.
 - **A 3D solve no longer accepts collapsed geometry.** Every relation
   between two directions is stated as a cross product, which the zero
   vector satisfies whatever it is crossed with, so two plane-normal
